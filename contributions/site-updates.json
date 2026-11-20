@@ -1,1 +1,10 @@
-{"version":1,"updates":[]}
+{
+  "updates": [
+    {
+      "issue": 1,
+      "body": "可以通过 GitHub Issues 提需求，也可以投稿社区更新。通过格式检查的更新会自动同步到站点。",
+      "title": "尽欢开放社区需求入口"
+    }
+  ],
+  "version": 1
+}
