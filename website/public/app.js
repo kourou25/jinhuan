@@ -17,7 +17,7 @@ import { normalizeAnimationFile } from '/animation-loop.js'
 import {avatarImage,refreshAvatar} from '/avatar-view.js?v=20261019a'
 import { stickerPreviews } from '/sticker-preview.js?v=20261017auto'
 import { onRemoval, windowContent, wakeWindowContent, observeResourceDocument } from '/resource-memory.js?v=20261020layout'
-import {focusChatMessage,captureChatScroll} from '/chat-scroll-anchor.js'
+import {focusChatBottom,focusChatMessage,captureChatScroll} from '/chat-scroll-anchor.js'
 import {refreshMessageReference} from '/message-reference.js'
 import {mediaUrl,deferChatImage,beginChatMessageFetch} from '/chat-media-load.js'
 import { socialCards } from '/social-preview.js?v=20261017native2'
@@ -8310,7 +8310,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       scroller.scrollTo({ top: mark.offsetTop - 40, behavior: REDUCED.matches ? 'auto' : 'smooth' })
       pill.hidden = true
       st.newN = 0
-    } else toBottom(true)
+    } else requestBottom()
   } })
   const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80
   const exactBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 3
@@ -8328,6 +8328,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   }
   const queuePosition = () => { clearTimeout(positionTimer); positionTimer = setTimeout(savePosition, 400) }
   const pauseFollow = () => {
+    st.bottomRequested = false
     // 用户在首屏两帧定位期间开始上滑，后续校准不能把视口拉回保存位置。
     if (!st.done) { st.userScrollIntent = true; return }
     if (st.followPaused) return
@@ -8371,7 +8372,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   // 只有「页面看得见、没失焦、没开历史层、贴着底部」时来新消息才跟着滚；否则只记数，右下角给「回到底部」
   const downN = h('i', { class: 'cm-down-n', hidden: true })
   const downBtn = h('button', { class: 'cm-down', type: 'button', hidden: true, title: '回到底部', 'aria-label': '回到底部',
-    onclick: () => { closeHist(); toBottom(true) } }, icon('chevD', 'i tiny'), h('span', null, '回到底部'), downN)
+    onclick: requestBottom }, icon('chevD', 'i tiny'), h('span', null, '回到底部'), downN)
   stage.append(downBtn)
   function drawDown() {
     const n = st.newIds.length
@@ -8381,10 +8382,23 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     downN.textContent = n > 99 ? '99+' : n
     downBtn.setAttribute('aria-label', n ? `回到底部，${n} 条新消息` : '回到底部')
   }
-  const toBottom = (smooth) => {
-    // 跳转窗口里（往下还有没加载的）：先回到最新
+  function requestBottom() {
+    if (st.destroyed) return
+    closeHist()
+    // 翻页完成后再跳到最新，避免正在加载时丢掉点击。
+    if (st.busy) { st.bottomRequested = true; return }
     if (st.after) return backToLatest()
-    scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth && !REDUCED.matches ? 'smooth' : 'auto' })
+    toBottom()
+  }
+  function finishChatPage() {
+    st.busy = false
+    if (!st.bottomRequested || st.destroyed) return
+    st.bottomRequested = false
+    queueMicrotask(requestBottom)
+  }
+  const toBottom = () => {
+    if (st.after) return requestBottom()
+    focusChatBottom(scroller)
     pill.hidden = true
     st.newN = 0
     st.newIds = []
@@ -8738,7 +8752,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
             ? Math.min(0, resume.offset / resume.height) * target.offsetHeight : resume.offset
           scroller.scrollTop = target.offsetTop - offset
         } else if (!st.forceLatest && mark) scroller.scrollTop = Math.max(0, mark.offsetTop - 40)
-        else if (!st.after) toBottom(false) }
+        else if (!st.after) toBottom() }
         place()
         // 离屏占位首轮测量可能修正上方行高；在恢复阶段完成一次校准，之后不抢用户滚动。
         await new Promise(resolve => requestAnimationFrame(resolve))
@@ -8764,7 +8778,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       st.olderFailed = true
       topSpin.replaceChildren(h('button', { class: 'btn-text', onclick: () => older(true) }, e.message + ' · 重试'))
     } finally {
-      st.busy = false
+      finishChatPage()
     }
     if (loaded && st.more && scroller.scrollTop < 300 && scroller.isConnected && scroller.clientHeight) requestAnimationFrame(() => older())
   }
@@ -8815,7 +8829,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         d.items.forEach((m) => m.mine && inflight.find((j) => !j.done && !j.tray && j.body === (m.body || '') && Number(j.reply?.id||0) === Number(m.reply_to?.id||0) && !(m.media?.length || m.image))?.settle(m))
         add(d.items, 'live')
         trimLive(stick)
-        if (stick && !st.followPaused) toBottom(false)
+        if (stick && !st.followPaused) toBottom()
         else {
           st.stick = false // 图片晚加载也别把人拽到底
           // 往上翻着看的时候来了新消息：一样出按钮（以前只在离开时才出）
@@ -8970,7 +8984,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       add(d.items, 'bottom')
       topSpin.replaceChildren(st.more ? h('div', { class: 'spinner' }) : h('div', { class: 'cm-begin' }, `这是「${g.name}」你入群后可见的最早消息`))
       drawLatest()
-    } catch (e) { toast(e.message, 'err') } finally { st.busy = false }
+    } catch (e) { toast(e.message, 'err') } finally { finishChatPage() }
   }
   // 跳转窗口里往下翻：接着要后面的
   async function newer() {
@@ -8986,7 +9000,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       trimHistory('newer')
       drawLatest()
       recount()
-    } catch {} finally { st.busy = false }
+    } catch {} finally { finishChatPage() }
   }
   async function backToLatest() {
     if (st.busy || st.destroyed) return
@@ -8994,8 +9008,8 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     st.more = true
     resetList()
     drawLatest()
-    st.busy = false
     st.done = false
+    st.userScrollIntent = false
     st.forceLatest = true
     await older()
   }
@@ -9005,7 +9019,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if(st.destroyed)return
     if(st.busy){drawLatest();return}
     await backToLatest()
-    if(st.done&&!st.destroyed)toBottom(false)
+    if(st.done&&!st.destroyed)toBottom()
   }
   function keepHistoricalReply(message) {
     if (st.destroyed) return
@@ -9016,7 +9030,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     } else drawLatest()
     toast('回复已发送', 'ok')
   }
-  const latestBtn = h('button', { class: 'cm-pill cm-latest', type: 'button', hidden: true, onclick: () => backToLatest() }, '回到最新消息 ↓')
+  const latestBtn = h('button', { class: 'cm-pill cm-latest', type: 'button', hidden: true, onclick: requestBottom }, '回到最新消息 ↓')
   const drawLatest = () => {
     latestBtn.hidden = !st.after
     const unread = (findGroup(g.id) || g).unread || 0
@@ -9112,8 +9126,14 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     drawDown()
     queuePosition()
   }, { passive: true })
-  // 图片晚加载会把内容往下顶：原本贴着底部就继续贴着
-  scroller.addEventListener('load', () => { if (scroller.clientHeight && st.done && !st.restoring && st.stick && !st.followPaused && nearBottom()) scroller.scrollTop = scroller.scrollHeight }, true)
+  // 图片或离屏行的尺寸变化时，继续贴底。用户上滑阅读时保留其位置。
+  const bottomResize = new doc.defaultView.ResizeObserver(() => {
+    if (!st.destroyed && scroller.isConnected && scroller.clientHeight && st.done && !st.restoring && st.stick && !st.followPaused && !histEl && !st.after && !exactBottom()) {
+      focusChatBottom(scroller)
+    }
+  })
+  bottomResize.observe(list)
+  onRemoval(list, () => bottomResize.disconnect())
   // 输入框
   const reply = h('div', { class: 'cm-reply', hidden: true })
   const setReply = (m, focus = true) => {
@@ -9198,7 +9218,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         const follow = st.stick && !st.followPaused && nearBottom()
         if(keepReplyPosition)keepHistoricalReply(message)
         else if(fromHistory){fromHistory=false;await latestAfterSend()}
-        else {add([message], 'live', false);if (follow && !st.followPaused) toBottom(false);else drawDown()}
+        else {add([message], 'live', false);if (follow && !st.followPaused) toBottom();else drawDown()}
       } catch (e) { toast(`「${f.name}」没发出去：${e.message}`, 'err') }
       void tip
     }
@@ -9242,7 +9262,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (job.tray) swapTray()
     if (!only) { ta.value = ''; grow() }
     setReply(null)
-    if (followSend && !st.followPaused) toBottom(false)
+    if (followSend && !st.followPaused) toBottom()
     else drawDown()
     const go = async () => {
       if (job.done || job.busy) return
@@ -9257,7 +9277,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         const stick = followSend && st.stick && !st.followPaused && nearBottom()
         if(keepReplyPosition)keepHistoricalReply(message)
         else if(fromHistory)await latestAfterSend()
-        else {add([message], 'live', false);if (stick && !st.followPaused) toBottom(false);else drawDown()}
+        else {add([message], 'live', false);if (stick && !st.followPaused) toBottom();else drawDown()}
       } catch (e) {
         if (job.done) return
         if (keepReplyPosition && histEl) toast('回复未发送，请回到当前聊天重试', 'err')
@@ -9320,7 +9340,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       if(st.destroyed)return
       const follow=st.stick&&!st.followPaused&&nearBottom()&&!histEl
       if(histEl||st.after){closeHist();await latestAfterSend()}
-      else {add([message],'live',false);if(follow)toBottom(false);else drawDown()}
+      else {add([message],'live',false);if(follow)toBottom();else drawDown()}
     }})
   }
   const compose = S.me
@@ -9348,7 +9368,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
           const follow = st.stick && !st.followPaused && nearBottom() && !histEl, fromHistory=!!histEl||!!st.after
           closeHist()
           if(fromHistory)void latestAfterSend()
-          else {add([message], 'live', false);if (follow && !st.followPaused) toBottom(false);else drawDown()}
+          else {add([message], 'live', false);if (follow && !st.followPaused) toBottom();else drawDown()}
         } }), { class: 'cm-ibtn cm-redpack-btn' }),
         tb('raffle', '抽卡', (e) => instantCardDialog(e.currentTarget)),
         tb('doc', '发文件（20MB 以内）', () => fileIn.click()),
@@ -9431,7 +9451,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     input.focus()
     if (q0) { input.value = q0; run() }
   }
-  function destroy() { drawLifetime.abort(); savePosition(); st.destroyed = true; bubbleMotion.destroy(); histMotion?.destroy(); histMotion = null; aiPanel?.destroy(); st.done = false; CHAT.panes.delete(api_); clearTimeout(positionTimer); clearTimeout(awayT); clearTimeout(st.catchupT); st.stopOwnPoll?.(); clearInterval(st.readT); clearInterval(bagTimer); doc.removeEventListener('visibilitychange', onVis); doc.defaultView?.removeEventListener('pagehide', savePosition); win?.removeEventListener('blur', onBlur); win?.removeEventListener('focus', onFocus); doc.defaultView?.removeEventListener('title-raffle-update', refreshTitleRaffles); offNotice(); offUnread() }
+  function destroy() { drawLifetime.abort(); savePosition(); st.destroyed = true; bottomResize.disconnect(); bubbleMotion.destroy(); histMotion?.destroy(); histMotion = null; aiPanel?.destroy(); st.done = false; CHAT.panes.delete(api_); clearTimeout(positionTimer); clearTimeout(awayT); clearTimeout(st.catchupT); st.stopOwnPoll?.(); clearInterval(st.readT); clearInterval(bagTimer); doc.removeEventListener('visibilitychange', onVis); doc.defaultView?.removeEventListener('pagehide', savePosition); win?.removeEventListener('blur', onBlur); win?.removeEventListener('focus', onFocus); doc.defaultView?.removeEventListener('title-raffle-update', refreshTitleRaffles); offNotice(); offUnread() }
 
   // 群公告：顶上一条，点 × 收起（记住这一版），右上角留个小「公告」随时再打开；公告改了会重新弹出来
   const noticeEl = h('div', { class: 'cm-notice-wrap' })
