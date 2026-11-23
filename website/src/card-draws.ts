@@ -5,7 +5,7 @@ import {newFarm,CROPS,type FarmState} from './farm/rules'
 import {farmClosed} from './farm/lifecycle'
 import {raffleRoll,titleLevelSql} from './title-growth'
 import {RAFFLE_TITLES,raffleTitleEnabled} from './title-raffle'
-import {TITLE_PITY,TITLE_MAX_LEVEL,titleAvailable,titleChance,collectionTitle} from './shared/title-collection'
+import {TITLE_PITY,TITLE_MAX_LEVEL,TITLE_DRAW_COUNTS,titleAvailable,titleChance,collectionTitle} from './shared/title-collection'
 
 export class DrawRuleError extends Error {}
 export type DrawInput={uid:number;id:string;title:string;count:number;level:number;revision:number;owner:boolean;t:number}
@@ -23,7 +23,7 @@ export async function drawProgress(db:D1Database,uid:number,limited=false){
 export async function drawBatchReceipt(db:D1Database,uid:number,id:string){return db.prepare('SELECT title,count,finger_level,results,pity_after FROM instant_card_batches WHERE user_id=? AND request_id=?').bind(uid,id).first<Batch>()}
 const output=(b:Batch)=>{const receipts=JSON.parse(b.results) as Prize[];return {receipts,pity:b.pity_after,count:receipts.length,requested_count:b.count,unspent:(b.count-receipts.length)*100}}
 export async function drawCards(db:D1Database,p:DrawInput,roll=raffleRoll){
- if(!/^[0-9a-f-]{36}$/.test(p.id)||![1,10,60,100].includes(p.count)||!Number.isInteger(p.level)||p.level<0||p.level>5||!Number.isInteger(p.revision)||!RAFFLE_TITLES.some(t=>t.id===p.title&&t.enabled&&!t.newcomer&&!t.commemorative))throw new DrawRuleError('抽卡参数无效')
+ if(!/^[0-9a-f-]{36}$/.test(p.id)||!TITLE_DRAW_COUNTS.includes(p.count)||!Number.isInteger(p.level)||p.level<0||p.level>5||!Number.isInteger(p.revision)||!RAFFLE_TITLES.some(t=>t.id===p.title&&t.enabled&&!t.newcomer&&!t.commemorative))throw new DrawRuleError('抽卡参数无效')
  const compatible=(b:Batch)=>{if(b.title!==p.title||b.count!==p.count||b.finger_level!==p.level)throw new DrawRuleError('请求标识已用于其他操作');return output(b)}
  const old=await drawBatchReceipt(db,p.uid,p.id);if(old)return compatible(old)
  // Recover pre-upgrade single receipts without charging again.
