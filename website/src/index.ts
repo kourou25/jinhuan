@@ -2288,32 +2288,54 @@ app.get('/api/chat/groups/:id/activity-stats',async c=>{
 
 app.get('/api/chat/groups/:id/members', async (c) => {
   const { g } = await needMember(c, groupId(c))
+  const t = now()
   // @ 补全不需要装扮、简介和成员管理字段，沿用同一鉴权与排序。
   if (c.req.query('view') === 'mention') {
     const { results } = await c.env.DB.prepare(
       `SELECT u.username, u.name, u.avatar FROM chat_members cm
        JOIN users u ON u.id = cm.user_id WHERE cm.group_id = ? AND u.kind='user'
        ORDER BY (u.last_seen > ?) DESC, cm.joined_at ASC, cm.rowid ASC LIMIT 300`,
-    ).bind(g.id, now() - 180).all()
+    ).bind(g.id, t - 180).all()
     return c.json({ members: results })
   }
+  const manage = c.req.query('view') === 'manage'
+  if (manage) needAdmin(c)
+  const pageSize = 50
+  const page = intIn(c.req.query('page'), 0, 1e6, 0)
+  const q = (c.req.query('q') ?? '').trim()
+  const fields = 'u.id, u.username, u.name, u.avatar, u.trust_level, u.is_admin, u.role, u.fancy, u.deco, u.bio, u.last_seen, cm.joined_at'
+  const roster = "FROM chat_members cm JOIN users u ON u.id = cm.user_id WHERE cm.group_id = ?1 AND u.kind='user'"
+  const order = manage && c.req.query('sort') === 'inactive' ? 'last_spoke_at ASC' : '(u.last_seen > ?2) DESC'
+  const listQuery = manage ? c.env.DB.prepare(
+    `SELECT ${fields},
+       (SELECT MAX(m.created_at) FROM chat_messages m
+        WHERE m.group_id = cm.group_id AND m.user_id = cm.user_id
+          AND m.deleted = 0 AND m.system_kind IS NULL) AS last_spoke_at
+     ${roster}
+       AND (?3 IS NULL OR u.username LIKE ?3 ESCAPE '\\' OR u.name LIKE ?3 ESCAPE '\\' OR u.bio LIKE ?3 ESCAPE '\\')
+     ORDER BY ${order}, cm.joined_at ASC, cm.rowid ASC LIMIT ?4 OFFSET ?5`,
+  ).bind(g.id, t - 180, q ? `%${likeEsc(q)}%` : null, pageSize + 1, page * pageSize) : c.env.DB.prepare(
+    `SELECT ${fields} ${roster} ORDER BY ${order}, cm.joined_at ASC, cm.rowid ASC LIMIT 300`,
+  ).bind(g.id, t - 180)
+  const totals = `SELECT member_count-(SELECT COUNT(*) FROM chat_members bm JOIN users bu ON bu.id=bm.user_id WHERE bm.group_id=g.id AND bu.kind='bot') AS n, created_by`
+  const online = `, (SELECT COUNT(*) FROM chat_members om JOIN users ou ON ou.id = om.user_id
+    WHERE om.group_id = g.id AND ou.kind='user' AND ou.last_seen > ?2) AS online`
+  const totalsQuery = c.env.DB.prepare(`${totals}${manage ? online : ''} FROM chat_groups g WHERE id = ?1`)
   const [list, total] = await c.env.DB.batch([
-    c.env.DB.prepare(
-      // 在线的（3 分钟内有动静）排前面，其余按进群先后
-      `SELECT u.id, u.username, u.name, u.avatar, u.trust_level, u.is_admin, u.role, u.fancy, u.deco, u.bio, u.last_seen, cm.joined_at FROM chat_members cm
-       JOIN users u ON u.id = cm.user_id WHERE cm.group_id = ? AND u.kind='user'
-       ORDER BY (u.last_seen > ?) DESC, cm.joined_at ASC, cm.rowid ASC LIMIT 300`,
-    ).bind(g.id, now() - 180),
-    c.env.DB.prepare("SELECT member_count-(SELECT COUNT(*) FROM chat_members bm JOIN users bu ON bu.id=bm.user_id WHERE bm.group_id=g.id AND bu.kind='bot') AS n, created_by FROM chat_groups g WHERE id = ?").bind(g.id),
+    listQuery, manage ? totalsQuery.bind(g.id, t - 180) : totalsQuery.bind(g.id),
   ])
   // creator = 建群的人；默认群没有建群人，前端按 owner（站长）当群主
-  const creator = (total.results[0] as { created_by: number | null }).created_by
+  const summary = total.results[0] as { n: number; created_by: number | null; online?: number } | undefined
+  if (!summary) return fail(404, '群不存在')
+  const creator = summary.created_by
+  const rows = manage ? list.results.slice(0, pageSize) : list.results
   return c.json({
     group: { id: g.id, name: g.name, is_default: !!g.is_default },
-    members: (list.results as (User & { is_admin: number })[]).map((m) => ({ ...m, is_admin: !!m.is_admin, fancy: isFancy(m), deco: decoOf(m.deco), last_seen: m.last_seen || null,
+    members: (rows as (User & { is_admin: number; last_spoke_at?: number | null })[]).map((m) => ({ ...m, is_admin: !!m.is_admin, fancy: isFancy(m), deco: decoOf(m.deco), last_seen: m.last_seen || null,
       creator: creator != null && m.id === creator, owner: creator == null && isOwner(c, m) })),
-    now: now(),
-    total: (total.results[0] as { n: number }).n,
+    now: t,
+    total: summary.n,
+    ...(manage ? { online: summary.online, more: list.results.length > pageSize } : {}),
   })
 })
 

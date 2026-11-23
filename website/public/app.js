@@ -10627,7 +10627,7 @@ async function chatRankPanel(g) {
   tabs(); await load()
 }
 
-async function groupPanel(g, { outside, section } = {}) {
+async function groupPanel(g, { outside, section, memberSort = 'online' } = {}) {
   const panel = openModalShell('group-panel group-settings-panel')
   S.modal.kind = 'group'
   const viewToken = Symbol('group-settings')
@@ -10635,13 +10635,43 @@ async function groupPanel(g, { outside, section } = {}) {
   const current = () => S.modal?.groupView === viewToken && S.modal?.kind === 'group'
   const close = () => closeModal(false)
   panel.replaceChildren(h('div', { class: 'modal-loading' }, h('div', { class: 'spinner' })))
-  let d
-  const load = async () => { d = await api(`/chat/groups/${g.id}/members`); MEMBERS.delete(g.id) }
-  try { await load() } catch (e) { toast(e.message, 'err'); return close() }
+  const admin = S.me?.chat_admin ?? CHAT.canManage
+  let d, mq = '', memberPage = 0, memberRequest = 0, memberSearchTimer
+  let membersLoading = false, membersError = ''
+  const load = (page) => {
+    const params = admin ? '?' + new URLSearchParams({ view: 'manage', sort: memberSort, q: mq.trim(), page: String(page) }) : ''
+    return api(`/chat/groups/${g.id}/members${params}`)
+  }
+  try { d = await load(0) } catch (e) { if (current()) { toast(e.message, 'err'); close() } return }
   if (!current()) return
-  const admin = CHAT.canManage
+  MEMBERS.delete(g.id)
   const filesSection = groupFiles(g)
-  const changed = async () => { await load(); if (current()) draw(); loadGroups() }
+  const refreshMembers = async (page = memberPage) => {
+    if (!current()) return
+    clearTimeout(memberSearchTimer)
+    const request = ++memberRequest
+    membersLoading = true
+    membersError = ''
+    drawList()
+    try {
+      let next = await load(page)
+      if (request !== memberRequest || !current()) return
+      if (page > 0 && !next.members.length) {
+        page = 0
+        next = await load(page)
+        if (request !== memberRequest || !current()) return
+      }
+      d = next
+      memberPage = page
+      drawMemberSummary()
+      listBox.scrollTop = 0
+    } catch (e) {
+      if (request === memberRequest && current()) membersError = e.message
+    } finally {
+      if (request === memberRequest && current()) { membersLoading = false; drawList() }
+    }
+  }
+  const changed = async () => { MEMBERS.delete(g.id); await refreshMembers(); loadGroups() }
   const leave = async () => {
     if (!confirm(`退出「${d.group.name}」？${d.group.is_default ? '默认群退了之后，管理员可以再把你拉回来。' : ''}`)) return
     try {
@@ -10673,7 +10703,7 @@ async function groupPanel(g, { outside, section } = {}) {
         await api(`/chat/groups/${g.id}/join-req/${u.id}`, { method: 'POST', body: { ok } })
         toast(ok ? `${u.username} 已加入群聊` : '已拒绝', 'ok')
         out = null
-        await load(); await loadOut(); loadGroups()
+        await changed(); await loadOut()
       } catch (e) { toast(e.message, 'err') } finally {button.disabled=false}
     } }, label)
     const row = u => h('div', { class: 'gp-row' + (u.req === 0 ? ' req' : '') },
@@ -10719,14 +10749,25 @@ async function groupPanel(g, { outside, section } = {}) {
       changed()
     } catch (e) { toast(e.message, 'err') }
   }
-  // 成员分三组：群主（建群的人；默认群没有建群人，算站长）/ 管理（管理员、群管）/ 成员；组内保持接口给的顺序（在线的在前）
+  // 成员按权限分组，组内保持接口给出的顺序。
   const TIERS = ['群主', '管理', '成员']
   const tier = (u) => (u.creator || u.owner ? 0 : u.is_admin || u.role === 'gadmin' ? 1 : 2)
-  // 搜索框和列表只建一次：搜的时候只重画列表，输入框不丢焦点
-  let mq = ''
   const listBox = h('div', { class: 'gp-list gp-members' })
+  const memberPages = h('div', { class: 'gp-member-pages', hidden: true })
   const msearch = h('input', { class: 'input sm gp-msearch', type: 'search', placeholder: '搜昵称 / 用户名', 'aria-label': '搜索群成员',
-    oninput: (e) => { mq = e.target.value; drawList() } })
+    oninput: (e) => {
+      mq = e.target.value
+      if (!admin) { drawList(); return }
+      clearTimeout(memberSearchTimer)
+      memberRequest++
+      membersLoading = true
+      drawList()
+      memberSearchTimer = setTimeout(() => refreshMembers(0), 220)
+    } })
+  const msort = admin && h('select', { class: 'input sm gp-msort', 'aria-label': '群成员排序',
+    onchange: (e) => { memberSort = e.target.value; refreshMembers(0) } },
+    h('option', { value: 'online', selected: memberSort === 'online' }, '在线优先'),
+    h('option', { value: 'inactive', selected: memberSort === 'inactive' }, '最久未发言优先'))
   const memberRow = (u) => {
     const [seen, on] = seenText(u.last_seen, d.now)
     const who = u.name || u.username
@@ -10746,7 +10787,9 @@ async function groupPanel(g, { outside, section } = {}) {
         avatar(u.avatar, who, 36), h('i', { class: 'gp-dot' + (on ? ' on' : ''), title: seen || '没有记录' })),
       h('span', { class: 'gp-who' },
         h('span', { class: 'gp-name' }, uName('strong', u, {}, who, 'chat')),
-        h('span', { class: 'muted gp-sub' }, '@' + u.username, ' · TL', u.trust_level, u.joined_at ? ` · ${fmtDay(u.joined_at)}进群` : '')),
+        h('span', { class: 'muted gp-sub' }, '@' + u.username, ' · TL', u.trust_level, u.joined_at ? ` · ${fmtDay(u.joined_at)}进群` : ''),
+        admin && h('span', { class: 'muted gp-speech' }, '最后发言：', u.last_spoke_at == null ? '无发言记录'
+          : h('time', { datetime: new Date(u.last_spoke_at * 1000).toISOString() }, fmtAt(u.last_spoke_at)))),
       h('span', { class: 'gp-tags' }, tier(u) === 0 && h('span', { class: 'role-tag admin' }, '群主'), roleTag(u)),
       h('span', { class: 'gp-seen' + (on ? ' on' : '') }, seen || '—'),
       acts.length > 0 && h('span', { class: 'gp-acts' }, acts),
@@ -10754,7 +10797,18 @@ async function groupPanel(g, { outside, section } = {}) {
   }
   const drawList = () => {
     const k = mq.trim().toLowerCase()
-    const hit = k ? d.members.filter((u) => [u.name, u.username, u.bio].some((s) => s && String(s).toLowerCase().includes(k))) : d.members
+    listBox.setAttribute('aria-busy', String(membersLoading))
+    memberPages.hidden = membersLoading || !(membersError || memberPage || d.more)
+    if (membersLoading || membersError) {
+      listBox.replaceChildren(h('p', { class: 'muted gp-empty', role: 'status' }, membersLoading ? '正在读取成员…' : membersError))
+      memberPages.replaceChildren(...nodes(membersError && h('button', { class: 'btn btn-ghost sm', type: 'button', onclick: () => refreshMembers(0) }, '重试')))
+      return
+    }
+    memberPages.replaceChildren(
+      h('button', { class: 'btn btn-ghost sm', type: 'button', disabled: !memberPage, onclick: () => refreshMembers(memberPage - 1) }, '上一页'),
+      h('span', { class: 'muted sm' }, `第 ${memberPage + 1} 页`),
+      h('button', { class: 'btn btn-ghost sm', type: 'button', disabled: !d.more, onclick: () => refreshMembers(memberPage + 1) }, '下一页'))
+    const hit = !admin && k ? d.members.filter((u) => [u.name, u.username, u.bio].some((s) => s && String(s).toLowerCase().includes(k))) : d.members
     const out = []
     TIERS.forEach((label, t) => {
       const us = hit.filter((u) => tier(u) === t)
@@ -10764,13 +10818,16 @@ async function groupPanel(g, { outside, section } = {}) {
   }
   let ready=false
   const title=h('h2'),count=h('span',{class:'muted'}),partial=h('p',{class:'gp-note muted'}),outsideBox=h('div')
-  const draw = () => {
-    const online=d.members.filter(u=>seenText(u.last_seen,d.now)[1]).length
-    drawList()
+  const drawMemberSummary = () => {
+    const online=d.online ?? d.members.filter(u=>seenText(u.last_seen,d.now)[1]).length
     title.replaceChildren(d.group.name,h('span',{class:'muted'},` · ${d.total} 人 · ${online} 人在线`))
     count.textContent=` ${d.total} 人 · ${online} 在线`
-    partial.hidden=d.total<=d.members.length
+    partial.hidden=admin||d.total<=d.members.length
     partial.textContent=`只显示前 ${d.members.length} 位（在线的排前面）`
+  }
+  const draw = () => {
+    drawMemberSummary()
+    drawList()
     outsideBox.replaceChildren(...nodes(outSec()))
     if(ready)return
     ready=true
@@ -10801,7 +10858,7 @@ async function groupPanel(g, { outside, section } = {}) {
         try{await api(`/chat/groups/${g.id}`,{method:'DELETE'});toast('群已解散');close();await loadGroups();afterGroupGone(g.id)}catch(e){toast(e.message,'err')}
       }},'解散这个群'))
     const categories=settingsSections({h,label:'群设置分类',sections:[
-      {id:'members',label:'群成员',keywords:'人员 搜索 昵称 用户名 拉人 限制 移出',nodes:[add,h('div',{class:'gp-mhead'},h('h4',{class:'gp-h'},'成员',count),msearch),listBox,partial]},
+      {id:'members',label:'群成员',keywords:'人员 搜索 昵称 用户名 拉人 限制 移出 发言 活跃',nodes:[add,h('div',{class:'gp-mhead'},h('h4',{class:'gp-h'},'成员',count),msort,msearch),listBox,admin&&memberPages,partial]},
       {id:'info',label:'群资料',keywords:'群名 改名 公告 群规 引用',nodes:[rename,noticeSec()]},
       {id:'requests',label:'入群申请',keywords:'审批 同意 拒绝 退出 移出 拉回',available:()=>admin,nodes:[outsideBox]},
       {id:'resources',label:'文件与榜单',keywords:'下载 历史 文件 水群 早起 夜聊 排名',nodes:[filesSection,h('button',{class:'btn sm',type:'button',onclick:()=>chatRankPanel(g)},'水群榜 · 消息 / 早起 / 夜聊')]},
@@ -12450,6 +12507,10 @@ async function memberAdmin(q0 = '') {
   const close = () => closeModal(false)
   const q = h('input', { class: 'input', type: 'search', placeholder: '搜用户名 / 名字，留空看最近活跃', value: q0, 'aria-label': '搜索成员' })
   const only = h('input', { type: 'checkbox' })
+  const groupSelect = h('select', { class: 'input sm ma-group-select', hidden: true, 'aria-label': '查看群成员活跃度', onchange: (e) => {
+    const group = findGroup(Number(e.target.value))
+    if (group) groupPanel(group, { section: 'members', memberSort: 'inactive' })
+  } }, h('option', { value: '', disabled: true, selected: true }, '群成员活跃度'))
   const list = h('div', { class: 'ma-list' }, h('div', { class: 'spinner' }))
   let seq = 0
   const load = async () => {
@@ -12565,10 +12626,15 @@ async function memberAdmin(q0 = '') {
   panel.replaceChildren(
     h('header', { class: 'compose-head' }, h('h2', null, '成员管理'), h('button', { class: 'btn-icon', 'aria-label': '关闭', onclick: close }, icon('close'))),
     h('div', { class: 'ma-body' },
-      h('div', { class: 'ma-search' }, q, h('label', { class: 'cms-img' }, only, '只看被限制的')),
+      h('div', { class: 'ma-search' }, q, h('label', { class: 'cms-img' }, only, '只看被限制的'), groupSelect),
       h('p', { class: 'muted ma-note' }, '禁言只管群聊发消息；禁回应包括表情、喜欢和一句回应。到期自动解除，管理员不受限制。站长可以给人设「管理员」（全站管理）或「群管」（只管群聊）。'),
       list))
   load()
+  loadGroups({ background: true }).then((groups) => {
+    if (!groupSelect.isConnected || S.modal?.kind !== 'members' || !groups.length) return
+    groupSelect.append(...groups.map((group) => h('option', { value: group.id }, group.name)))
+    groupSelect.hidden = false
+  })
   focusEditorOnOpen(q, panel)
 }
 

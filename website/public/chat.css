@@ -906,7 +906,8 @@ body.chat-mode #main { padding-bottom: 0; }
 .gp-file strong { display: block; overflow-wrap: anywhere; }
 .gp-file small { display: block; font-size: 12px; }
 .gp-file > svg { flex: none; }
-.gp-files-controls { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.gp-files-controls, .gp-member-pages { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+.gp-member-pages[hidden] { display: none; }
 .cm-menu-rx { display: flex; gap: 2px; padding: 2px 2px 6px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
 .cm-menu-boost { display: flex; gap: 4px; padding: 2px 2px 6px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
 .cm-menu-boost .chip { flex: 1; min-width: 0; max-width: 72px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 6px; }
@@ -1637,6 +1638,8 @@ button.notif-row { width: 100%; border: 0; background: none; font: inherit; text
 .gp-mhead .gp-h { margin: 0; flex: none; }
 .gp-mhead .gp-h .muted { font-weight: 400; font-size: 12px; }
 .gp-msearch { flex: 1; min-width: 0; max-width: 240px; margin-left: auto; height: 32px; }
+.gp-msort, .ma-search .ma-group-select { flex: none; width: auto; max-width: 100%; }
+.ma-search:has(.ma-group-select:not([hidden])) { flex-wrap: wrap; }
 .gp-members { max-height: min(56vh, 520px); max-height: min(56dvh, 520px); overflow-y: auto; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 /* 滚动容器中的行按完整身份内容定高，不挤压长昵称/换行称号。 */
 .gp-members > * { flex-shrink: 0; }
@@ -1649,6 +1652,7 @@ button.notif-row { width: 100%; border: 0; background: none; font: inherit; text
 .gp-mem .gp-who { gap: 2px; }
 .gp-mem .gp-name { font-size: 14px; column-gap: 5px; }
 .gp-sub { font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gp-speech { font-size: 12px; }
 .gp-tags { display: flex; gap: 4px; flex: none; }
 .gp-tags .role-tag { margin-left: 0; }
 .gp-mem .gp-seen, .ma-top .gp-seen { width: 92px; text-align: right; overflow: hidden; text-overflow: ellipsis; }
