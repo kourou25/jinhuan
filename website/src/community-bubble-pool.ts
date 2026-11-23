@@ -35,43 +35,76 @@ export const bubblePrizeReward=(won:boolean,owner:boolean,pick=randomIndex,t=now
  return BUBBLE_PRIZE_POLICY.baseMin+pick(BUBBLE_PRIZE_POLICY.baseSpan)
 }
 const result=(r:Receipt)=>({request_id:r.request_id,item_id:r.item_id,won:!!r.won,duplicate:!!r.duplicate,guaranteed:!!r.guaranteed,pity:r.pity_after,chance:r.chance,level:r.finger_level,source:r.catalog_source,card_id:r.card_id,card_duplicate:!!r.card_duplicate,reward:r.reward_amount,created_at:r.created_at,price:PRICE,refund:r.duplicate?PRICE:0})
+const batchResult=(rows:Receipt[])=>{
+ const receipts=rows.map(result),last=receipts[receipts.length-1]
+ return {...last,receipts,count:receipts.length,price:PRICE*receipts.length,refund:receipts.reduce((n,x)=>n+x.refund,0),reward:receipts.reduce((n,x)=>n+x.reward,0)}
+}
 export async function bubbleReceipt(db:D1Database,uid:number,id:string){return db.prepare('SELECT request_id,item_id,won,duplicate,guaranteed,pity_after,chance,finger_level,catalog_source,card_id,card_duplicate,reward_amount,created_at FROM community_bubble_draws WHERE user_id=? AND request_id=?').bind(uid,id).first<Receipt>()}
-export async function drawCommunityBubble(db:D1Database,bucket:R2Bucket,p:{uid:number;id:string;ownerId:number;owner:boolean;t:number},roll=raffleRoll,pick=randomIndex){
- if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id)||!Number.isSafeInteger(p.ownerId)||p.ownerId<1)throw new BubbleRuleError('抽奖参数或奖池账户无效')
- const prior=await bubbleReceipt(db,p.uid,p.id);if(prior)return result(prior)
+export async function bubbleBatchReceipts(db:D1Database,uid:number,id:string){return (await db.prepare('SELECT request_id,item_id,won,duplicate,guaranteed,pity_after,chance,finger_level,catalog_source,card_id,card_duplicate,reward_amount,created_at FROM community_bubble_draws WHERE user_id=?1 AND (request_id=?2 OR (request_id>=?3 AND request_id<?4)) ORDER BY request_id').bind(uid,id,`${id}:`,`${id};`).all<Receipt>()).results}
+export async function drawCommunityBubble(db:D1Database,bucket:R2Bucket,p:{uid:number;id:string;count?:number;ownerId:number;owner:boolean;t:number},roll=raffleRoll,pick=randomIndex){
+ const count=p.count??1
+ if(!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id)||!Number.isSafeInteger(p.ownerId)||p.ownerId<1||![1,60].includes(count))throw new BubbleRuleError('抽奖参数或奖池账户无效')
+ const prior=await bubbleBatchReceipts(db,p.uid,p.id)
+ if(prior.length){if(prior.length!==count)throw new BubbleRuleError('请求标识已用于其他操作');return batchResult(prior)}
  const catalog=await readCommunityCatalog(bucket) as Catalog,items=available(catalog);if(!catalog.source||!items.length)throw new BubbleRuleError('限定气泡池暂未上新')
  await ensureCoinWallet(db,p.uid,p.t);if(p.ownerId!==p.uid)await ensureCoinWallet(db,p.ownerId,p.t)
  await db.prepare("INSERT OR IGNORE INTO community_bubble_progress(user_id) SELECT id FROM users WHERE id=? AND kind='user' AND disabled=0 AND NOT EXISTS(SELECT 1 FROM account_retirements WHERE source_id=?)").bind(p.uid,p.uid).run()
  const state=await db.prepare('SELECT p.pity,p.revision FROM community_bubble_progress p WHERE p.user_id=?1').bind(p.uid).first<{pity:number;revision:number}>();if(!state)throw new BubbleRuleError('账号不可用')
- const cardId=String(randomIndex(CARD_CATALOG.length)),cardOwned=await db.prepare('SELECT 1 FROM collectible_cards WHERE user_id=? AND pack_id=? AND card_id=?').bind(p.uid,CARD_PACK,cardId).first(),cardDuplicate=cardOwned?1:0
- const chance=LIMITED_CHANCE,guaranteed=state.pity>=PITY-1,won=guaranteed||roll()<chance,item=won?items[pick(items.length)]:null,pity=won?0:state.pity+1,attempt=crypto.randomUUID(),level=0
- const bank=await db.prepare('SELECT balance FROM coin52_wallets WHERE user_id=?').bind(p.ownerId).first<{balance:number}>();
- const rewardAmount=bubblePrizeReward(won,p.ownerId===p.uid,pick,p.t)
- if(rewardAmount>0&&(!bank||bank.balance<rewardAmount))throw new BubbleRuleError('奖池站长余额不足，暂时无法发放本次D币奖励')
+ const initialOwned=new Set(await ownedBubbles(db,p.uid)),owned=new Set(initialOwned)
+ const ownedCards=new Set((await db.prepare('SELECT card_id FROM collectible_cards WHERE user_id=? AND pack_id=?').bind(p.uid,CARD_PACK).all<{card_id:string}>()).results.map(x=>x.card_id))
+ const chance=LIMITED_CHANCE,attempt=crypto.randomUUID(),level=0,cardCounts=new Map<string,number>()
+ type PlannedDraw={request_id:string;attempt:string;item_id:string|null;won:number;duplicate:number;guaranteed:number;pity_after:number;card_id:string;card_duplicate:number;reward_amount:number}
+ const draws:PlannedDraw[]=[];let pity=state.pity,totalRefund=0,totalReward=0
+ for(let i=0;i<count;i++){
+  const guaranteed=pity>=PITY-1,won=guaranteed||roll()<chance,item=won?items[pick(items.length)]:null
+  const duplicate=item&&owned.has(item.id)?1:0
+  if(item&&!duplicate)owned.add(item.id)
+  if(duplicate)totalRefund+=PRICE
+  pity=won?0:pity+1
+  const cardId=String(pick(CARD_CATALOG.length)),cardDuplicate=ownedCards.has(cardId)?1:0
+  ownedCards.add(cardId);cardCounts.set(cardId,(cardCounts.get(cardId)||0)+1)
+  const rewardAmount=bubblePrizeReward(won,p.ownerId===p.uid,pick,p.t)
+  totalReward+=rewardAmount
+  draws.push({request_id:i===0?p.id:`${p.id}:${String(i).padStart(3,'0')}`,attempt:count===1?attempt:`${attempt}:${String(i).padStart(3,'0')}`,item_id:item?.id??null,won:won?1:0,duplicate,guaranteed:guaranteed?1:0,pity_after:pity,card_id:cardId,card_duplicate:cardDuplicate,reward_amount:rewardAmount})
+ }
+ const totalPrice=PRICE*count
+ const bank=await db.prepare('SELECT balance FROM coin52_wallets WHERE user_id=?').bind(p.ownerId).first<{balance:number}>()
+ if(totalReward>0&&p.ownerId!==p.uid&&(!bank||bank.balance+totalPrice-totalRefund<totalReward))throw new BubbleRuleError('奖池站长余额不足，暂时无法发放本次D币奖励')
  const current=await readCommunityCatalog(bucket) as Catalog;if(current.source!==catalog.source)throw new BubbleRuleError('奖池刚刚更新，请刷新后重试')
- const gate='EXISTS(SELECT 1 FROM community_bubble_draws WHERE attempt=?1)',duplicate=gate+' AND EXISTS(SELECT 1 FROM community_bubble_draws WHERE attempt=?1 AND duplicate=1)'
+ const touchedBubbles=[...new Set(draws.filter(d=>d.item_id).map(d=>d.item_id!))]
+ const ownedSnapshot=JSON.stringify(touchedBubbles.map(id=>({item:PREFIX+id,owned:initialOwned.has(id)?1:0})))
+ const newUnlocks=[...owned].filter(id=>!initialOwned.has(id)).map(id=>PREFIX+id)
+ const cardAgg=[...cardCounts.entries()].map(([card_id,n])=>({card_id,count:n}))
+ const first=draws[0],headAttempt=first.attempt,gate='EXISTS(SELECT 1 FROM community_bubble_draws WHERE attempt=?1)'
  const sql=[db.prepare(`INSERT OR IGNORE INTO community_bubble_draws(user_id,request_id,attempt,owner_id,item_id,won,duplicate,guaranteed,pity_after,chance,finger_level,catalog_source,card_id,card_duplicate,reward_amount,created_at)
- SELECT ?1,?2,?3,?4,?5,?6,CASE WHEN ?6=1 AND EXISTS(SELECT 1 FROM user_unlocks WHERE user_id=?1 AND item=?7) THEN 1 ELSE 0 END,?8,?9,?10,?11,?12,?13,?14,?15,?16
+ SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16
  FROM coin52_wallets w JOIN coin52_wallets bank ON bank.user_id=?4 JOIN community_bubble_progress progress ON progress.user_id=?1
- WHERE w.user_id=?1 AND w.balance>=100 AND (bank.user_id=?1 OR bank.balance<=9007199254740891) AND progress.revision=?17
+ WHERE w.user_id=?1 AND w.balance>=?17 AND w.balance-?17+?18+?19<=9007199254740991
+ AND (bank.user_id=?1 OR (bank.balance+?17<=9007199254740991 AND bank.balance+?17-?18>=?19)) AND progress.revision=?20
+ AND NOT EXISTS(SELECT 1 FROM json_each(?21) s WHERE EXISTS(SELECT 1 FROM user_unlocks u WHERE u.user_id=?1 AND u.item=json_extract(s.value,'$.item'))<>json_extract(s.value,'$.owned'))
  AND EXISTS(SELECT 1 FROM users u JOIN chat_members cm ON cm.user_id=u.id AND cm.group_id=1 WHERE u.id=?1 AND u.disabled=0 AND u.kind='user')
  AND EXISTS(SELECT 1 FROM users WHERE id=?4 AND disabled=0 AND kind='user')
  AND NOT EXISTS(SELECT 1 FROM chat_bans WHERE group_id=1 AND user_id=?1)
- AND NOT EXISTS(SELECT 1 FROM account_retirements WHERE source_id IN(?1,?4))
- AND (bank.user_id=?1 OR bank.balance>=?15)`).bind(p.uid,p.id,attempt,p.ownerId,item?.id??null,won?1:0,item?PREFIX+item.id:'',guaranteed?1:0,pity,chance,level,catalog.source,cardId,cardDuplicate,rewardAmount,p.t,state.revision)]
- const money=(uid:number,kind:string,amount:number,suffix:string,condition:string)=>{
-  sql.push(db.prepare(`INSERT INTO coin52_ledger(user_id,kind,ref,attempt,delta,balance_after,created_at) SELECT ?2,?3,?4,?5,?6,balance+?6,?7 FROM coin52_wallets WHERE user_id=?2 AND ${condition}`).bind(attempt,uid,kind,p.id,attempt+suffix,amount,p.t))
-  sql.push(db.prepare(`UPDATE coin52_wallets SET balance=balance+?3,revision=revision+1,updated_at=?4 WHERE user_id=?2 AND ${condition}`).bind(attempt,uid,amount,p.t))
+ AND NOT EXISTS(SELECT 1 FROM account_retirements WHERE source_id IN(?1,?4))`).bind(p.uid,first.request_id,headAttempt,p.ownerId,first.item_id,first.won,first.duplicate,first.guaranteed,first.pity_after,chance,level,catalog.source,first.card_id,first.card_duplicate,first.reward_amount,p.t,totalPrice,totalRefund,totalReward,state.revision,ownedSnapshot)]
+ if(draws.length>1){
+  sql.push(db.prepare(`INSERT INTO community_bubble_draws(user_id,request_id,attempt,owner_id,item_id,won,duplicate,guaranteed,pity_after,chance,finger_level,catalog_source,card_id,card_duplicate,reward_amount,created_at)
+  SELECT ?2,json_extract(value,'$.request_id'),json_extract(value,'$.attempt'),?3,json_extract(value,'$.item_id'),json_extract(value,'$.won'),json_extract(value,'$.duplicate'),json_extract(value,'$.guaranteed'),json_extract(value,'$.pity_after'),?4,?5,?6,json_extract(value,'$.card_id'),json_extract(value,'$.card_duplicate'),json_extract(value,'$.reward_amount'),?7
+  FROM json_each(?8) WHERE ${gate}`).bind(headAttempt,p.uid,p.ownerId,chance,level,catalog.source,p.t,JSON.stringify(draws.slice(1))))
  }
- money(p.uid,'bubble-pool-pay',-PRICE,':pay',gate);money(p.ownerId,'bubble-pool-income',PRICE,':income',gate)
- money(p.ownerId,'bubble-pool-refund-pay',-PRICE,':refund-pay',duplicate);money(p.uid,'bubble-pool-refund',PRICE,':refund',duplicate)
- if(rewardAmount){const rewardGate=gate+' AND balance>='+rewardAmount;money(p.ownerId,'bubble-pool-prize-pay',-rewardAmount,':prize-pay',rewardGate);money(p.uid,'bubble-pool-prize',rewardAmount,':prize',gate)}
- sql.push(db.prepare(`INSERT OR IGNORE INTO user_unlocks(user_id,item,at) SELECT user_id,?2,?3 FROM community_bubble_draws WHERE attempt=?1 AND won=1`).bind(attempt,item?PREFIX+item.id:'',p.t))
- sql.push(db.prepare(`INSERT INTO collectible_cards(user_id,pack_id,card_id,first_at,last_at,count) SELECT ?2,?3,card_id,?4,?4,1 FROM community_bubble_draws WHERE attempt=?1 AND card_id IS NOT NULL ON CONFLICT(user_id,pack_id,card_id) DO UPDATE SET last_at=excluded.last_at,count=collectible_cards.count+1`).bind(attempt,p.uid,CARD_PACK,p.t))
- sql.push(db.prepare(`UPDATE community_bubble_progress SET pity=?3,draws=draws+1,revision=revision+1 WHERE user_id=?2 AND ${gate}`).bind(attempt,p.uid,pity))
+ const money=(uid:number,kind:string,amount:number,suffix:string,condition:string)=>{
+  sql.push(db.prepare(`INSERT INTO coin52_ledger(user_id,kind,ref,attempt,delta,balance_after,created_at) SELECT ?2,?3,?4,?5,?6,balance+?6,?7 FROM coin52_wallets WHERE user_id=?2 AND ${condition}`).bind(headAttempt,uid,kind,p.id,attempt+suffix,amount,p.t))
+  sql.push(db.prepare(`UPDATE coin52_wallets SET balance=balance+?3,revision=revision+1,updated_at=?4 WHERE user_id=?2 AND ${condition}`).bind(headAttempt,uid,amount,p.t))
+ }
+ money(p.uid,'bubble-pool-pay',-totalPrice,':pay',gate);money(p.ownerId,'bubble-pool-income',totalPrice,':income',gate)
+ if(totalRefund){money(p.ownerId,'bubble-pool-refund-pay',-totalRefund,':refund-pay',gate);money(p.uid,'bubble-pool-refund',totalRefund,':refund',gate)}
+ if(totalReward){const rewardGate=gate+' AND balance>='+totalReward;money(p.ownerId,'bubble-pool-prize-pay',-totalReward,':prize-pay',rewardGate);money(p.uid,'bubble-pool-prize',totalReward,':prize',gate)}
+ if(newUnlocks.length)sql.push(db.prepare(`INSERT OR IGNORE INTO user_unlocks(user_id,item,at) SELECT ?2,value,?3 FROM json_each(?4) WHERE ${gate}`).bind(headAttempt,p.uid,p.t,JSON.stringify(newUnlocks)))
+ sql.push(db.prepare(`INSERT INTO collectible_cards(user_id,pack_id,card_id,first_at,last_at,count) SELECT ?2,?3,json_extract(value,'$.card_id'),?4,?4,json_extract(value,'$.count') FROM json_each(?5) WHERE ${gate} ON CONFLICT(user_id,pack_id,card_id) DO UPDATE SET last_at=excluded.last_at,count=collectible_cards.count+excluded.count`).bind(headAttempt,p.uid,CARD_PACK,p.t,JSON.stringify(cardAgg)))
+ sql.push(db.prepare(`UPDATE community_bubble_progress SET pity=?3,draws=draws+?4,revision=revision+1 WHERE user_id=?2 AND ${gate}`).bind(headAttempt,p.uid,pity,count))
  await db.batch(sql)
- const saved=await bubbleReceipt(db,p.uid,p.id);if(!saved)throw new BubbleRuleError('余额不足、参与资格或保底进度发生变化，请刷新后重试；未扣款')
- return result(saved)
+ const saved=await bubbleBatchReceipts(db,p.uid,p.id)
+ if(saved.length!==count){if(saved.length)throw new BubbleRuleError('请求标识已用于其他操作');throw new BubbleRuleError('余额不足、参与资格或保底进度发生变化，请刷新后重试；未扣款')}
+ return batchResult(saved)
 }
 export const communityBubblePool=new Hono<Ctx>()
 communityBubblePool.onError((error,c)=>{
@@ -96,6 +129,6 @@ communityBubblePool.get('/api/community-bubbles/pool',async c=>{
  return c.json({items:items.map(x=>({id:x.id,name:x.name,author:x.author,owned:owner||owned.includes(x.id)})),owned,balance:state?.balance||0,pity:state?.pity||0,level:0,chance:LIMITED_CHANCE,price:PRICE,pity_limit:PITY,source:catalog.source,cards:CARD_CATALOG})
 })
 communityBubblePool.post('/api/community-bubbles/draw',async c=>{
- sameOrigin(c);const {u}=await needMember(c,1),b=await boundedJson(c,1024),id=String(b.id||'')
- try{return c.json(await drawCommunityBubble(c.env.DB,c.env.BUCKET,{uid:u.id,id,ownerId:ownerId(c.env.ADMIN_USER_IDS),owner:isOwner(c,u),t:now()}))}catch(e){if(e instanceof BubbleRuleError)fail(409,e.message);fail(503,'结算状态暂未确认，请重试原请求，不会重复扣款')}
+ sameOrigin(c);const {u}=await needMember(c,1),b=await boundedJson(c,1024),id=String(b.id||''),count=b.count===undefined?1:Number(b.count)
+ try{return c.json(await drawCommunityBubble(c.env.DB,c.env.BUCKET,{uid:u.id,id,count,ownerId:ownerId(c.env.ADMIN_USER_IDS),owner:isOwner(c,u),t:now()}))}catch(e){if(e instanceof BubbleRuleError)fail(409,e.message);fail(503,'结算状态暂未确认，请重试原请求，不会重复扣款')}
 })

@@ -27,37 +27,54 @@ export function openInstantCards({anchor,api,h,legacy,preview,dress,initialTab='
   try{
    const state=await api('/community-bubbles/pool');if(!live()||n!==epoch)return
    const key=`community-bubble-pending:${data.user_id}`;let pendingBubble=null;try{pendingBubble=JSON.parse(sessionStorage.getItem(key)||'null')}catch{}
-   const sample=h('div',{class:'ic-result-sample'}),status=h('p',{class:'ic-note ic-bubble-status',role:'status'},message),actions=h('div',{class:'ic-bubble-actions'}),run=h('section',{class:'ic-bubble-run',hidden:!records.length}),progress=h('progress',{class:'ic-bubble-progress-bar',max:60,value:0}),progressText=h('span',{class:'ic-bubble-progress-text'},'等待开始')
-   const progressBox=h('div',{class:'ic-bubble-progress',hidden:true},h('div',{class:'ic-bubble-progress-head'},h('strong',null,'连抽进度'),progressText),progress)
+   const sample=h('div',{class:'ic-result-sample'}),status=h('p',{class:'ic-note ic-bubble-status',role:'status'},message),actions=h('div',{class:'ic-bubble-actions'}),run=h('section',{class:'ic-bubble-run',hidden:!records.length})
    const rememberBubble=value=>{try{if(value)sessionStorage.setItem(key,JSON.stringify(value));else sessionStorage.removeItem(key)}catch{}}
    const cardOf=r=>state.cards?.find(x=>x.id===r.card_id),itemOf=r=>state.items.find(x=>x.id===r.item_id)
    const renderRun=rows=>{
     run.hidden=!rows.length;if(!rows.length){run.replaceChildren();return}
-    const wins=rows.filter(x=>x.won).length,reward=rows.reduce((n,x)=>n+(Number(x.reward)||0),0),cards=rows.filter(x=>x.card_id).length
-    run.replaceChildren(h('div',{class:'ic-bubble-run-head'},h('div',null,h('strong',null,rows.length===1?'本次结算':'本轮已完成'),h('small',null,`${wins} 次命中 · ${cards} 张卡片`)),h('div',{class:'ic-bubble-run-reward'},reward?`+${reward} D币`:'无补偿')),h('div',{class:'ic-bubble-results'},...rows.slice(-12).reverse().map((r,i)=>{const card=cardOf(r),item=itemOf(r);return h('article',{class:'ic-bubble-result','data-rarity':card?.rarity||'none'},card?h('img',{src:card.asset,alt:card.name,loading:'lazy'}):h('span',{class:'ic-bubble-result-empty'},r.won?'✦':'·'),h('div',null,h('strong',null,r.won?(r.duplicate?`重复 · ${item?.name||'气泡'}`:`命中 · ${item?.name||'气泡'}`):'未命中'),h('small',null,[card&&`卡片 ${card.name}${r.card_duplicate?' · 重复':''}`,r.reward&&`补偿 ${r.reward} D币`,r.guaranteed&&'保底命中'].filter(Boolean).join(' · ')||'保底进度已累计')))})))
+    const wins=rows.filter(x=>x.won).length,newBubbles=rows.filter(x=>x.won&&!x.duplicate).length,reward=rows.reduce((sum,x)=>sum+(Number(x.reward)||0),0),refund=rows.reduce((sum,x)=>sum+(Number(x.refund)||0),0),cards=rows.filter(x=>x.card_id).length,newCards=rows.filter(x=>x.card_id&&!x.card_duplicate).length
+    const indexed=rows.map((r,i)=>({r,number:i+1,card:cardOf(r),item:itemOf(r)}))
+    const rareCount=indexed.filter(x=>x.card&&(x.card.rarity==='UR'||x.card.rarity==='SSR')).length
+    const filters=h('nav',{class:'ic-bubble-filters','aria-label':'筛选开奖结果'}),grid=h('div',{class:'ic-bubble-results'})
+    let filter='all'
+    const groups=[['all','全部',rows.length],['won','气泡命中',wins],['new-card','新角色卡',newCards],['rare','UR / SSR',rareCount]]
+    const drawGrid=()=>{
+     const visible=indexed.filter(x=>filter==='all'||(filter==='won'?x.r.won:filter==='new-card'?x.r.card_id&&!x.r.card_duplicate:x.card&&(x.card.rarity==='UR'||x.card.rarity==='SSR')))
+     if(rows.length>1)filters.replaceChildren(...groups.filter(([, ,cnt])=>cnt>0).map(([id,label,cnt])=>btn(`${label} ${cnt}`,()=>{filter=id;drawGrid()},{'aria-pressed':String(id===filter)})))
+     grid.replaceChildren(...visible.map(({r,number,card,item})=>h('article',{class:'ic-bubble-result','data-rarity':card?.rarity||'none','data-won':r.won?'1':'0'},card?h('img',{src:card.asset,alt:card.name,loading:'lazy'}):h('span',{class:'ic-bubble-result-empty'},r.won?'✦':'·'),h('div',null,h('strong',null,`#${number} · ${r.won?(r.duplicate?`重复 · ${item?.name||'气泡'}`:`命中 · ${item?.name||'气泡'}`):'未命中'}`),h('small',null,[card&&`${card.rarity} ${card.name}${r.card_duplicate?' · 重复':' · 新卡'}`,r.refund&&`返还 ${r.refund} D币`,r.reward&&`补偿 ${r.reward} D币`,r.guaranteed&&'保底命中'].filter(Boolean).join(' · ')||'保底进度已累计')))))
+    }
+    const totalReturn=reward+refund
+    const subtitle=[`${wins} 次命中${newBubbles?`（新 ${newBubbles}）`:''}`,`${cards} 张卡片${newCards?`（新 ${newCards}）`:''}`,refund?`重复返还 ${refund} D币`:''].filter(Boolean).join(' · ')
+    run.replaceChildren(h('div',{class:'ic-bubble-run-head'},h('div',null,h('strong',null,rows.length===1?'本次结算':`六十连完成 · 共 ${rows.length} 抽`),h('small',null,subtitle)),h('div',{class:'ic-bubble-run-reward'},totalReturn?`+${totalReturn} D币`:'无补偿')),...(rows.length>1?[filters]:[]),grid)
+    drawGrid()
    }
    renderRun(records)
    const payBubble=async payload=>{
-    if(busy)return;busy=true;rememberBubble(payload);actions.replaceChildren(h('span',{class:'ic-bubble-busy'},'正在结算 · 请不要关闭窗口'))
-    try{const r=await api('/community-bubbles/draw',{method:'POST',body:payload});rememberBubble(null);busy=false;if(!live())return;const item=itemOf(r),card=cardOf(r),parts=[r.won?(r.duplicate?`再次抽到「${item?.name||r.item_id}」`:`获得「${item?.name||r.item_id}」`):'本次未命中'];if(r.reward)parts.push(`补偿 ${r.reward} D币`);if(card)parts.push(`卡片「${card.name}」${r.card_duplicate?'重复':''}`);await bubbles(parts.join(' · '),[r])}
-    catch(e){busy=false;if(!live())return;if([400,401,403,409].includes(e.status)){rememberBubble(null);await bubbles(e.message,records)}else{status.textContent=e.message||'结算状态未确认';actions.replaceChildren(btn('恢复上一笔',()=>payBubble(payload),{class:'ic-primary'}))}}
-   }
-   const payBubbleBatch=async()=>{
-    if(busy)return;busy=true;const rows=[],stop={value:false};let completed=0
-    const stopButton=btn('停止后续抽取',()=>{stop.value=true;stopButton.disabled=true;progressText.textContent=`将在第 ${completed} 抽结算后停止`},{class:'ic-secondary'})
-    progress.hidden=false;progressBox.hidden=false;actions.replaceChildren(stopButton)
+    if(busy)return;busy=true;rememberBubble(payload);const count=Number(payload.count||1)
+    actions.replaceChildren(h('span',{class:'ic-bubble-busy'},count>1?`正在一次结算 ${count} 连 · 请不要关闭窗口`:'正在结算 · 请不要关闭窗口'))
     try{
-     for(let i=0;i<60&&!stop.value;i++){
-      const r=await api('/community-bubbles/draw',{method:'POST',body:{id:crypto.randomUUID()}});rows.push(r);completed++;progress.value=completed;progressText.textContent=`${completed}/60 · ${r.won?'命中':'继续探索'}`;renderRun(rows)
+     const res=await api('/community-bubbles/draw',{method:'POST',body:payload});rememberBubble(null);busy=false;if(!live())return
+     const rows=Array.isArray(res.receipts)&&res.receipts.length?res.receipts:[res]
+     if(rows.length===1){
+      const r=rows[0],item=itemOf(r),card=cardOf(r),parts=[r.won?(r.duplicate?`再次抽到「${item?.name||r.item_id}」`:`获得「${item?.name||r.item_id}」`):'本次未命中']
+      if(r.refund)parts.push(`返还 ${r.refund} D币`)
+      if(r.reward)parts.push(`补偿 ${r.reward} D币`)
+      if(card)parts.push(`卡片「${card.name}」${r.card_duplicate?'重复':'新卡'}`)
+      await bubbles(parts.join(' · '),rows)
+     }else{
+      const wins=rows.filter(x=>x.won).length,newCards=rows.filter(x=>x.card_id&&!x.card_duplicate).length,totalReturn=rows.reduce((sum,x)=>sum+(Number(x.reward)||0)+(Number(x.refund)||0),0)
+      const parts=[`六十连一次出炉，共 ${rows.length} 抽`,`命中 ${wins} 次`]
+      if(newCards)parts.push(`新卡片 ${newCards} 张`)
+      if(totalReturn)parts.push(`共返还/补偿 ${totalReturn} D币`)
+      await bubbles(parts.join(' · '),rows)
      }
-     busy=false;progressBox.hidden=true;await bubbles(stop.value?`已停止后续抽取，完成 ${completed}/60 抽`:`六十连完成，共 ${completed} 抽`,rows)
-    }catch(e){busy=false;progressBox.hidden=true;if(!live())return;await bubbles(`已完成 ${completed}/60 抽，${e.message||'请稍后重试'}`,rows)}
+    }catch(e){busy=false;if(!live())return;if([400,401,403,409].includes(e.status)){rememberBubble(null);await bubbles(e.message,records)}else{status.textContent=e.message||'结算状态未确认';actions.replaceChildren(btn('恢复上一笔',()=>payBubble(payload),{class:'ic-primary'}))}}
    }
-   const single=btn('抽一张 · 100 D币',()=>payBubble({id:crypto.randomUUID()}),{class:'ic-primary',disabled:!state.items.length||state.balance<100}),batch=btn('六十连 · 6000 D币',payBubbleBatch,{class:'ic-primary',disabled:!state.items.length||state.balance<6000})
+   const single=btn('抽一张 · 100 D币',()=>payBubble({id:crypto.randomUUID(),count:1}),{class:'ic-primary',disabled:!state.items.length||state.balance<100}),batch=btn('六十连 · 6000 D币',()=>payBubble({id:crypto.randomUUID(),count:60}),{class:'ic-primary',disabled:!state.items.length||state.balance<6000})
    actions.append(...(pendingBubble?[btn('恢复上一笔',()=>payBubble(pendingBubble),{class:'ic-primary'})]:[single,batch]))
-   const hero=h('section',{class:'ic-bubble-hero'},h('div',null,h('span',{class:'ic-bubble-kicker'},'52B · LIMITED RUN'),h('h3',null,'白虎巡展 · 角色卡与气泡'),h('p',null,'每一次抽取都会留下卡片记录。连抽可以随时停止，已完成的抽取不会回滚。')),h('div',{class:'ic-bubble-odds'},h('strong',null,'5%'),h('span',null,'固定命中率')))
+   const hero=h('section',{class:'ic-bubble-hero'},h('div',null,h('span',{class:'ic-bubble-kicker'},'52B · LIMITED RUN'),h('h3',null,'白虎巡展 · 角色卡与气泡'),h('p',null,'每一次抽取都会留下卡片记录。六十连一次结算，直接展示全部 60 抽结果。')),h('div',{class:'ic-bubble-odds'},h('strong',null,'5%'),h('span',null,'固定命中率')))
    const stats=h('div',{class:'ic-bubble-stat-grid'},h('div',null,h('small',null,'当前余额'),h('strong',null,`${state.balance} D币`)),h('div',null,h('small',null,'未命中次数'),h('strong',null,`${state.pity}/${state.pity_limit}`)),h('div',null,h('small',null,'保底倒计时'),h('strong',null,`${Math.max(1,state.pity_limit-state.pity)} 抽`)))
-   body.replaceChildren(h('section',{class:'ic-bubble-pool'},hero,stats,status,progressBox,run,actions,sample,h('p',{class:'ic-note ic-bubble-rule'},'固定 5% 命中率，不受金手指影响。未命中随机补偿 12—100000 D币，并获得一张角色卡；重复卡会记录重复次数。'),state.items.length?h('div',{class:'ic-bubble-list'},state.items.map(item=>h('article',null,h('div',null,h('strong',null,item.name),h('small',null,item.author+(item.owned?' · 已获得':''))),btn('预览',()=>sample.replaceChildren(h('div',{class:'ic-preview-heading'},h('strong',null,item.name),btn('关闭预览',()=>sample.replaceChildren())),h('div',{class:'ic-actual-preview'},item.id==='owner-52di'?owner52Identity(doc):h('span',{class:'cm-text cskin-bubble cskin-bubble-'+item.id},'这是气泡预览'))))))):h('p',{class:'ic-trial-empty'},'限定气泡池暂未上新。')))
+   body.replaceChildren(h('section',{class:'ic-bubble-pool'},hero,stats,status,actions,run,sample,h('p',{class:'ic-note ic-bubble-rule'},'固定 5% 命中率，不受金手指影响。未命中随机补偿 12—100000 D币，并获得一张角色卡；重复卡会记录重复次数。'),state.items.length?h('div',{class:'ic-bubble-list'},state.items.map(item=>h('article',null,h('div',null,h('strong',null,item.name),h('small',null,item.author+(item.owned?' · 已获得':''))),btn('预览',()=>sample.replaceChildren(h('div',{class:'ic-preview-heading'},h('strong',null,item.name),btn('关闭预览',()=>sample.replaceChildren())),h('div',{class:'ic-actual-preview'},item.id==='owner-52di'?owner52Identity(doc):h('span',{class:'cm-text cskin-bubble cskin-bubble-'+item.id},'这是气泡预览'))))))):h('p',{class:'ic-trial-empty'},'限定气泡池暂未上新。')))
   }catch(e){if(live()&&n===epoch)body.replaceChildren(errorBox(e,()=>bubbles()))}
  }
  async function pay(payload){
