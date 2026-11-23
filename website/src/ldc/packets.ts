@@ -40,7 +40,7 @@ export async function nativeCreation(c:C,b:Record<string,unknown>,u:User,id:stri
   }else game=cleanGame(b)
   if(provider==='coin52'&&total%100)throw Error('D币奖励必须为整数')
   if(['guess','clues'].includes(game.mode)){multi=multiwinnerOptions(b,total,provider==='coin52'?100:1);slots=multi.slots}
-  else slots=splitAmount(provider==='coin52'?total/100:total,Number(b.count),game.mode).map(n=>provider==='coin52'?n*100:n)
+  else slots=splitAmount(total,Number(b.count),game.mode,provider)
  }catch(e){fail(400,(e as Error).message)}
  const exclusive=b.exclusive_user_id==null?null:Number(b.exclusive_user_id)
  if(exclusive!==null){
@@ -91,7 +91,7 @@ export async function puzzleRewardCreation(c:C,b:Record<string,unknown>,u:User,i
  if(!['fixed','random'].includes(kind))fail(400,'请选择均分或拼手气奖励')
  if(!Number.isInteger(minutes)||minutes<1||minutes>1440)fail(400,'奖励有效期需为1–1440分钟')
  let total:number,slots:number[]
- try{total=rewardCents(b.ldc_amount,provider);if(provider==='coin52'&&total%100)throw Error('D币奖励必须为整数');slots=splitAmount(provider==='coin52'?total/100:total,count,kind).map(n=>provider==='coin52'?n*100:n)}catch(error){fail(400,(error as Error).message)}
+ try{total=rewardCents(b.ldc_amount,provider);slots=splitAmount(total,count,kind,provider)}catch(error){fail(400,(error as Error).message)}
  const capacityGuard=await fishCreationGuard(c,account!,total!,id)
  const created=now(),awards=slots!.map((amount_cents,slot)=>({id:crypto.randomUUID(),slot,amount_cents,order_no:'jh-'+crypto.randomUUID().replaceAll('-','')}))
  return [

@@ -311,7 +311,7 @@ CREATE TABLE coin52_packets (
  owner_id INTEGER NOT NULL REFERENCES users(id),
  group_id INTEGER NOT NULL,
  mode TEXT NOT NULL CHECK(mode IN ('fixed','random')),
- total INTEGER NOT NULL CHECK(total BETWEEN 1 AND 1000000),
+ total INTEGER NOT NULL CHECK(total BETWEEN 1 AND 5000000),
  count INTEGER NOT NULL CHECK(count BETWEEN 1 AND 100),
  remaining INTEGER NOT NULL CHECK(remaining>=0 AND remaining<=total),
  remaining_count INTEGER NOT NULL CHECK(remaining_count>=0 AND remaining_count<=count),
@@ -1188,7 +1188,7 @@ CREATE TABLE ldc_packets (
  ends_at INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'open' CHECK(state IN ('open','closed')),
  answer_box TEXT, hints_json TEXT NOT NULL DEFAULT '[]', created_at INTEGER NOT NULL,
  question_count INTEGER NOT NULL DEFAULT 0
-, group_id INTEGER, game_version INTEGER NOT NULL DEFAULT 0, response_mode TEXT NOT NULL DEFAULT 'yesno' CHECK(response_mode IN ('yesno','similarity')), answer_length INTEGER NOT NULL DEFAULT 0, guess_count INTEGER NOT NULL DEFAULT 0, ai_count INTEGER NOT NULL DEFAULT 0, hints_box TEXT, hints_revealed INTEGER NOT NULL DEFAULT 0, hint_at INTEGER NOT NULL DEFAULT 0, room_revision INTEGER NOT NULL DEFAULT 0, auto_hint_every INTEGER NOT NULL DEFAULT 0 CHECK(auto_hint_every BETWEEN 0 AND 1000), extra_hints_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(extra_hints_json) AND json_type(extra_hints_json)='array'), judge_context_box TEXT, generated INTEGER NOT NULL DEFAULT 0 CHECK(generated IN (0,1)), hint_source TEXT NOT NULL DEFAULT 'legacy' CHECK(hint_source IN('legacy','ai','preset')), preset_hint_trigger TEXT NOT NULL DEFAULT 'cooldown' CHECK(preset_hint_trigger IN('cooldown','guesses')), hint_cooldown_seconds INTEGER NOT NULL DEFAULT 30 CHECK(hint_cooldown_seconds BETWEEN 1 AND 86400), auto_hint_increment INTEGER NOT NULL DEFAULT 0 CHECK(auto_hint_increment BETWEEN 0 AND 1000), escalation_every INTEGER NOT NULL DEFAULT 0, escalation_step_cents INTEGER NOT NULL DEFAULT 0, escalation_cap_cents INTEGER NOT NULL DEFAULT 0, base_total_cents INTEGER NOT NULL DEFAULT 0, added_reward_cents INTEGER NOT NULL DEFAULT 0, reward_finalized INTEGER NOT NULL DEFAULT 0, author_rule_version INTEGER NOT NULL DEFAULT 0, author_result_saved INTEGER NOT NULL DEFAULT 0, hundred_reached INTEGER NOT NULL DEFAULT 0, payment_provider TEXT NOT NULL DEFAULT 'credit' CHECK(payment_provider IN ('credit','fish','coin52')), answer_reference_box TEXT, hidden_winners INTEGER NOT NULL DEFAULT 0 CHECK(hidden_winners BETWEEN 0 AND 9), guess_weights_json TEXT NOT NULL DEFAULT '[10000]', reward_freeze_ai_count INTEGER, close_kind TEXT CHECK(close_kind IN('cancel','vote','force')), close_token TEXT, exclusive_user_id INTEGER REFERENCES users(id), total_cents INTEGER NOT NULL DEFAULT 1 CHECK(total_cents BETWEEN 1 AND CASE WHEN payment_provider='coin52' THEN 20000000 ELSE 200000 END));
+, group_id INTEGER, game_version INTEGER NOT NULL DEFAULT 0, response_mode TEXT NOT NULL DEFAULT 'yesno' CHECK(response_mode IN ('yesno','similarity')), answer_length INTEGER NOT NULL DEFAULT 0, guess_count INTEGER NOT NULL DEFAULT 0, ai_count INTEGER NOT NULL DEFAULT 0, hints_box TEXT, hints_revealed INTEGER NOT NULL DEFAULT 0, hint_at INTEGER NOT NULL DEFAULT 0, room_revision INTEGER NOT NULL DEFAULT 0, auto_hint_every INTEGER NOT NULL DEFAULT 0 CHECK(auto_hint_every BETWEEN 0 AND 1000), extra_hints_json TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(extra_hints_json) AND json_type(extra_hints_json)='array'), judge_context_box TEXT, generated INTEGER NOT NULL DEFAULT 0 CHECK(generated IN (0,1)), hint_source TEXT NOT NULL DEFAULT 'legacy' CHECK(hint_source IN('legacy','ai','preset')), preset_hint_trigger TEXT NOT NULL DEFAULT 'cooldown' CHECK(preset_hint_trigger IN('cooldown','guesses')), hint_cooldown_seconds INTEGER NOT NULL DEFAULT 30 CHECK(hint_cooldown_seconds BETWEEN 1 AND 86400), auto_hint_increment INTEGER NOT NULL DEFAULT 0 CHECK(auto_hint_increment BETWEEN 0 AND 1000), escalation_every INTEGER NOT NULL DEFAULT 0, escalation_step_cents INTEGER NOT NULL DEFAULT 0, escalation_cap_cents INTEGER NOT NULL DEFAULT 0, base_total_cents INTEGER NOT NULL DEFAULT 0, added_reward_cents INTEGER NOT NULL DEFAULT 0, reward_finalized INTEGER NOT NULL DEFAULT 0, author_rule_version INTEGER NOT NULL DEFAULT 0, author_result_saved INTEGER NOT NULL DEFAULT 0, hundred_reached INTEGER NOT NULL DEFAULT 0, payment_provider TEXT NOT NULL DEFAULT 'credit' CHECK(payment_provider IN ('credit','fish','coin52')), answer_reference_box TEXT, hidden_winners INTEGER NOT NULL DEFAULT 0 CHECK(hidden_winners BETWEEN 0 AND 9), guess_weights_json TEXT NOT NULL DEFAULT '[10000]', reward_freeze_ai_count INTEGER, close_kind TEXT CHECK(close_kind IN('cancel','vote','force')), close_token TEXT, exclusive_user_id INTEGER REFERENCES users(id), total_cents INTEGER NOT NULL DEFAULT 1 CHECK(total_cents BETWEEN 1 AND CASE WHEN payment_provider='coin52' THEN 500000000 ELSE 200000 END));
 
 CREATE TABLE ldc_question_cache (
  packet_id TEXT NOT NULL REFERENCES ldc_packets(packet_id), cache_key TEXT NOT NULL,
@@ -1342,6 +1342,13 @@ CREATE TABLE official_title_log (
 );
 
 CREATE TABLE packet_coin_escrows(packet_id TEXT PRIMARY KEY REFERENCES ldc_packets(packet_id),owner_id INTEGER NOT NULL REFERENCES users(id),reserved INTEGER NOT NULL CHECK(reserved>0),remaining INTEGER NOT NULL CHECK(remaining>=0 AND remaining<=reserved),created_at INTEGER NOT NULL,refunded_at INTEGER);
+
+CREATE TABLE packet_coin_reservation_checks(packet_id TEXT NOT NULL);
+
+CREATE TRIGGER packet_coin_reservation_check BEFORE INSERT ON packet_coin_reservation_checks BEGIN
+ SELECT CASE WHEN EXISTS(SELECT 1 FROM packet_coin_escrows WHERE packet_id=NEW.packet_id)
+  THEN RAISE(IGNORE) ELSE RAISE(ABORT,'dcoin_balance_insufficient') END;
+END;
 
 CREATE TABLE packet_draw_entries(packet_id TEXT NOT NULL REFERENCES packet_draws(packet_id),user_id INTEGER NOT NULL REFERENCES users(id),subject TEXT NOT NULL,username TEXT NOT NULL,priority TEXT NOT NULL,entered_at INTEGER NOT NULL,PRIMARY KEY(packet_id,user_id),UNIQUE(packet_id,subject));
 

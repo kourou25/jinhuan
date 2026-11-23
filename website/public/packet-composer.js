@@ -1,3 +1,4 @@
+import {DCOIN_PACKET_MAX} from '/dcoin-packet-rules.js'
 import {nativeCreateForm} from '/redpacket-native.js'
 import {packetFundingPanel} from '/packet-funding.js'
 import {dcoinIcon} from '/dcoin.js'
@@ -28,7 +29,7 @@ export function createPacketComposer(options){
   let paymentProvider=funding.provider(),coin=paymentProvider==='coin52',unit=coin?'D币':'LDC'
   const field=(name,node,help)=>h('label',{class:'rpk-field'},h('span',null,name),node,help&&h('small',null,help)),input=(name,props={})=>h('input',{class:'rpk-input','aria-label':name,...props})
   const nonce=crypto.randomUUID(),info=h('p',{class:'rpk-status',role:'status'})
-  const amount=input('奖励总额 · '+unit,{inputmode:'decimal',placeholder:coin?'1–200000 整数':'0.01–2000',required:true}),count=input('奖励份数',{type:'number',min:1,max:100,value:1,required:true}),minutes=input('有效期 · 分钟',{type:'number',min:1,max:1440,value:1440})
+  const amount=input('奖励总额 · '+unit,{inputmode:'decimal',placeholder:coin?`1–${DCOIN_PACKET_MAX} 整数`:'0.01–2000',required:true}),count=input('奖励份数',{type:'number',min:1,max:100,value:1,required:true}),minutes=input('有效期 · 分钟',{type:'number',min:1,max:1440,value:1440})
   const kind=h('select',{class:'rpk-input','aria-label':'分配方式'},h('option',{value:'random'},'拼手气'),h('option',{value:'fixed'},'均分'))
   const phrase=h('textarea',{class:'rpk-input','aria-label':'复读内容',rows:3,maxlength:2000,required:mode==='phrase',placeholder:'1–1000字；领取者在群里发送完整复读内容'}),phraseCount=h('small',{class:'rpk-count'},'0 / 1000')
   phrase.addEventListener('input',()=>{phraseCount.textContent=[...phrase.value.normalize('NFC').trim()].length+' / 1000'})
@@ -73,7 +74,7 @@ export function createPacketComposer(options){
    const windows=h('div',{class:'rpk-windows',role:'group','aria-label':'选择清晰窗口'},...Array.from({length:9},(_,i)=>{const b=button(String(i+1),()=>{const next=maskBits^(1<<i);if(next){maskBits=next;drawChosen()}});b.setAttribute('aria-pressed',String(!!(maskBits&(1<<i))));b.setAttribute('aria-label',`清晰区域 ${i+1}`);return b}))
    chosen.replaceChildren(h('strong',null,`已选 No.${selected.id}`),images,preview({u:selected.images[selectedIndex].u,nsfw:selected.sensitive||selected.spoiler,bits:maskBits,creator:true}),h('div',{class:'rpk-window-row'},h('p',{class:'rpk-help'},'点选清晰区域'),windows))
   }
-  form.setFunding=provider=>{paymentProvider=provider;coin=provider==='coin52';unit=coin?'D币':'LDC';amountField.firstChild.textContent='总额 · '+unit;amount.setAttribute('aria-label','红包总额');amount.placeholder=coin?'1–200000 整数':'0.01–2000'}
+  form.setFunding=provider=>{paymentProvider=provider;coin=provider==='coin52';unit=coin?'D币':'LDC';amountField.firstChild.textContent='总额 · '+unit;amount.setAttribute('aria-label','红包总额');amount.placeholder=coin?`1–${DCOIN_PACKET_MAX} 整数`:'0.01–2000'}
   form.footer=form.querySelector('.rpk-create-footer');submit.setAttribute('form',form.id)
   return form
  }

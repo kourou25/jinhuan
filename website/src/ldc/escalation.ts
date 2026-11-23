@@ -4,6 +4,7 @@ import {fail} from '../lib/http'
 import {now} from '../lib/time'
 import {rewardCents} from './core'
 import {gameStores} from './game-store'
+import {DCOIN_PACKET_MAX} from '../shared/dcoin-packet-rules'
 
 export async function authorPolicy(env:Env,uid:number){
  const p=await env.DB.prepare('SELECT bad_streak,good_streak,restricted FROM guess_author_policies WHERE owner_id=?').bind(uid).first<{bad_streak:number;good_streak:number;restricted:number}>()
@@ -12,7 +13,7 @@ export async function authorPolicy(env:Env,uid:number){
 export async function escalationOptions(c:C,b:Record<string,unknown>,uid:number,total:number){
  const every=b.escalation_every??0
  if(typeof every!=='number'||!Number.isInteger(every)||every<0||every>300)fail(400,'追加奖励间隔需为1–300次，0为关闭')
- const coin=b.payment_provider==='coin52',limit=coin?20000000:200000,unit=coin?'D币':'LDC'
+ const coin=b.payment_provider==='coin52',limit=coin?DCOIN_PACKET_MAX*100:200000,unit=coin?'D币':'LDC'
  let step=0,cap=0
  if(every){
   if(b.provider==='free_guess'||!['guess','clues'].includes(String(b.mode)))fail(400,'追加奖励仅用于有奖励的猜词')
