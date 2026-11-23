@@ -32,6 +32,7 @@ export async function mainAccessGate(c:C,next:()=>Promise<void>){
  // 2026-11-04 起主站不再需要邀请码激活；环境变量 MAIN_ACTIVATION="required" 可恢复
  if(c.env.MAIN_ACTIVATION!=='required'||host==='play.jinhuan.example'||c.get('user')?.main_activated_at){await next();return}
  if(path==='/api/me')return c.json({user:null,main_activation_required:true})
+ if(c.req.method==='POST'&&/^\/api\/chat-bots\/[a-f0-9-]{36}\/messages$/.test(path)){await next();return}
  if(path==='/activate'||path==='/api/main-access'||path.startsWith('/auth/')||path.startsWith('/api/auth/')||path.startsWith('/api/invites/')||path.startsWith('/api/me/account')||path.startsWith('/api/me/bind/')||path==='/api/me'||path==='/api/config'||/^\/(?:login|register|reset|welcome|i)(?:\/|$)/.test(path)||path.startsWith('/img/')||path==='/ext'||path.startsWith('/assets/')||/\.(?:js|css|woff2?|png|webp|svg|ico|html)$/.test(path)){await next();return}
  c.header('cache-control','no-store')
  if(path.startsWith('/api/'))return c.json({error:'主站需要邀请码激活；VIP游戏站仍可访问',code:'main_activation_required',activation_url:'/activate'},403)

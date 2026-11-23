@@ -17,4 +17,6 @@ npm run build
 
 `schema.sql` 用于初始化全新的数据库，包含结构和公共规则初始值。自行部署时，使用自己创建的 D1 和 R2，填写 `wrangler.toml` 中的资源绑定。OAuth、邮件和第三方服务使用自己的应用配置及秘密。示例域名 `jinhuan.example`、`play.jinhuan.example`、`fish.jinhuan.example` 用于标记拆分部署的地址。跨实例登录、游戏 Worker 服务绑定和外部服务需要额外配置。测试登录密钥仅用于本地开发。
 
+群机器人安装、推送和双向回调的配置见[群机器人 Webhook](bot-webhooks.md)。
+
 壁纸及表情目录为空。从导航栏打开鱼鱼谷，或登录后访问 `/valley`。鱼鱼谷使用程序绘制和附带许可的 CC0 地图素材。

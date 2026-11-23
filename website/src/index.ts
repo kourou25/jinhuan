@@ -70,6 +70,8 @@ import { canDeleteComment, deleteComment } from './services/comments'
 import {AiError} from './ai/errors'
 import {chatRankView} from './services/chat-rank'
 import {needMember,assertCurrentAccess,CHAT_HISTORY_FLOOR,type ChatGroup} from './services/chat-access'
+import {botCommandInsert,deliverBotEvent,pruneBotEvents,runBotDeliveries} from './services/chat-bots'
+import {chatBots} from './routes/chat-bots'
 import { aiAlerts } from './ai/alerts'
 import { invites } from './routes/invites'
 import {randomImage} from './routes/random-image'
@@ -2290,12 +2292,13 @@ app.get('/api/chat/groups/:id/members', async (c) => {
   const { g } = await needMember(c, groupId(c))
   // @ 补全不需要装扮、简介和成员管理字段，沿用同一鉴权与排序。
   if (c.req.query('view') === 'mention') {
-    const { results } = await c.env.DB.prepare(
+    const [members, bots] = await c.env.DB.batch([c.env.DB.prepare(
       `SELECT u.username, u.name, u.avatar FROM chat_members cm
        JOIN users u ON u.id = cm.user_id WHERE cm.group_id = ? AND u.kind='user'
        ORDER BY (u.last_seen > ?) DESC, cm.joined_at ASC, cm.rowid ASC LIMIT 300`,
-    ).bind(g.id, now() - 180).all()
-    return c.json({ members: results })
+    ).bind(g.id, now() - 180), c.env.DB.prepare(`SELECT u.username,u.name,u.avatar FROM chat_bot_installations i
+      JOIN users u ON u.id=i.bot_id AND u.kind='bot' AND u.disabled=0 WHERE i.group_id=? AND i.enabled=1 ORDER BY i.created_at,i.id`).bind(g.id)])
+    return c.json({ members: [...bots.results, ...members.results] })
   }
   const [list, total] = await c.env.DB.batch([
     c.env.DB.prepare(
@@ -2676,16 +2679,20 @@ app.post('/api/chat/groups/:id/messages', async (c) => {
   const mediaJson = multi ? JSON.stringify(media) : null
   const roadAttachments = media.length ? media.filter((m) => m.kind !== 'f').map(toGallery)
     : key ? [{ u: `/img/${key}`, w: dims.w, h: dims.h }] : []
+  const botEvent = botCommandInsert(db, g.id, body, t, !!c.env.CHAT_BOT_WEBHOOK_KEY)
   const committed = await commitUploadContent(db,u.id,legacyUpload?[legacyUpload]:mediaKeys(media),[...(favoriteGuard?[favoriteGuard]:[]),db.prepare(
     `INSERT INTO chat_messages (group_id, user_id, body, image_key, width, height, media, reply_to, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
   ).bind(g.id, u.id, body, key, key ? dims.w || null : null, key ? dims.h || null : null,
-    mediaJson, replyTo || null, t, t), ...chatRoadStatements(db, null, body, roadAttachments, t)]).catch(error=>{
+    mediaJson, replyTo || null, t, t), ...(botEvent ? [botEvent.statement] : []), ...chatRoadStatements(db, null, body, roadAttachments, t)]).catch(error=>{
       if(String(error).includes('favorite_source_changed'))fail(409,'来源消息已变化，请重新打开收藏')
       throw error
     })
   const inserted=committed[favoriteGuard?1:0]
   const id = (inserted.results[0] as { id: number }).id
+  if (botEvent && committed[favoriteGuard ? 2 : 1].results.length) {
+    c.executionCtx.waitUntil(deliverBotEvent(c.env, botEvent.id).catch(() => console.error('chat_bot_delivery_failed')))
+  }
   const shared = sharedPacket(body)
   if (shared) await db.batch(sharedPacketStatements(db, id, body, shared))
   c.executionCtx.waitUntil(handleNativeGameMessage(c,{id,group_id:g.id,reply_to:replyTo,body},u).catch(()=>console.error('ldc_chat_result_write_failed')))
@@ -2705,7 +2712,7 @@ async function chatMessage(c: C) {
   if (!m) fail(404, '消息不存在')
   const {g}=await needMember(c, m!.group_id)
   if(m!.created_at<g.joined_at||m!.id<g.history_floor)fail(404,'消息不在你的可见范围内')
-  if (m!.system_kind && c.req.method !== 'GET' && !(c.req.method === 'DELETE' && isChatAdmin(u))) fail(400, '系统提醒不能修改或回应')
+  if (m!.system_kind && m!.system_kind !== 'chat_bot' && c.req.method !== 'GET' && !(c.req.method === 'DELETE' && isChatAdmin(u))) fail(400, '系统提醒不能修改或回应')
   return { u, m: m!, g }
 }
 
@@ -3768,6 +3775,7 @@ app.route('/', platform)
 app.route('/', aiAdmin)
 app.route('/', aiChat)
 app.route('/', nativeLdc)
+app.route('/', chatBots)
 app.route('/', fishFunding)
 app.route('/', dm)
 app.route('/', chatStickers)
@@ -3821,6 +3829,8 @@ export default {
         {name:'coin_pools',run:()=>settleCoinPools(env.DB,t)},
         {name:'title_raffle',run:()=>drawDueTitleRaffle(env.DB,Math.floor(Date.now()/1000))},
         {name:'web_push',run:()=>runWebPush(env,t)},
+        {name:'chat_bots',run:()=>runBotDeliveries(env,t)},
+        {name:'chat_bot_retention',every:5,run:()=>pruneBotEvents(env.DB,t)},
 
         {name:'history_words',every:5,offset:1,run:()=>importHistoryWords(env)},
         {name:'sidebar_retention',every:15,offset:2,run:()=>cleanupSidebar(env)},

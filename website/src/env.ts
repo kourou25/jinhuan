@@ -1,5 +1,7 @@
 export interface Env {
   DB: D1Database
+  CHAT_BOT_WEBHOOK_KEY?: string
+  CHAT_BOT_WEBHOOK_ORIGINS?: string
   RANDOM_IMAGE_ENDPOINT?: string
   MUSIC_ORIGIN?: string
   MUSIC_TOKEN?: string

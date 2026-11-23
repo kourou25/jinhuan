@@ -9817,14 +9817,15 @@ function chatMsg(m, { cont, pane, pending } = {}) {
   const protected52 = isOwner52Suit(personalOf(m.user, 'chat')?.id)
   const shieldColor = ['green','blue','purple','black'][Math.abs(Number(m.id || 0)) % 4]
   const face = h('button', { class: 'cm-face' + (protected52 ? ' di52-protected-face' : ''), type: 'button', title: canAt ? `${who} · 右键或长按 @TA` : who, 'data-pop': 'u' + m.user.username, 'data-di52-protected': protected52 ? 'true' : null, 'data-di52-shield': protected52 ? shieldColor : null, onclick: card }, avatar(m.user.avatar, who, 36), protected52 && h('span', { class: 'di52-shield', 'aria-hidden': 'true' }))
+  const botMessage = m.system_kind === 'chat_bot'
   const body = []
   let ref = null
   if (m.deleted) body.push(h('div', { class: 'cm-gone' }, `${m.mine ? '你' : who} 撤回了一条消息`))
   else {
     if (m.reply_to) ref = chatReference(m.reply_to, pane)
     // 正文里贴了图片直链：显示成图；整条只有这个链接时就不再画文字气泡
-    const excerpt=!m.redpack && parseNovelExcerpt(m.body||'')
-    const lnk = !excerpt && m.body ? bodyImgUrl(m.body) : null
+    const excerpt=!botMessage && !m.redpack && parseNovelExcerpt(m.body||'')
+    const lnk = !botMessage && !excerpt && m.body ? bodyImgUrl(m.body) : null
     const edited = m.edited_at && h('span', { class: 'cm-edited', title: '编辑于 ' + new Date(m.edited_at * 1000).toLocaleString('zh-CN', { hour12: false }) }, '（已编辑）')
     if (m.road_id) body.push(h('a', { class: 'cm-road', href: `/road?item=${m.road_id}`, 'data-link': '' }, `已转到鞭打 #${m.road_id}`))
     if (m.redpack) body.push(h('button', { type: 'button', class: 'cm-redpack' + (m.redpack.solved ? ' is-open' : ''), 'aria-label': '打开红包',
@@ -9836,11 +9837,12 @@ function chatMsg(m, { cont, pane, pending } = {}) {
       h('span', { class: 'cm-redpack-foot' }, m.redpack.game==='free_guess'?'进入猜词专区':m.redpack.snapshot?.claimed ? '已领取' : ({exhausted:'被抢光啦',expired:'已过期',cancelled:'已取消',registered:'等待开奖',drawing:'正在开奖',not_won:'未中奖',payment_pending:'等待发放',simulation:'模拟奖励',draft:'尚未开放',unconfirmed:'结果待核对'})[m.redpack.snapshot?.state] || (m.redpack.draw?.kind==='lottery'?'参与 / 查看抽奖':m.redpack.provider && m.redpack.provider!=='native' || m.redpack.solved ? '查看红包' : '戳我拆开'), h('span', null, (m.redpack.provider==='coin52'||m.redpack.payment_provider==='coin52')?dcoinIcon(h):m.redpack.game==='free_guess'?'猜词游戏':m.redpack.game==='ldc'||m.redpack.provider && m.redpack.provider!=='native'?'LDC 红包':m.redpack.ldc_count!=null?`${m.redpack.ldc_count} 份奖励 · ${m.redpack.opened} 人拆封`:`${m.redpack.opened} 人拆过`))))
     const displayBody=excerpt?m.body:m.redpack?m.body:socialMessageText(m.body||'')
     if(excerpt)body.push(h('div',{class:'cm-text cm-novel-outer'},novelExcerptCard(excerpt,h),edited))
-    if (!excerpt && (!m.redpack || m.redpack.shared) && displayBody && !lnk?.only) body.push(h('div', stkOnly(displayBody) ? { class:'cm-text stk-only' } : bubbleView(m.user, 'cm-text','chat',false,m.id),
+    if (botMessage) body.push(h('div', { class: 'cm-text cm-bot-text' }, m.body))
+    else if (!excerpt && (!m.redpack || m.redpack.shared) && displayBody && !lnk?.only) body.push(h('div', stkOnly(displayBody) ? { class:'cm-text stk-only' } : bubbleView(m.user, 'cm-text','chat',false,m.id),
       (raffleOf(m.user)||personalOf(m.user,'chat')) ? h('span', { class:'ds-copy rt-copy' }, richBody(displayBody, { md:'lite' }), edited) : [richBody(displayBody, { md: 'lite' }), edited]))
     if (lnk) body.push(linkImg(lnk.url, lnk.only && edited))
     if (m.media_expired) body.push(h('div', { class:'cm-gone', role:'note' }, '附件已超过七天，无法查看'))
-    if (!pending && !excerpt) body.push(...socialCards(m,{h,api,onRemoval,onOpenMedia:openSocialMedia,renderVideo:im=>mediaVideo(im),onPost:(anchor,index)=>m.meme_id?navigate('/m/'+m.meme_id):chatToPost(m,pane,anchor,'social-post-'+m.id,index)}))
+    if (!botMessage && !pending && !excerpt) body.push(...socialCards(m,{h,api,onRemoval,onOpenMedia:openSocialMedia,renderVideo:im=>mediaVideo(im),onPost:(anchor,index)=>m.meme_id?navigate('/m/'+m.meme_id):chatToPost(m,pane,anchor,'social-post-'+m.id,index)}))
     const all = m.redpack && !m.redpack.shared ? [] : m.media?.length ? m.media : m.image ? [{ u: m.image, w: m.width, h: m.height }] : []
     const files = all.filter((x) => x.k === 'f')
     const media = all.filter((x) => x.k !== 'f')
@@ -9978,6 +9980,7 @@ function chatMsg(m, { cont, pane, pending } = {}) {
   h('div', { class: 'cm-main' },
     !cont && h('div', { class: 'cm-head' },
       compactIdentity(m.user, 'chat', uName('button', m.user, { class: 'cm-name', type: 'button', title: canAt ? `@${m.user.username}` : who, 'data-pop': 'u' + m.user.username, onclick: at }, who, 'chat')[0]),
+      botMessage && h('span', { class: 'role-tag' }, '机器人'),
       h('time', { title: new Date(m.created_at * 1000).toLocaleString('zh-CN', { hour12: false }) }, clock(m.created_at)),
       m.floor && h('span', { class: 'cm-floor' }, m.floor + '楼')),
     ref && h('div', { class: 'cm-ref-row' }, ref),
@@ -10641,6 +10644,21 @@ async function groupPanel(g, { outside, section } = {}) {
   if (!current()) return
   const admin = CHAT.canManage
   const filesSection = groupFiles(g)
+  const botSection = h('div')
+  let botPanel
+  async function openBots() {
+    if (!admin || botPanel || !current()) return
+    try {
+      const { groupChatBots } = await import('/group-chat-bots.js')
+      if (!current() || botPanel) return
+      botPanel = groupChatBots({ h, api, groupId: g.id, onChange: () => MEMBERS.delete(g.id) })
+      botSection.replaceChildren(botPanel.element)
+      await botPanel.open()
+    } catch (error) {
+      botSection.replaceChildren(h('p', { class: 'gp-note muted' }, error.message),
+        h('button', { class: 'btn btn-ghost sm', type: 'button', onclick: openBots }, '重试'))
+    }
+  }
   const changed = async () => { await load(); if (current()) draw(); loadGroups() }
   const leave = async () => {
     if (!confirm(`退出「${d.group.name}」？${d.group.is_default ? '默认群退了之后，管理员可以再把你拉回来。' : ''}`)) return
@@ -10800,9 +10818,10 @@ async function groupPanel(g, { outside, section } = {}) {
         if(!confirm(`解散「${d.group.name}」？聊天记录和图片会一起删除，不能恢复。`))return
         try{await api(`/chat/groups/${g.id}`,{method:'DELETE'});toast('群已解散');close();await loadGroups();afterGroupGone(g.id)}catch(e){toast(e.message,'err')}
       }},'解散这个群'))
-    const categories=settingsSections({h,label:'群设置分类',sections:[
+    const categories=settingsSections({h,label:'群设置分类',onSelect:id=>{if(id==='bots')openBots()},sections:[
       {id:'members',label:'群成员',keywords:'人员 搜索 昵称 用户名 拉人 限制 移出',nodes:[add,h('div',{class:'gp-mhead'},h('h4',{class:'gp-h'},'成员',count),msearch),listBox,partial]},
       {id:'info',label:'群资料',keywords:'群名 改名 公告 群规 引用',nodes:[rename,noticeSec()]},
+      {id:'bots',label:'群机器人',keywords:'机器人 推送 回调 指令',available:()=>admin,nodes:[botSection]},
       {id:'requests',label:'入群申请',keywords:'审批 同意 拒绝 退出 移出 拉回',available:()=>admin,nodes:[outsideBox]},
       {id:'resources',label:'文件与榜单',keywords:'下载 历史 文件 水群 早起 夜聊 排名',nodes:[filesSection,h('button',{class:'btn sm',type:'button',onclick:()=>chatRankPanel(g)},'水群榜 · 消息 / 早起 / 夜聊')]},
       {id:'preferences',label:'我的偏好',keywords:'免打扰 红包 提醒 离开 滚动 气泡 动画 装扮 隐藏 媒体 图片 视频 缩小',nodes:[

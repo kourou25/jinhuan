@@ -2161,3 +2161,11 @@ html:is([data-bubble-motion=pause],[data-page-hidden=true]) .cm-text.bb-aurora::
 .cm-text.bb-aurora>.rt-copy{position:relative;z-index:1}
 html .cm-row:not([data-bubble-live=true]) .cm-text.bb-aurora,html .cm-row:not([data-bubble-live=true]) .cm-text.bb-aurora::before,html .cm-row:not([data-bubble-live=true]) .cm-text.bb-aurora::after{animation:none!important}
 @media (prefers-reduced-motion:reduce){.cm-text.bb-aurora,.cm-text.bb-aurora::before,.cm-text.bb-aurora::after{animation:none!important}}
+
+.cm-bot-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.gp-bot-form, .gp-bot-field { display: grid; gap: 8px; }
+.gp-bot-field { min-width: 0; }
+.gp-bot-field .input { width: 100%; min-width: 0; }
+.gp-bot-item { padding: 12px; }
+.gp-bot-item + .gp-bot-item { border-top: 1px solid var(--line); }
+.gp-bot-logs { display: grid; gap: 4px; margin-top: 8px; }
