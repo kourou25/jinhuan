@@ -3,10 +3,15 @@ import type {C} from '../types'
 import {needUser} from './auth'
 import {fail} from '../lib/http'
 // 欢迎消息由现有入群触发器原子写入；复用其 ID 为分页提供下界。
-// 老数据没有欢迎消息时按 joined_at 过滤，不回填或扩大历史范围。
+// 老数据没有欢迎消息时，入群当秒的先后无法确认，从该秒之后开始展示。
 export const CHAT_HISTORY_FLOOR=`COALESCE((SELECT MAX(j.id) FROM chat_messages j INDEXED BY idx_chat_msg_user
- WHERE j.user_id=cm.user_id AND j.created_at=cm.joined_at AND j.group_id=cm.group_id AND j.system_kind='join'),0)`
+ WHERE j.user_id=cm.user_id AND j.created_at=cm.joined_at AND j.group_id=cm.group_id AND j.system_kind='join'),
+ (SELECT MAX(m.id)+1 FROM chat_messages m INDEXED BY idx_chat_msg_at WHERE m.created_at=cm.joined_at AND m.group_id=cm.group_id),0)`
 export type ChatGroup={id:number;name:string;is_default:number;created_at:number;joined_at:number;history_floor:number;last_read:number|null;away_from:number|null}
+export type ChatHistoryBoundary=Pick<ChatGroup,'joined_at'|'history_floor'>
+export function assertChatHistory(g:ChatHistoryBoundary,id:number,createdAt:number){
+ if(createdAt<g.joined_at||id<g.history_floor)fail(404,'消息不在你的可见范围内')
+}
 export async function needMember(c:C,gid:number,_legacyJoinDefault=false){
  const u=needUser(c)
  const g=await c.env.DB.prepare(`SELECT g.id,g.name,g.is_default,g.created_at,cm.joined_at,cm.last_read,cm.away_from,${CHAT_HISTORY_FLOOR} AS history_floor

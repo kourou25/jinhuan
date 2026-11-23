@@ -8273,6 +8273,7 @@ function packetAffectsBagBadge(message) {
 // 一个群的消息区 + 输入框：站内群聊页、飞书伪装、LINUX DO 聊天抽屉共用，外观由各自的 CSS 决定
 function chatPane(g, { onHead, targetDocument = document } = {}) {
   const st = { first: 0, last: 0, more: true, busy: false, olderFailed: false, since: 0, items: [], unreadAt: null, sentRead: 0, stick: true, done: false }
+  let historySince = 0, historyFloor = 0
   const positionKey = `${S.me?.id || 0}:${g.id}`
   let positionTimer = 0
   let aiPanel, aiLoading, bagTimer=0, bagLast=0, bagBusy=false, bagQueued=false
@@ -8593,6 +8594,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   const drawLifetime=new AbortController()
   let drawQueue=Promise.resolve()
   const add = (items, where, advance = true) => {
+    items = items.filter(m => m.created_at >= historySince && m.id >= historyFloor)
     if (where === 'live' && advance && items.length) st.last = Math.max(st.last, ...items.map(m => m.id))
     items = items.filter((m) => !rows.has(m.id))
     if (!items.length) return
@@ -8711,7 +8713,14 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       const d = await api(`/chat/groups/${g.id}/messages` + (st.first ? `?before=${st.first}` : around ? `?around=${around}` : ''))
       if (st.destroyed) return
       if (!scroller.isConnected && st.first) return
+      if (!initial && membershipChanged(d.group)) {
+        st.busy = false
+        await reopenForMembership(d.group)
+        return
+      }
       if (initial) {
+        historySince = d.group.history_since
+        historyFloor = d.group.history_floor || 0
         st.restoring = true
         st.stick = false
         st.followPaused = true
@@ -8769,6 +8778,19 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (loaded && st.more && scroller.scrollTop < 300 && scroller.isConnected && scroller.clientHeight) requestAnimationFrame(() => older())
   }
 
+  const membershipChanged = (group) => historySince !== group.history_since || historyFloor !== (group.history_floor || 0)
+  async function reopenForMembership(group) {
+    if (st.busy) return
+    historySince = group.history_since
+    historyFloor = group.history_floor || 0
+    closeHist()
+    closePop()
+    searchEl?.remove()
+    searchEl = null
+    if (st.reply) setReply(null, false)
+    await backToLatest()
+  }
+
   async function poll() {
     if (!st.done || st.polling) return
     if (!scroller.isConnected) return destroy()
@@ -8780,6 +8802,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       for (let batch = 0; batch < 5 && scroller.isConnected && st.done; batch++) {
       const d = await loadChatPoll(`/chat/groups/${g.id}/messages?after=${st.last}&since=${st.since}&include_total=0`)
       if (st.destroyed || !scroller.isConnected || revision !== listRevision) { more = false; return }
+      if (membershipChanged(d.group)) { more = false; await reopenForMembership(d.group); return }
       more = !!d.more && d.items.length > 0
       st.since = d.now
       const wasFollowing = st.stick && !st.followPaused
@@ -9393,7 +9416,8 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     }
     const input = h('input', { class: 'input', type: 'search', placeholder: '搜索消息内容，@用户名 只看某人', 'aria-label': '搜索聊天记录' })
     const onlyImg = h('input', { type: 'checkbox' })
-    const out = h('div', { class: 'cms-list' }, h('p', { class: 'muted cms-empty' }, '输入关键词搜索这个群的聊天记录'))
+    const searchHint = '只能搜索你本次入群后的消息'
+    const out = h('div', { class: 'cms-list' }, h('p', { class: 'muted cms-empty' }, searchHint))
     const close = () => { searchEl?.remove(); searchEl = null; (win.innerWidth <= 760 ? compose.querySelector('.cm-mobile-more') : ta)?.focus({ preventScroll: true }) }
     let t = 0
     let seq = 0
@@ -9401,7 +9425,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       const raw = input.value.trim()
       const user = (raw.match(/(?:^|\s)@(\S+)/) || [])[1] || ''
       const q = raw.replace(/(?:^|\s)@\S+/, '').trim()
-      if (!q && !user && !onlyImg.checked) { out.replaceChildren(h('p', { class: 'muted cms-empty' }, '输入关键词搜索这个群的聊天记录')); return }
+      if (!q && !user && !onlyImg.checked) { out.replaceChildren(h('p', { class: 'muted cms-empty' }, searchHint)); return }
       const my = ++seq
       if (!before) out.replaceChildren(h('div', { class: 'spinner' }))
       try {

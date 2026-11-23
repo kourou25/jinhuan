@@ -69,7 +69,7 @@ import {sendSleepReminder} from './services/sleep-reminder'
 import { canDeleteComment, deleteComment } from './services/comments'
 import {AiError} from './ai/errors'
 import {chatRankView} from './services/chat-rank'
-import {needMember,assertCurrentAccess,CHAT_HISTORY_FLOOR,type ChatGroup} from './services/chat-access'
+import {needMember,assertCurrentAccess,assertChatHistory,CHAT_HISTORY_FLOOR,type ChatGroup} from './services/chat-access'
 import { aiAlerts } from './ai/alerts'
 import { invites } from './routes/invites'
 import {randomImage} from './routes/random-image'
@@ -2063,22 +2063,22 @@ function refOf(r: { id: number; body: string; image_key: string | null; media: s
 // @ 已读：消息里 @ 到的群成员，last_read 过了这条就算看到了
 const AT_RE = /(?<![\w@.])@([A-Za-z0-9_][\w.-]{0,30}[\w])/g
 const atNames = (body: string) => [...new Set([...chatRefText(body, 4000).matchAll(AT_RE)].map((x) => x[1].toLowerCase()))].slice(0, 20)
-async function atReads(c: C, rows: { id: number; group_id: number; body: string; deleted: number }[]) {
+async function atReads(c: C, rows: { id: number; group_id: number; body: string; deleted: number; created_at: number }[]) {
   const out = new Map<number, Record<string, boolean>>()
   const want = rows.filter((r) => !r.deleted && r.body?.includes('@')).map((r) => ({ r, names: atNames(r.body) })).filter((x) => x.names.length)
   if (!want.length) return out
   const gids = [...new Set(want.map((x) => x.r.group_id))]
   const names = [...new Set(want.flatMap((x) => x.names))]
   const { results } = await c.env.DB.prepare(
-    `SELECT cm.group_id, lower(u.username) AS n, cm.last_read FROM json_each(?2) names
+    `SELECT cm.group_id, lower(u.username) AS n, cm.last_read, cm.joined_at, ${CHAT_HISTORY_FLOOR} AS history_floor FROM json_each(?2) names
      CROSS JOIN users u ON u.username = names.value COLLATE NOCASE
      CROSS JOIN chat_members cm ON cm.user_id = u.id
      WHERE cm.group_id IN (SELECT value FROM json_each(?1))`,
-  ).bind(JSON.stringify(gids), JSON.stringify(names)).all<{ group_id: number; n: string; last_read: number }>()
-  const lr = new Map(results.map((x) => [x.group_id + ':' + x.n, x.last_read]))
+  ).bind(JSON.stringify(gids), JSON.stringify(names)).all<{ group_id: number; n: string; last_read: number; joined_at: number; history_floor: number }>()
+  const lr = new Map(results.map((x) => [x.group_id + ':' + x.n, x]))
   for (const { r, names: ns } of want) {
     const o: Record<string, boolean> = {}
-    for (const n of ns) { const v = lr.get(r.group_id + ':' + n); if (v !== undefined) o[n] = v >= r.id }
+    for (const n of ns) { const v = lr.get(r.group_id + ':' + n); if (v && r.created_at >= v.joined_at && r.id >= v.history_floor) o[n] = v.last_read >= r.id }
     if (Object.keys(o).length) out.set(r.id, o)
   }
   return out
@@ -2112,9 +2112,11 @@ async function decorateMsgs(c: C, rows: ChatRow[]) {
     atReads(c, rows),
     // 反向引用：这一批里每条被多少条（没撤回的）消息回复过；走 idx_chat_msg_reply
     c.env.DB.prepare(
-      `SELECT reply_to AS id, COUNT(*) AS n FROM chat_messages
-       WHERE reply_to IN (SELECT value FROM json_each(?)) AND deleted = 0 GROUP BY reply_to`,
-    ).bind(ids).all<{ id: number; n: number }>(),
+      `SELECT x.reply_to AS id, COUNT(*) AS n FROM chat_messages x
+       JOIN chat_members cm ON cm.group_id=x.group_id AND cm.user_id=?2
+       WHERE x.reply_to IN (SELECT value FROM json_each(?1)) AND x.deleted=0
+         AND x.created_at>=cm.joined_at AND x.id>=${CHAT_HISTORY_FLOOR} GROUP BY x.reply_to`,
+    ).bind(ids,u?.id??0).all<{ id: number; n: number }>(),
     c.env.DB.prepare('SELECT source_msg_id AS mid, id FROM road_items INDEXED BY idx_road_source_msg WHERE source_msg_id IN (SELECT value FROM json_each(?)) AND hidden = 0 AND source_hidden = 0')
       .bind(ids).all<{ mid: number; id: number }>(),
     rows.some((r) => !r.deleted && (r.redpack_id || sharedPacket(r.body))) ? c.env.DB.prepare(
@@ -2185,8 +2187,8 @@ app.get('/api/chat/groups', async (c) => {
     `SELECT g.id, g.name, g.is_default, g.created_at, cm.last_read, cm.muted, g.notice, g.notice_at,
        g.member_count-(SELECT COUNT(*) FROM chat_members bm JOIN users bu ON bu.id=bm.user_id WHERE bm.group_id=g.id AND bu.kind='bot') AS members,
        (SELECT COUNT(*) FROM chat_members om JOIN users ou ON ou.id = om.user_id WHERE om.group_id = g.id AND ou.kind='user' AND ou.last_seen > ?3) AS online,
-       (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m WHERE m.group_id = g.id AND m.id > cm.last_read AND m.created_at>=cm.joined_at AND m.deleted = 0 AND m.user_id != ?1 LIMIT 100)) AS unread,
-       (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m INDEXED BY idx_chat_msg_at_unread WHERE m.group_id = g.id AND m.id > cm.last_read AND m.deleted = 0 AND m.user_id != ?1
+       (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m WHERE m.group_id = g.id AND m.id > MAX(cm.last_read,${CHAT_HISTORY_FLOOR}-1) AND m.created_at>=cm.joined_at AND m.deleted = 0 AND m.user_id != ?1 LIMIT 100)) AS unread,
+       (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m INDEXED BY idx_chat_msg_at_unread WHERE m.group_id = g.id AND m.id > MAX(cm.last_read,${CHAT_HISTORY_FLOOR}-1) AND m.deleted = 0 AND m.user_id != ?1
           AND m.created_at>=cm.joined_at AND instr(m.body,'@') > 0 AND m.body LIKE ?2 ESCAPE '\\' LIMIT 20)) AS at_me,
        l.id AS last_id, l.body AS last_body, l.image_key AS last_image, l.deleted AS last_deleted, l.created_at AS last_at,
        lu.username AS last_by, lu.name AS last_by_name
@@ -2542,7 +2544,7 @@ app.get('/api/chat/groups/:id/messages', async (c) => {
   if (!pollBatched && totalQuery) stat = await totalQuery.first<{ total: number | null }>()
   const items = (await decorateMsgs(c, rows)).map((m, i) => ({ ...m, floor: rows[i].seq }))
   return c.json({
-    group: { id: g.id, name: g.name, is_default: !!g.is_default, history_since:g.joined_at },
+    group: { id: g.id, name: g.name, is_default: !!g.is_default, history_since:g.joined_at, history_floor:g.history_floor },
     items, changed: await decorateMsgs(c, changed), more, ...(moreAfter !== undefined ? { more_after: moreAfter } : {}),
     ...(!skipTotal ? { total: stat?.total ?? 0 } : {}), last_read: g.last_read, now: now(),
   })
@@ -2704,7 +2706,7 @@ async function chatMessage(c: C) {
   const m = await c.env.DB.prepare(`${CHAT_SELECT} WHERE x.id = ?`).bind(id).first<ChatRow>()
   if (!m) fail(404, '消息不存在')
   const {g}=await needMember(c, m!.group_id)
-  if(m!.created_at<g.joined_at||m!.id<g.history_floor)fail(404,'消息不在你的可见范围内')
+  assertChatHistory(g,m!.id,m!.created_at)
   if (m!.system_kind && c.req.method !== 'GET' && !(c.req.method === 'DELETE' && isChatAdmin(u))) fail(400, '系统提醒不能修改或回应')
   return { u, m: m!, g }
 }
@@ -3153,8 +3155,8 @@ app.get('/api/chat/messages/:id/replies', async (c) => {
   const { results } = await c.env.DB.prepare(
     `SELECT x.id, x.body, x.image_key, x.media, x.created_at AS at, u.username, u.name, u.avatar FROM chat_messages x
      LEFT JOIN users u ON u.id = x.user_id
-     WHERE x.reply_to = ? AND x.group_id = ? AND x.created_at>=? AND x.deleted = 0 ORDER BY x.id LIMIT 100`,
-  ).bind(m.id, m.group_id,g.joined_at).all<{ id: number; body: string; image_key: string | null; media: string | null; at: number; username: string | null; name: string | null; avatar: string | null }>()
+     WHERE x.reply_to = ? AND x.group_id = ? AND x.created_at>=? AND x.id>=? AND x.deleted = 0 ORDER BY x.id LIMIT 100`,
+  ).bind(m.id, m.group_id,g.joined_at,g.history_floor).all<{ id: number; body: string; image_key: string | null; media: string | null; at: number; username: string | null; name: string | null; avatar: string | null }>()
   return c.json({
     items: results.map((r) => ({
       id: r.id, at: r.at, username: r.username ?? '佚名', name: r.name, avatar: r.avatar,
@@ -3219,8 +3221,8 @@ app.get('/api/chat/groups/:id/reads', async (c) => {
   const { g } = await needMember(c, groupId(c))
   const ids = String(c.req.query('ids') ?? '').split(',').map((x) => intIn(x, 1, Number.MAX_SAFE_INTEGER, 0)).filter(Boolean).slice(0, 100)
   if (!ids.length) return c.json({ reads: {} })
-  const { results } = await c.env.DB.prepare('SELECT id, group_id, body, deleted FROM chat_messages WHERE group_id = ? AND id IN (SELECT value FROM json_each(?)) AND created_at>=?')
-    .bind(g.id, JSON.stringify(ids),g.joined_at).all<{ id: number; group_id: number; body: string; deleted: number }>()
+  const { results } = await c.env.DB.prepare('SELECT id, group_id, body, deleted, created_at FROM chat_messages WHERE group_id = ? AND id IN (SELECT value FROM json_each(?)) AND created_at>=? AND id>=?')
+    .bind(g.id, JSON.stringify(ids),g.joined_at,g.history_floor).all<{ id: number; group_id: number; body: string; deleted: number; created_at: number }>()
   return c.json({ reads: Object.fromEntries(await atReads(c, results)) })
 })
 
