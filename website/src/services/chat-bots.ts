@@ -10,9 +10,7 @@ export function botCallbackUrl(env: Env, value: string) {
   try {
     const url = new URL(value)
     const local = env.DEV_LOGIN_KEY && url.protocol === 'http:' && url.hostname === '127.0.0.1'
-    const origins = (env.CHAT_BOT_WEBHOOK_ORIGINS ?? '').split(',').map(origin => origin.trim().replace(/\/$/, ''))
-    if ((!local && url.protocol !== 'https:') || url.username || url.password || url.hash || url.search ||
-        !origins.includes(url.origin)) return null
+    if ((!local && url.protocol !== 'https:') || url.username || url.password || url.hash || url.search) return null
     return url.href
   } catch { return null }
 }
@@ -96,7 +94,7 @@ export async function deliverBotEvent(env: Env, id: string) {
       } catch { error = '回调连接失败或超时' }
       state = error ? (claimed.attempts >= MAX_ATTEMPTS ? 'failed' : 'pending') : 'delivered'
       if (state === 'pending') nextAt = now() + 30 * 2 ** (claimed.attempts - 1)
-    } else { state = 'failed'; error = '回调域名未开放' }
+    } else { state = 'failed'; error = '回调地址无效' }
   } else { error = '消息或机器人已不可用' }
 
   await db.prepare('UPDATE chat_bot_events SET state=?,error=?,next_at=?,lease=NULL WHERE id=? AND lease=?')
