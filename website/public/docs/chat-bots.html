@@ -73,14 +73,24 @@
 
     <section id="example">
       <h2>运行能回复指令的示例</h2>
-      <p><a href="/docs/chat-bot-example.mjs" download>下载 Cloudflare Worker 示例</a>。它可以直接部署为一个 Worker，无需额外依赖。</p>
+      <p><a href="/docs/chat-bot-example.mjs" download>下载指令处理代码</a>。可以运行在自己的服务器上，也可以部署到 Cloudflare Worker。</p>
       <ol>
-        <li>在 Cloudflare 创建 Worker，将下载的代码作为入口部署。把 Worker 的 HTTPS 源（协议、域名和可选端口）交给尽欢站长开通回调白名单。</li>
-        <li>在目标群安装机器人，展开「接收群里的指令」。回调填 <code>https://你的-worker域名/webhook/jinhuan</code>，指令填 <code>doc, help, status</code>。</li>
-        <li>在 Worker 的「变量和机密」里，设置变量 <code>PUSH_URL</code> 为该机器人的推送地址。把推送 Token 和回调签名密钥分别存为机密 <code>PUSH_TOKEN</code> 和 <code>SIGNING_SECRET</code>，保存并部署。</li>
-        <li>用群设置里显示的机器人账号，在群里发 <code>@机器人账号 /help</code>。机器人会回复可用指令。发 <code>@机器人账号 /doc</code> 获取文档链接，发 <code>@机器人账号 /status</code> 检查整个回调链路。未配置回调域名时，先联系尽欢站长开通。</li>
+        <li>准备一个可从公网访问的 HTTPS 回调地址，把 HTTPS 源（协议、域名和可选端口）交给尽欢站长加入回调白名单。</li>
+        <li>在目标群安装机器人，展开「接收群里的指令」。回调填 <code>https://你的域名/webhook/jinhuan</code>，指令填 <code>doc, help, status</code>。</li>
+        <li>记下推送地址、推送 Token 和回调签名密钥，下面的两种启动方式都用这套凭证。</li>
       </ol>
-      <p class="note">一个示例 Worker 使用一套机器人凭证。轮换后同步更新 Worker 的机密。</p>
+      <h3>用自己的服务器</h3>
+      <p>安装 Node.js 24，把<a href="/docs/chat-bot-node.mjs" download>Node.js 启动文件</a>和指令处理代码放在同一个目录。在该目录创建 <code>.env</code>，将下面的值替换为自己的凭证，然后启动。</p>
+      <pre tabindex="0"><code>PUSH_URL=你的推送地址
+PUSH_TOKEN=你的推送Token
+SIGNING_SECRET=你的回调签名密钥</code></pre>
+      <pre tabindex="0"><code>node --env-file=.env chat-bot-node.mjs</code></pre>
+      <p>默认监听 <code>127.0.0.1:8789</code>。用现有 HTTPS 反向代理将 <code>/webhook/jinhuan</code> 原样转发给这个进程。回调由尽欢服务器发出，需要直接到达接口并使用签名验权。用容器运行时，可以通过 <code>BIND_HOST=0.0.0.0</code> 在容器内监听，由同一个私有 Docker 网络中的反向代理访问。</p>
+      <h3>用 Cloudflare Worker</h3>
+      <p>把指令处理代码作为 Worker 入口。将推送地址设为变量 <code>PUSH_URL</code>，推送 Token 和回调签名密钥分别设为机密 <code>PUSH_TOKEN</code> 和 <code>SIGNING_SECRET</code>，保存并部署。</p>
+      <h3>在群里试用</h3>
+      <p>用群设置里显示的机器人账号，在群里发 <code>@机器人账号 /help</code> 查看可用指令，发 <code>@机器人账号 /doc</code> 获取文档链接，发 <code>@机器人账号 /status</code> 检查回调链路。</p>
+      <p class="note">一个示例进程使用一套机器人凭证。轮换后同步更新凭证并重启或重新部署。</p>
     </section>
 
     <section id="callback">

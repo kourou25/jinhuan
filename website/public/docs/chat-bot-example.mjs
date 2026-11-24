@@ -1,5 +1,5 @@
-// Deploy this module as a Cloudflare Worker. Set PUSH_URL as a variable and
-// PUSH_TOKEN and SIGNING_SECRET as secrets for a single bot installation.
+// Use this handler directly in a Cloudflare Worker or with chat-bot-node.mjs.
+// Supply PUSH_URL, PUSH_TOKEN and SIGNING_SECRET for a single bot installation.
 
 const encoder = new TextEncoder()
 const uuid = '[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}'

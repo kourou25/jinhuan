@@ -36,7 +36,7 @@ npm run dev
 
 代码里有若干处写的是线上域名 `52dmeme.com`（分享链接、红包脚本、跨子域图片），自己部署时搜索替换成自己的域名。
 
-群机器人接入文档由主站的 `/docs/chat-bots` 提供，也可直接查看[文档源码](public/docs/chat-bots.html)及[回调 Worker 示例](public/docs/chat-bot-example.mjs)。
+群机器人接入文档由主站的 `/docs/chat-bots` 提供，也可直接查看[文档源码](public/docs/chat-bots.html)、[回调处理示例](public/docs/chat-bot-example.mjs)及[Node.js 启动文件](public/docs/chat-bot-node.mjs)。
 
 ## 代码结构
 
