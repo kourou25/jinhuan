@@ -109,6 +109,7 @@ import { claimUploadKeys, cleanupUploads, commitUploadContent, storeUpload } fro
 import { runWebPush } from '../services/web-push'
 import { ACTIVITY_REWARDS, activityReward } from '../shared/activity-rewards'
 import { cleanDeco, decoOf } from '../shared/deco'
+import { nextRemFormSql, remChatForm, wearsRemInChat } from '../services/rem-chat'
 import { FARM_BADGES, farmBadgeProgress } from '../shared/farm-badges'
 import { GUESS_REWARDS, guessReward } from '../shared/guess-rewards'
 import { LUCK_REWARDS, luckReward } from '../shared/luck-rewards'
@@ -12060,6 +12061,7 @@ async function decorateMsgs(c, rows) {
 			id: m.id,
 			group_id: m.group_id,
 			deleted: !!m.deleted,
+			...(m.rem_form != null && !m.deleted ? { rem_form: remChatForm(m.rem_form) } : {}),
 			system_kind: m.system_kind ?? null,
 			system_ref: m.system_ref ?? null,
 			body: m.deleted ? "" : m.body,
@@ -12696,8 +12698,8 @@ app.post("/api/chat/groups/:id/messages", async (c) => {
 	}] : [];
 	const id = (await commitUploadContent(db, u.id, legacyUpload ? [legacyUpload] : mediaKeys(media), [
 		...favoriteGuard ? [favoriteGuard] : [],
-		db.prepare(`INSERT INTO chat_messages (group_id, user_id, body, image_key, width, height, media, reply_to, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).bind(g.id, u.id, body, key, key ? dims.w || null : null, key ? dims.h || null : null, mediaJson, replyTo || null, t, t),
+		db.prepare(`INSERT INTO chat_messages (group_id, user_id, body, image_key, width, height, media, reply_to, created_at, updated_at, rem_form)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${nextRemFormSql}) RETURNING id`).bind(g.id, u.id, body, key, key ? dims.w || null : null, key ? dims.h || null : null, mediaJson, replyTo || null, t, t, wearsRemInChat(u.deco) ? 1 : 0, g.id, u.id),
 		...chatRoadStatements(db, null, body, roadAttachments, t)
 	]).catch((error) => {
 		if (String(error).includes("favorite_source_changed")) fail(409, "来源消息已变化，请重新打开收藏");

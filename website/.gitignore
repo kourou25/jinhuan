@@ -26,6 +26,8 @@ public/stickers/**/*.webp
 public/stickers/**/*.png
 public/stickers/**/*.gif
 public/assets/**/*.webp
+!public/assets/rem-chat/maid.webp
+!public/assets/rem-chat/awakened.webp
 public/assets/**/*.png
 public/assets/**/*.gif
 public/assets/**/*.jpg

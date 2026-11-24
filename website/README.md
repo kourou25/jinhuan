@@ -9,14 +9,14 @@
 ```sh
 npm ci
 npx wrangler d1 execute meme-hall --local --file=schema.sql
-for f in migrations/01[3-5]*.sql; do npx wrangler d1 execute meme-hall --local --file="$f"; done
+for f in migrations/013[3-9]_*.sql migrations/01[45][0-9]_*.sql; do npx wrangler d1 execute meme-hall --local --file="$f"; done
 cp .dev.vars.example .dev.vars   # 填一个至少 16 位的 DEV_LOGIN_KEY
 npm run dev
 ```
 
 打开 http://localhost:8787/ ，访问 `/auth/dev` 用测试口令登录。需要站长权限时，从本地数据库查到测试账号 ID 填进 `wrangler.toml` 的 `ADMIN_USER_IDS`。
 
-`schema.sql` 截至 0132 号迁移；之后的结构在 `migrations/0133`–`0157`，新库按上面的命令依次执行。
+`schema.sql` 截至 0132 号迁移；之后的结构在 `migrations/0133`–`0158`，新库按上面的命令依次执行。
 
 ## 自己部署
 

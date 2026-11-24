@@ -45,6 +45,7 @@ import {attachChatMediaScale,chatMediaScaleSettings} from '/chat-media-scale.js?
 import {TITLE_COLLECTION,titleStage,TITLE_MAX_LEVEL,TITLE_STAGES,TITLE_STAGE_NAMES,CHICKENGUN_MIN_SIZE,CHICKENGUN_MAX_SIZE,chickengunSizeLimit,chickengunSize} from '/title-collection.js?v=472f7fbf'
 import {titleVisualClass,titleBadgeSource,attachTitleMotion,initializeTitleEffects} from '/title-visuals.js?v=472f7fbf'
 import {createChatBubbleVisibility} from '/bubble-visibility.js?v=472f7fbf'
+import {animateRemMessage, REM_BUBBLE_KEY, REM_SKIN_NAME, remBubble, remTitle, swapRemPreview} from '/rem-chat.js'
 import {titleSymbol} from '/title-symbols.js?v=472f7fbf'
 // 尽欢前端：无构建、无框架
 import { settingsSections } from '/settings-sections.js?v=472f7fbf'
@@ -1129,7 +1130,7 @@ function memeCard(m, { stack = false, priority = false } = {}) {
   const card = h('article', { class: 'card' + (isText ? ' text-card wide' : '') + (ANCHORS.has(m.id) ? ' anchored' : ''), 'data-id': m.id, 'aria-label': m.title || m.text || '梗图' },
     h('div', { class: 'card-head' },
       avatar(m.author_avatar, m.author_name, 34),
-      compactIdentity(authorUser(m), 'post', authorLink(m), status),
+      compactIdentity(authorUser(m), 'post', authorLink(m), { meta: status }),
       isText && !isOfficialEmbed(socialLink(m.source_url||'')?.provider) && h('span', { class: 'badge text-badge' }, '文字'),
       h('span', { class: 'grow' }),
       h('span', { class: 'serial', title: '全站编号' }, h('span', { class: 'no' }, 'No.'), m.id),
@@ -1964,8 +1965,8 @@ function uName(tag, u, attrs, text, where) {
   return [el, titleEl(u, where), badgeEl(u, where)]
 }
 // 身份信息按自然宽度同行排列，窄屏允许换行，保留完整文字。
-function compactIdentity(u, where, name, ...meta) {
-  const title = titleEl(u, where)
+function compactIdentity(u, where, name, { showTitle = true, meta } = {}) {
+  const title = showTitle ? titleEl(u, where) : null
   return h('span', { class: 'identity' },
     h('span', { class: 'identity-main' }, name, title, badgeEl(u, where, true), meta))
 }
@@ -1991,6 +1992,11 @@ function bubbleParts(u, where = 'chat', frame = false) {
   return parts
 }
 const bubbleCls = u => bubbleParts(u).filter(p => !bubblePartHidden(p)).map(p => p.classes).join('')
+function remBubbleAttrs(u) {
+  const part = { key: REM_BUBBLE_KEY, own: !!S.me && u.username === S.me.username, classes: 'rm-worn' }
+  return { class: bubblePartHidden(part) ? '' : part.classes, 'data-bubble-parts': JSON.stringify([part]) }
+}
+
 function bubbleView(u, base, where = 'chat', frame = false, messageId = 'preview') {
   const parts = bubbleParts(u, where, frame)
   const title=raffleOf(u),gun=!frame&&title?.id==='chickengun'
@@ -2008,7 +2014,7 @@ function openBubbleSettings(anchor) {
     ...['normal','SSR'].map(rarity=>[rarity==='SSR'?'SSR · 群友专属':'普通 · 群友专属',Object.entries(PERSONAL_TITLES).filter(([,t])=>(t.rarity||'normal')===rarity).map(([id,t])=>['personal:'+id,t.name])]),
     ...['normal','SSR'].map(rarity=>[rarity==='SSR'?'SSR · 角色套装':'普通 · 抽奖套装', Object.entries(RAFFLE_TITLES).filter(([,t]) => t.rarity===rarity && t.enabled !== false && t.bubbleEnabled !== false).map(([id,t]) => ['raffle:' + id,t.name])]),
     ['普通 · 官方气泡', (S.officialTitles || []).map(t => ['official:' + t.id,t.name])],
-    ['社区精选', [['preset:aurora','极光流转']]],
+    ['社区精选', [['preset:aurora','极光流转'],[REM_BUBBLE_KEY,REM_SKIN_NAME]]],
 
   ]
   const syncChoices = () => { for (const input of body.querySelectorAll('[data-bubble-choice]')) input.checked = bubbleBlocked(input.dataset.bubbleChoice) || !!decoHide().bubble }
@@ -2068,10 +2074,17 @@ function decoEditor(initialTrial=null) {
     const bn = d.bd ? S.me.badges?.find((x) => x.id === d.bd)?.n || 1 : undefined
     const u = { ...S.me, deco: { ...d, bn,bl:allCosmetics&&d.bd?(d.bd==='guide'?4:5):undefined }, fancy: S.me.fancy }
     const previewBubble=bubbleView(u,'cm-text')
+    const showRem = d.rem === true && d.sc !== 'post'
+    const remSample = (form, copy) => h('div', { class: 'rm-preview', 'data-rem-preview': '', 'data-rem-form': form },
+      remTitle(h, { class: 'rm-worn' }, form), remBubble(h, { class: 'rm-worn' }, copy))
     preview.replaceChildren(
       h('div', { class: 'dp-row' }, avatar(S.me.avatar, S.me.name || S.me.username, 28), uName('strong', u, {}, S.me.name || S.me.username, 'card')),
-      h('div', { class: 'dp-row dp-chat cm-head' }, h('span', { class: 'cm-name' }, S.me.name || S.me.username), titleEl(u, 'chat'), badgeEl(u, 'chat')),
-      h('div', { class:'dp-row dp-bubble',style:{'--cg-preview-size':previewBubble.style?.['--cg-size']||'84px'} }, h('div', previewBubble, h('span',{class:'rt-copy'},'来看看我的气泡 No.1 #梗图'))),
+      h('div', { class: 'dp-row dp-chat cm-head' }, h('span', { class: 'cm-name' }, S.me.name || S.me.username), !showRem && titleEl(u, 'chat'), badgeEl(u, 'chat')),
+      showRem ? h('div', { class: 'rm-preview-list' },
+        remSample('white', '我在。'),
+        remSample('black', '我给你留了一盏灯。回来以后，我们可以慢慢聊。'),
+        h('button', { type: 'button', class: 'btn btn-ghost sm', onclick: () => swapRemPreview(preview) }, '播放变身'))
+        : h('div', { class:'dp-row dp-bubble',style:{'--cg-preview-size':previewBubble.style?.['--cg-size']||'84px'} }, h('div', previewBubble, h('span',{class:'rt-copy'},'来看看我的气泡 No.1 #梗图'))),
       h('div', { class: 'rp-form' + officialFrame(u, 'post') }, icon('rocket'), h('input', { class: 'rp-input', placeholder: '回应框预览', 'aria-label': '回应框预览' })))
   }
   const seg = (k, opts) => {
@@ -2199,6 +2212,11 @@ function decoEditor(initialTrial=null) {
   }
   refreshGuess()
   const communityPicker=h('div',{class:'community-picker'}),communityState=h('p',{class:'muted sm',role:'status'},'正在读取社区装扮…')
+  const remEquip = h('input', { type: 'checkbox', checked: d.rem === true, onchange: e => {
+    if (e.currentTarget.checked) d.rem = true
+    else delete d.rem
+    draw()
+  } })
   let communityEntries=[],communityOwned=new Set()
   const curatedBubbleSelect=h('select',{class:'input','aria-label':'精选气泡',onchange:e=>{if(e.target.value){d.bb='aurora';if(d.community?.bubble){const next={...d.community};delete next.bubble;if(Object.keys(next).length)d.community=next;else delete d.community;drawCommunity(communityEntries)}}else delete d.bb;draw()}},h('option',{value:'',selected:d.bb!=='aurora'},'沿用套装气泡'),h('option',{value:'aurora',selected:d.bb==='aurora'},'极光流转 · qwddkxs'))
   const drawCommunity=entries=>{communityEntries=entries;communityPicker.replaceChildren(...[['bubble','气泡'],['title','称号'],['badge','徽章'],['reply','回应框']].map(([kind,label])=>{
@@ -2227,7 +2245,11 @@ function decoEditor(initialTrial=null) {
       S.me.badges?.length>0&&field('徽章在哪儿显示',seg('bs',[['all','全站'],['chat','只在群聊'],['post','只在帖子和评论']])),
     ]},
 
-    {id:'community',label:'社区装扮',keywords:'投稿 作者 气泡 称号 徽章 回应',nodes:[field('精选气泡',curatedBubbleSelect),communityState,communityPicker,h('button',{class:'btn btn-ghost sm',type:'button',onclick:e=>instantCardDialog(e.currentTarget,'bubbles')},'限定气泡池'),h('button',{class:'btn btn-ghost sm',type:'button',onclick:getCommunity},'刷新已获得')]},
+    {id:'community',label:'社区装扮',keywords:'投稿 作者 气泡 称号 徽章 回应 蕾姆',nodes:[
+      field('精选气泡',curatedBubbleSelect),
+      h('label',{class:'set-check'},remEquip,`佩戴${REM_SKIN_NAME}`),
+      h('p',{class:'hint'},'群聊新消息交替显示白花誓约和鬼角夜巡。点击保存装扮后生效。'),
+      communityState,communityPicker,h('button',{class:'btn btn-ghost sm',type:'button',onclick:e=>instantCardDialog(e.currentTarget,'bubbles')},'限定气泡池'),h('button',{class:'btn btn-ghost sm',type:'button',onclick:getCommunity},'刷新已获得')]},
     {id:'growth',label:'成长奖励',keywords:'猜词 红包 手气王 手气亡 日榜 总榜 农场 升级 解锁',nodes:[growthHub,h('p',{class:'hint'},'选择套装后点击保存装扮。称号、徽章与气泡成套佩戴；已有等级和获奖记录永久保留。')]},
     {id:'visibility',label:'显示偏好',keywords:'范围 全站 群聊 帖子 别人 隐藏 屏蔽 动图 暂停',nodes:[
       field('我的装扮在哪儿生效',seg('sc',[['all','全站'],['chat','只在群聊'],['post','只在帖子和评论']]),'点击保存装扮后生效。'),
@@ -8699,13 +8721,21 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         const node = row(m,st.items[i-1])
         list.insertBefore(node, rows.get(st.items[i+1]?.id) || null)
         animateShiguangMessage(node)
+        animateRemMessage(node)
         if (i + 1 < st.items.length) redraw(i+1)
       }
       restore()
     } else {
       const was = st.items.length
       st.items = [...st.items, ...items]
-      list.append(...items.map((m, i) => {const node=row(m, i ? items[i - 1] : st.items[was - 1]);if(where==='live')animateShiguangMessage(node);return node}))
+      list.append(...items.map((m, i) => {
+        const node = row(m, i ? items[i - 1] : st.items[was - 1])
+        if (where === 'live') {
+          animateShiguangMessage(node)
+          animateRemMessage(node)
+        }
+        return node
+      }))
     }
     st.first = st.items[0].id
     if (where !== 'live') st.last = Math.max(st.last, st.items[st.items.length - 1].id)
@@ -9902,6 +9932,8 @@ function chatMsg(m, { cont, pane, pending } = {}) {
   // 右键 / 长按头像 @TA 在 chatPane 的委托里做（主列表、历史层一样）
   const protected52=isOwner52Suit(personalOf(m.user,'chat')?.id);const shieldColor=['green','blue','purple','black'][Math.abs(Number(m.id||0))%4];const face = h('button', { class: 'cm-face'+(protected52?' di52-protected-face':''), type: 'button', title: canAt ? `${who} · 右键或长按 @TA` : who, 'data-pop': 'u' + m.user.username, 'data-di52-protected': protected52?'true':null, 'data-di52-shield': protected52?shieldColor:null, onclick: card }, avatar(m.user.avatar, who, 36), protected52&&h('span',{class:'di52-shield','aria-hidden':'true'}))
   const body = []
+  const remForm = !m.deleted && (m.rem_form === 'white' || m.rem_form === 'black') ? m.rem_form : null
+  const remAttrs = remForm ? remBubbleAttrs(m.user) : null
   let ref = null
   if (m.deleted) body.push(h('div', { class: 'cm-gone' }, `${m.mine ? '你' : who} 撤回了一条消息`))
   else {
@@ -9920,8 +9952,12 @@ function chatMsg(m, { cont, pane, pending } = {}) {
       h('span', { class: 'cm-redpack-foot' }, m.redpack.game==='free_guess'?'进入猜词专区':m.redpack.snapshot?.claimed ? '已领取' : ({exhausted:'被抢光啦',expired:'已过期',cancelled:'已取消',registered:'等待开奖',drawing:'正在开奖',not_won:'未中奖',payment_pending:'等待发放',simulation:'模拟奖励',draft:'尚未开放',unconfirmed:'结果待核对'})[m.redpack.snapshot?.state] || (m.redpack.draw?.kind==='lottery'?'参与 / 查看抽奖':m.redpack.provider && m.redpack.provider!=='native' || m.redpack.solved ? '查看红包' : '戳我拆开'), h('span', null, (m.redpack.provider==='coin52'||m.redpack.payment_provider==='coin52')?dcoinIcon(h):m.redpack.game==='free_guess'?'猜词游戏':m.redpack.game==='ldc'||m.redpack.provider && m.redpack.provider!=='native'?'LDC 红包':m.redpack.ldc_count!=null?`${m.redpack.ldc_count} 份奖励 · ${m.redpack.opened} 人拆封`:`${m.redpack.opened} 人拆过`))))
     const displayBody=excerpt?m.body:m.redpack?m.body:socialMessageText(m.body||'')
     if(excerpt)body.push(h('div',{class:'cm-text cm-novel-outer'},novelExcerptCard(excerpt,h),edited))
-    if (!excerpt && (!m.redpack || m.redpack.shared) && displayBody && !lnk?.only) body.push(h('div', stkOnly(displayBody) ? { class:'cm-text stk-only' } : bubbleView(m.user, 'cm-text','chat',false,m.id),
-      (raffleOf(m.user)||personalOf(m.user,'chat')) ? h('span', { class:'ds-copy rt-copy' }, richBody(displayBody, { md:'lite' }), edited) : [richBody(displayBody, { md: 'lite' }), edited]))
+    if (!excerpt && (!m.redpack || m.redpack.shared) && displayBody && !lnk?.only) {
+      const copy = [richBody(displayBody, { md: 'lite' }), edited]
+      if (remAttrs && !stkOnly(displayBody)) body.push(remBubble(h, remAttrs, copy, displayBody))
+      else body.push(h('div', stkOnly(displayBody) ? { class:'cm-text stk-only' } : bubbleView(m.user, 'cm-text','chat',false,m.id),
+        (raffleOf(m.user)||personalOf(m.user,'chat')) ? h('span', { class:'ds-copy rt-copy' }, copy) : copy))
+    }
     if (lnk) body.push(linkImg(lnk.url, lnk.only && edited))
     if (m.media_expired) body.push(h('div', { class:'cm-gone', role:'note' }, '附件已超过七天，无法查看'))
     if (!pending && !excerpt) body.push(...socialCards(m,{h,api,onRemoval,onOpenMedia:openSocialMedia,renderVideo:im=>mediaVideo(im),onPost:(anchor,index)=>m.meme_id?navigate('/m/'+m.meme_id):chatToPost(m,pane,anchor,'social-post-'+m.id,index)}))
@@ -10059,12 +10095,13 @@ function chatMsg(m, { cont, pane, pending } = {}) {
   return h('div', { class: 'cm-msg' + (cont ? ' cont' : '') + (m.mine ? ' mine' : '') + (m.deleted ? ' gone' : '') + (ref ? ' has-ref' : '') + (atMe || ref?.classList.contains('me') ? ' at-me' : ''),
     'data-msg': m.id, id: 'msg-' + m.id },
   h('div', { class: 'cm-side' }, cont ? h('time', null, clock(m.created_at)) : face),
-  h('div', { class: 'cm-main' },
+  h('div', { class: 'cm-main', 'data-rem-form': remForm },
     !cont && h('div', { class: 'cm-head' },
-      compactIdentity(m.user, 'chat', uName('button', m.user, { class: 'cm-name', type: 'button', title: canAt ? `@${m.user.username}` : who, 'data-pop': 'u' + m.user.username, onclick: at }, who, 'chat')[0]),
+      compactIdentity(m.user, 'chat', uName('button', m.user, { class: 'cm-name', type: 'button', title: canAt ? `@${m.user.username}` : who, 'data-pop': 'u' + m.user.username, onclick: at }, who, 'chat')[0], { showTitle: !remForm }),
       h('time', { title: new Date(m.created_at * 1000).toLocaleString('zh-CN', { hour12: false }) }, clock(m.created_at)),
       m.floor && h('span', { class: 'cm-floor' }, m.floor + '楼')),
     ref && h('div', { class: 'cm-ref-row' }, ref),
+    remAttrs && remTitle(h, remAttrs, remForm),
     body),
   !m.deleted && S.me && !pending && chatTools(m, pane),
   !m.deleted && S.me && !pending && h('span', { class: 'cm-sw', 'aria-hidden': 'true' }, icon('reply')))
