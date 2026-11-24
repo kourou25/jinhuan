@@ -1,0 +1,122 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <meta name="description" content="尽欢群机器人接入文档。学习推送通知、接收群指令和运行示例机器人。">
+  <link rel="icon" href="/logo.svg" type="image/svg+xml">
+  <title>群机器人接入文档 · 尽欢</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --page: light-dark(#f7f8f4, #161c16);
+      --panel: light-dark(#fff, #1d251e);
+      --text: light-dark(#202c23, #e7efe6);
+      --muted: light-dark(#536258, #b5c2b6);
+      --line: light-dark(#dce3d9, #374638);
+      --link: light-dark(#256443, #a1d8ae);
+    }
+    html { scroll-padding-top: 1rem; }
+    body { margin: 0; background: var(--page); color: var(--text); font: 1rem/1.75 system-ui, sans-serif; }
+    header { border-bottom: 1px solid var(--line); background: var(--panel); }
+    .wrap { max-width: 54rem; padding: 0 1.25rem; margin: auto; }
+    .brand { display: inline-flex; align-items: center; gap: .5rem; margin: .75rem 0; color: var(--text); font-weight: 700; text-decoration: none; }
+    main.wrap { padding-block: 2.25rem 4rem; }
+    h1, h2, h3 { line-height: 1.35; }
+    h1 { font-size: clamp(1.9rem, 6vw, 2.8rem); margin: 0; }
+    h2 { font-size: 1.4rem; margin: 0 0 .75rem; }
+    h3 { font-size: 1.05rem; margin: 1.2rem 0 .4rem; }
+    a { color: var(--link); text-underline-offset: .2em; }
+    .intro, .note { color: var(--muted); }
+    .toc { display: flex; gap: .5rem 1.2rem; flex-wrap: wrap; margin-block: 1.25rem; }
+    section { padding: clamp(.95rem, 4vw, 1.6rem); margin-top: 1rem; border: 1px solid var(--line); border-radius: .85rem; background: var(--panel); }
+    p, ul, ol, dl, pre { margin-block: .65rem; }
+    ul, ol { padding-inline-start: 1.5rem; }
+    li + li { margin-top: .4rem; }
+    dt { margin-top: .55rem; font-weight: 650; }
+    dd { margin-left: 0; }
+    code { font-family: ui-monospace, "IBM Plex Mono", monospace; font-size: .92em; overflow-wrap: anywhere; }
+    pre { overflow: auto; padding: .9rem; border: 1px solid var(--line); border-radius: .55rem; background: var(--page); }
+    pre code { overflow-wrap: normal; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="wrap">
+      <a class="brand" href="/chat"><img src="/logo.svg" width="26" height="26" alt=""> 尽欢群聊</a>
+    </div>
+  </header>
+  <main class="wrap">
+    <h1>群机器人接入文档</h1>
+    <p class="intro">把通知发进指定群，或让你的服务接收群成员的指令并回复。</p>
+    <nav class="toc" aria-label="文档目录">
+      <a href="#push">推送消息</a>
+      <a href="#example">运行示例</a>
+      <a href="#callback">回调协议</a>
+      <a href="#errors">排查</a>
+    </nav>
+
+    <section id="push">
+      <h2>推送消息</h2>
+      <ol>
+        <li>用群管理员账号打开目标群的「成员与设置 → 群机器人」，填名称并安装。只做通知时，回调地址和指令可以留空。</li>
+        <li>保存签发的<strong>推送地址</strong>和<strong>推送 Token</strong>。每次安装仅绑定一个群，Token 在安装或轮换时显示。</li>
+        <li>使用推送地址作为请求 URL，并在 <code>Authorization</code> 中带上该 Token。下面的环境变量填写你拿到的实际值。</li>
+      </ol>
+      <pre tabindex="0"><code>curl -fsS "$PUSH_URL" \
+  -H "Authorization: Bearer $PUSH_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"text":"备份已完成"}'</code></pre>
+      <p>首次成功返回 <code>201</code>，正文包含 <code>message_id</code> 和 <code>group_id</code>。同一次操作重试时可带相同的 <code>Idempotency-Key</code>，重复提交相同文本会返回原消息 ID。每个机器人每分钟最多发 30 条文本，每条最多 2,000 个字符。</p>
+    </section>
+
+    <section id="example">
+      <h2>运行能回复指令的示例</h2>
+      <p><a href="/docs/chat-bot-example.mjs" download>下载 Cloudflare Worker 示例</a>。它可以直接部署为一个 Worker，无需额外依赖。</p>
+      <ol>
+        <li>在 Cloudflare 创建 Worker，将下载的代码作为入口部署。把 Worker 的 HTTPS 源（协议、域名和可选端口）交给尽欢站长开通回调白名单。</li>
+        <li>在目标群安装机器人，展开「接收群里的指令」。回调填 <code>https://你的-worker域名/webhook/jinhuan</code>，指令填 <code>doc, help, status</code>。</li>
+        <li>在 Worker 的「变量和机密」里，设置变量 <code>PUSH_URL</code> 为该机器人的推送地址。把推送 Token 和回调签名密钥分别存为机密 <code>PUSH_TOKEN</code> 和 <code>SIGNING_SECRET</code>，保存并部署。</li>
+        <li>用群设置里显示的机器人账号，在群里发 <code>@机器人账号 /help</code>。机器人会回复可用指令。发 <code>@机器人账号 /doc</code> 获取文档链接，发 <code>@机器人账号 /status</code> 检查整个回调链路。未配置回调域名时，先联系尽欢站长开通。</li>
+      </ol>
+      <p class="note">一个示例 Worker 使用一套机器人凭证。轮换后同步更新 Worker 的机密。</p>
+    </section>
+
+    <section id="callback">
+      <h2>回调协议</h2>
+      <p>回调地址由接入方提供，负责接收尽欢发来的 HTTPS <code>POST</code>。群成员显式点名机器人并发出已注册的指令时才会投递。下面是一条 <code>/status api</code> 指令的请求正文。</p>
+      <pre tabindex="0"><code>{
+  "type": "chat.command",
+  "event_id": "1ee1f988-1300-4692-a0a2-dc04d925f91e",
+  "installation_id": "c2f464f0-0df1-467c-9399-fd2809707230",
+  "group_id": 42,
+  "message_id": 581,
+  "bot_username": "bot_012345abcdef",
+  "sender_id": 123,
+  "sender_username": "alice",
+  "command": "status",
+  "args": "api",
+  "created_at": 1795507200
+}</code></pre>
+      <dl>
+        <dt>验签</dt>
+        <dd>用回调签名密钥字符串的 UTF-8 字节做 HMAC-SHA256，输入为 <code>X-Jinhuan-Timestamp</code>、一个点和原始请求正文。校验 <code>X-Jinhuan-Signature</code> 的 <code>sha256=</code> 值及时间窗口。<code>X-Jinhuan-Event</code> 对应正文的 <code>event_id</code>。</dd>
+        <dt>确认和重试</dt>
+        <dd>回调返回 <code>2xx</code> 表示接收成功。失败会重试，用 <code>event_id</code> 给自己的业务操作去重。</dd>
+        <dt>回群</dt>
+        <dd>向同一个机器人的推送地址提交 <code>{"text":"服务运行正常","reply_event_id":"收到的 event_id"}</code>，机器人会引用原消息回复。同一事件只能创建一条机器人回复。</dd>
+      </dl>
+    </section>
+
+    <section id="errors">
+      <h2>排查</h2>
+      <ul>
+        <li>推送返回 <code>401</code> 时，检查 Token 是否属于该推送地址、机器人是否暂停、凭证是否已轮换。返回 <code>429</code> 时稍后重试。</li>
+        <li>收不到指令时，核对群里的 <code>@账号 /指令</code>、已注册的指令名和 HTTPS 回调路径，再到「群机器人 → 投递记录」看结果。回调应直接接收请求，使用重定向会导致投递失败。</li>
+        <li>能发消息却无法开启回调时，请尽欢站长检查签名密钥和回调源白名单。站点签名密钥用于签发机器人的回调签名密钥，接入方只使用安装后分配给自己的密钥。</li>
+      </ul>
+    </section>
+  </main>
+</body>
+</html>

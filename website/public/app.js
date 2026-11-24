@@ -10909,7 +10909,7 @@ async function groupPanel(g, { outside, section } = {}) {
       }},'解散这个群'))
     const categories=settingsSections({h,label:'群设置分类',sections:[
       {id:'members',label:'群成员',keywords:'人员 搜索 昵称 用户名 拉人 限制 移出',nodes:[add,h('div',{class:'gp-mhead'},h('h4',{class:'gp-h'},'成员',count),msearch),listBox,partial]},
-      {id:'info',label:'群资料',keywords:'群名 改名 公告 群规 引用 申请 开放 通道',nodes:[...(findGroup(g.id)?.owner_ctl?[b33ApplyToggle(g)]:[]),rename,noticeSec()]},
+      {id:'info',label:'群资料',keywords:'群名 改名 公告 群规 引用 申请 开放 通道 机器人 Webhook',nodes:[...(findGroup(g.id)?.owner_ctl?[b33ApplyToggle(g)]:[]),rename,noticeSec(),admin&&h('a',{class:'btn sm',href:'/docs/chat-bots',target:'_blank',rel:'noopener'},'群机器人接入文档')]},
       {id:'requests',label:'移出与申请',keywords:'审批 同意 拒绝 退出 移出 拉回 申请',available:()=>admin,nodes:[outsideBox]},
       {id:'resources',label:'水群榜',keywords:'水群 早起 夜聊 排名 榜单',nodes:[h('button',{class:'btn sm',type:'button',onclick:()=>chatRankPanel(g)},'水群榜 · 消息 / 早起 / 夜聊')]},
       {id:'preferences',label:'我的偏好',keywords:'免打扰 红包 提醒 离开 滚动 气泡 动画 装扮 隐藏 媒体 图片 视频 缩小',nodes:[
