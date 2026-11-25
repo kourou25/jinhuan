@@ -58,13 +58,13 @@ export async function cachedSocialPreview(c:C,u:{id:number},link:NonNullable<Ret
  const key=new Request(new URL('/__social_preview_v6?url='+encodeURIComponent(link.url),c.req.url)),cache=caches.default
  const hit=await cache.match(key);if(hit)return await hit.json<Awaited<ReturnType<typeof fetchPreview>>>()
  const t=Date.now(),last=limits.get(u.id),limit=last&&t-last.at<60000?last:{at:t,n:0}
- if(limit.n>=10)fail(429,'预览请求较多，请稍后再试')
+ if(limit.n>=40)fail(429,'预览请求较多，请稍后再试')
  if(limits.size>=2000&&!limits.has(u.id))limits.delete(limits.keys().next().value!)
  limit.n++;limits.set(u.id,limit)
  let work=pending.get(link.url)
- if(!work){if(pending.size>=30)fail(429,'预览忙碌，请稍后再试');work=fetchPreview(link);pending.set(link.url,work);work.finally(()=>pending.delete(link.url))}
+ if(!work){if(pending.size>=60)fail(429,'预览忙碌，请稍后再试');work=fetchPreview(link);pending.set(link.url,work);work.finally(()=>pending.delete(link.url))}
  const data=await work
- c.executionCtx.waitUntil(cache.put(key,Response.json(data,{headers:{'Cache-Control':'public, max-age='+(data.available?(['douyin','instagram'].includes(link.provider)?300:1800):30)}})))
+ c.executionCtx.waitUntil(cache.put(key,Response.json(data,{headers:{'Cache-Control':'public, max-age='+(data.available?(['douyin','instagram'].includes(link.provider)?300:1800):(data as {reason?:string}).reason==='login'?1800:30)}})))
  return data
 }
 socialPreview.get('/api/chat/messages/:id/preview',async c=>{
@@ -73,7 +73,7 @@ socialPreview.get('/api/chat/messages/:id/preview',async c=>{
 socialPreview.get('/api/social/preview',async c=>{
  const u=needUser(c),link=postShareLink(c.req.query('share'))
  const data=await cachedSocialPreview(c,u,link)
- return c.json({available:data.available,description:socialCaption(data.description),embed:data.embed,sensitive:!!data.sensitive,media:data.media?.map((it,i)=>({kind:it.kind,url:`/api/social/preview/media/${i}?share=${encodeURIComponent(link.url)}`,poster:it.poster?`/api/social/preview/media/${i}?poster=1&share=${encodeURIComponent(link.url)}`:undefined}))||[]})
+ return c.json({available:data.available,reason:(data as {reason?:string}).reason,description:socialCaption(data.description),embed:data.embed,sensitive:!!data.sensitive,media:data.media?.map((it,i)=>({kind:it.kind,url:`/api/social/preview/media/${i}?share=${encodeURIComponent(link.url)}`,poster:it.poster?`/api/social/preview/media/${i}?poster=1&share=${encodeURIComponent(link.url)}`:undefined}))||[]})
 })
 socialPreview.get('/api/social/preview/media/:media',async c=>{
  const u=needUser(c),link=postShareLink(c.req.query('share')),idx=Number(c.req.param('media'))

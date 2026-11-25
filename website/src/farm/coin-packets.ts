@@ -1,9 +1,10 @@
 import {farmWallet} from './wallet'
+import {DCOIN_PACKET_MAX} from '../shared/dcoin-packet-rules'
 export function coinPacketInput(b:Record<string,unknown>){
  const total=Number(b.amount),count=Number(b.count),minutes=Number(b.minutes??1440),mode=String(b.kind)
- if(!Number.isSafeInteger(total)||total<1||total>2000000||!Number.isSafeInteger(count)||count<1||count>100||total<count)throw Error('总额需为1至2000000整数D币，1至100份且每份至少1币')
+ if(!Number.isSafeInteger(total)||total<1||total>DCOIN_PACKET_MAX||!Number.isSafeInteger(count)||count<1||count>100||total<count)throw Error(`总额需为1至${DCOIN_PACKET_MAX}整数D币，1至100份且每份至少1币`)
  if(!['fixed','random'].includes(mode)||mode==='fixed'&&total%count!==0)throw Error('普通红包总额需能整除份数')
- if(!Number.isSafeInteger(minutes)||minutes<1||minutes>10080)throw Error('有效期需为1分钟至7天')
+ if(!Number.isSafeInteger(minutes)||minutes<1||minutes>1440)throw Error('有效期需为1分钟至24小时')
  return {total,count,minutes,mode}
 }
 export function coinPacketSplit(total:number,count:number,mode:string){

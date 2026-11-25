@@ -1,6 +1,6 @@
 import {coin} from '/farm-ui.js?v=472f7fbf'
 const el=(tag,cls,text)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(text!==undefined)e.textContent=text;return e}
-const labels={'title-upgrade':'鲸伴解锁与升级','title-entry':'称号抽奖报名与追加','title-refund':'称号抽奖退款','farm-import':'原农场金币承接','farm-compensation':'改版补偿','farm-action':'农场经营','owner-adjustment':'站长余额调整','packet-send':'发出红包','packet-claim':'领取红包','packet-refund':'红包余款退回'}
+const labels={'title-upgrade':'鲸伴解锁与升级','title-entry':'称号抽奖报名与追加','title-refund':'称号抽奖退款','farm-import':'原农场金币承接','farm-compensation':'改版补偿','farm-action':'农场经营','owner-adjustment':'站长余额调整','packet-send':'发出红包','packet-claim':'领取红包','bottle-draw':'漂流瓶付费捞','bottle-throw':'漂流瓶付费扔','bottle-income':'漂流瓶收入','bottle-reward':'漂流瓶互动奖励','bottle-reward-pay':'漂流瓶奖励支出','packet-refund':'红包余款退回'}
 labels['guess-tip-send']='猜词打赏支出';labels['guess-tip-receive']='猜词打赏收入'
 labels['card-pay']='抽卡投入';labels['card-income']='抽卡收入';labels['card-prize']='抽卡D币奖励';labels['card-prize-pay']='抽卡奖池支出'
 labels['huancai-buy']='欢彩购票';labels['xian-b16-refund']='旧版云梦仙途 D币退还';labels['huancai-refund']='欢彩下线退款';labels['huancai-scratch']='刮刮乐中奖';labels['huancai-lotto']='大乐透中奖'

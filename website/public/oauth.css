@@ -1,0 +1,47 @@
+/* 用尽欢账号登录：授权同意页（routes/oauth.ts 服务端渲染）与应用管理页（oauth-apps.html） */
+:root{--o-bg:#f5f6f8;--o-card:#fff;--o-text:#222;--o-muted:#666;--o-line:#e6e8ec;--o-accent:#16a34a;--o-accent-text:#fff;--o-soft:#eef0f3;--o-danger:#dc2626;--o-warn-bg:#fff7e6;--o-warn:#8a5a00}
+@media (prefers-color-scheme:dark){:root{--o-bg:#15171a;--o-card:#1f2226;--o-text:#e8e8e8;--o-muted:#a0a4ab;--o-line:#30343a;--o-soft:#2a2e33;--o-warn-bg:#3a2e12;--o-warn:#f3c66b}}
+*{box-sizing:border-box}
+body{margin:0;min-height:100vh;background:var(--o-bg);color:var(--o-text);font:15px/1.65 system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+a{color:var(--o-accent)}
+.oauth-card{max-width:420px;margin:8vh auto;padding:28px 24px;border-radius:16px;background:var(--o-card);box-shadow:0 6px 30px rgba(0,0,0,.08)}
+@media (max-width:480px){.oauth-card{margin:16px;padding:22px 18px}}
+.oauth-card h1{font-size:20px;margin:0 0 4px}
+.oauth-muted{color:var(--o-muted);text-decoration:none;font-size:14px}
+.oauth-head{display:flex;gap:14px;align-items:center;margin-bottom:14px}
+.oauth-app-icon{width:56px;height:56px;border-radius:14px;object-fit:cover;flex:none;background:var(--o-soft)}
+.oauth-app-letter{display:grid;place-items:center;font-size:26px;font-weight:700;color:var(--o-accent)}
+.oauth-desc{margin:0 0 12px;color:var(--o-muted)}
+.oauth-scopes{margin:8px 0 16px;padding:12px 14px 12px 32px;border-radius:12px;background:var(--o-soft)}
+.oauth-scopes li+li{margin-top:6px}
+.oauth-me{display:flex;align-items:center;gap:10px;margin:0 0 18px;color:var(--o-muted);font-size:14px}
+.oauth-me img{width:32px;height:32px;border-radius:50%;object-fit:cover}
+.oauth-actions{display:flex;gap:10px;flex-wrap:wrap}
+.oauth-btn{appearance:none;border:0;cursor:pointer;display:inline-block;padding:10px 22px;border-radius:10px;font:inherit;font-weight:600;text-decoration:none;background:var(--o-accent);color:var(--o-accent-text)}
+.oauth-btn.oauth-secondary{background:var(--o-soft);color:var(--o-text)}
+.oauth-btn.oauth-danger{background:transparent;color:var(--o-danger);padding:6px 10px}
+.oauth-btn:disabled{opacity:.6;cursor:default}
+.oauth-small{margin:18px 0 0;font-size:13px;color:var(--o-muted)}
+
+/* 应用管理页 */
+.oauth-page{max-width:760px;margin:0 auto;padding:24px 16px 60px}
+.oauth-page h1{font-size:22px;margin:8px 0 4px}
+.oauth-page h2{font-size:18px;margin:28px 0 10px}
+.oauth-page section{background:var(--o-card);border-radius:14px;padding:18px;margin-top:14px;box-shadow:0 2px 12px rgba(0,0,0,.05)}
+.oauth-list{list-style:none;margin:0;padding:0}
+.oauth-list>li{display:flex;gap:12px;align-items:flex-start;padding:12px 0;border-top:1px solid var(--o-line)}
+.oauth-list>li:first-child{border-top:0}
+.oauth-list .oauth-app-icon{width:40px;height:40px;border-radius:10px}
+.oauth-grow{flex:1;min-width:0;overflow-wrap:anywhere}
+.oauth-tag{display:inline-block;padding:0 8px;border-radius:99px;font-size:12px;background:var(--o-soft);color:var(--o-muted);margin-left:6px;vertical-align:2px}
+.oauth-tag.active{background:#dcfce7;color:#166534}.oauth-tag.pending{background:var(--o-warn-bg);color:var(--o-warn)}.oauth-tag.disabled,.oauth-tag.rejected{background:#fee2e2;color:#991b1b}
+.oauth-form label{display:block;font-weight:600;margin:12px 0 4px}
+.oauth-form input,.oauth-form textarea,.oauth-form select{width:100%;padding:9px 11px;border:1px solid var(--o-line);border-radius:9px;background:var(--o-bg);color:var(--o-text);font:inherit}
+.oauth-form textarea{min-height:72px;resize:vertical}
+.oauth-hint{font-size:13px;color:var(--o-muted);margin:4px 0 0}
+.oauth-secret{margin:12px 0;padding:12px;border-radius:10px;background:var(--o-warn-bg);color:var(--o-warn);overflow-wrap:anywhere}
+.oauth-secret code{display:block;margin-top:6px;font-size:14px;color:var(--o-text)}
+.oauth-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+.oauth-row .oauth-btn{padding:6px 14px;font-size:14px}
+code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:13px;overflow-wrap:anywhere}
+[hidden]{display:none!important}

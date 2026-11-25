@@ -5,7 +5,7 @@ const RECOVER_SECONDS=23*3600
 const CLEANUP_SECONDS=24*3600
 const LEASE_SECONDS=300
 type UploadOperation={user_id:number;nonce:string;key:string;fingerprint:string;mime:string;size:number;state:'pending'|'ready'|'deleting';lease_token:string;lease_until:number;created_at:number}
-type UploadInput={uid:number;nonce:unknown;mime:string;ext:string;purpose:'chat'|'meme'|'dm'|'avatar';asFile:boolean;limited:boolean;t:number}&({bytes:Uint8Array;source?:never}|{source:R2ObjectBody;bytes?:never})
+type UploadInput={uid:number;nonce:unknown;mime:string;ext:string;purpose:'chat'|'meme'|'dm'|'avatar'|'leap'|'xp';asFile:boolean;limited:boolean;t:number}&({bytes:Uint8Array;source?:never}|{source:R2ObjectBody;bytes?:never})
 
 export function uploadNonce(raw:unknown):string{
   if(raw===null||raw===undefined||raw==='')return randHex(24) // 兼容旧客户端，仍登记清理依据。
@@ -17,7 +17,7 @@ export function uploadNonce(raw:unknown):string{
 async function readyResult(db:D1Database,op:UploadOperation){
   const file=await db.prepare('SELECT used FROM uploads WHERE key=? AND user_id=?').bind(op.key,op.user_id).first<{used:number}>()
   if(!file||file.used!==0)fail(409,'该上传已使用或失效，请重新选择文件','upload_expired')
-  return {key:op.key,url:`${op.key.startsWith('d/')?'/api/dm/media/':'/img/'}${op.key}`,mime:op.mime,video:op.mime.startsWith('video/')}
+  return {key:op.key,url:`${op.key.startsWith('d/')?'/api/dm/media/':op.key.startsWith('q/')?'/api/autumn/leap/media/':'/img/'}${op.key}`,mime:op.mime,video:op.mime.startsWith('video/')}
 }
 
 export async function storeUpload(db:D1Database,bucket:R2Bucket,input:UploadInput){
@@ -29,7 +29,7 @@ export async function storeUpload(db:D1Database,bucket:R2Bucket,input:UploadInpu
   const get=()=>db.prepare('SELECT * FROM upload_operations WHERE user_id=? AND nonce=?').bind(uid,nonce).first<UploadOperation>()
   let op=await get()
   if(!op){
-    const d=new Date(t*1000),key=`${purpose==='avatar'?'a':purpose==='dm'?'d':purpose==='chat'?'c':'m'}/${d.getUTCFullYear()}/${String(d.getUTCMonth()+1).padStart(2,'0')}/${randHex(12)}.${ext}`
+    const d=new Date(t*1000),key=`${purpose==='avatar'?'a':purpose==='dm'?'d':purpose==='leap'?'q':purpose==='xp'?'x':purpose==='chat'?'c':'m'}/${d.getUTCFullYear()}/${String(d.getUTCMonth()+1).padStart(2,'0')}/${randHex(12)}.${ext}`
     // 原有300次/小时门槛包含未完成操作；重试已有回执不占一个新名额。
     await db.prepare(`INSERT INTO upload_operations(user_id,nonce,key,fingerprint,mime,size,state,created_at,cleanup_after)
       SELECT ?,?,?,?,?,?,'pending',?,? WHERE ?=0 OR

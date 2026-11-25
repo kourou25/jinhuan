@@ -479,17 +479,17 @@ export function openRedpacket({ anchor, group, archiveGroup, userId, message, ac
     async function draw(reset){
       if(loading)return;loading=true;const mine=++ticket;info.textContent='正在装进红包袋…';more.disabled=true
       tabs.forEach((button,index)=>button.setAttribute('aria-pressed',String(categories[index][0]===view)))
-      scopeNote.textContent=view==='history'?'往日红包与今日已结束的记录。归档不影响原红包领取。':'仅显示北京时间今天发布的红包，往日红包请到“历史”查看。'
+      scopeNote.textContent=view==='history'?'已结束或超过 24 小时的红包，领取结果都在这里，不再发到群里。':view==='mine'?'24 小时内我发的红包和领取结果，更早的在“历史”里。':'24 小时内还能领的红包。站内红包最长有效 24 小时，领完或过期自动收进“历史”。'
       if(reset){clearClocks();list.replaceChildren()}
       try {
         if(reset)before=null
         const d=await api(`/chat/groups/${archiveGroup.id}/redpacks?view=${view}${before?'&before='+before:''}`)
         if(mine!==ticket || !dialog.isConnected)return
         list.append(...d.items.map(m=>{
-          const p=m.redpack,s=p?.snapshot,label=m.deleted?'已撤回':view==='check'?'状态待确认，点开查询':p?.game==='free_guess'?'点击查看猜词结果':p?.game==='ldc'?view==='pending'?'有 LDC 待领':'点击查看领取结果':s?.claimed?'已领取':s?.state==='expired'?'已过期':s?.remaining===0||s?.total!=null&&s?.claimed_count>=s.total?'已领完':STATES[s?.state] || (p?.provider==='native' ? p.solved?'已拆':'待拆' : '状态待确认')
+          const p=m.redpack,s=p?.snapshot,bag=p?.bag,label=m.deleted?'已撤回':bag?.ended?(p.game==='free_guess'?'已结束':({full:'已领完',expired:'已过期',closed:'已结束'})[bag.why]||'已结束')+(bag.count?` · ${bag.claimed}/${bag.count} 份`:''):view==='check'?'状态待确认，点开查询':p?.game==='free_guess'?'点击查看猜词结果':p?.game==='ldc'?view==='pending'?'有 LDC 待领':'点击查看领取结果':s?.claimed?'已领取':s?.state==='expired'?'已过期':s?.remaining===0||s?.total!=null&&s?.claimed_count>=s.total?'已领完':STATES[s?.state] || (p?.provider==='native' ? p.solved?'已拆':'待拆' : '状态待确认')
           return btn([p?.cover?h('img',{class:'rpk-archive-cover',src:p.cover,alt:'',loading:'lazy'}):h('span',{class:'rpk-archive-icon'},p?.provider==='coin52'?dcoinIcon(h):icon('redpack')),h('span',{class:'rpk-archive-copy'},h('strong',null,p?.prompt || `${m.user.name || m.user.username}的红包`),
             h('span',null,`${p?.game==='free_guess'?'无奖励猜词':p?.game==='ldc'?'本站 LDC':p?.provider==='coin52'?'红包':PROVIDERS[p?.provider] || '红包'} · ${label}`),view==='history'&&h('time',null,'发布于 '+new Date(m.created_at*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false})+'（北京时间）'),p?.notify_at && h('time',null,'到点提醒 '+new Date(p.notify_at*1000).toLocaleString('zh-CN',{hour12:false})),
-            countdown(p?.draw||s),s?.expires_at&&!['lottery','timed_draw'].includes(s.kind) && h('time',null,'截止 '+new Date(s.expires_at*1000).toLocaleString('zh-CN',{hour12:false})))],()=>{
+            bag&&!m.deleted&&packetBagLine(bag),countdown(p?.draw||s),s?.expires_at&&!['lottery','timed_draw'].includes(s.kind) && h('time',null,'截止 '+new Date(s.expires_at*1000).toLocaleString('zh-CN',{hour12:false})))],()=>{
               if(m.deleted)return
               message=m
               externalInspected=false;claimOnOpen=view==='pending'
@@ -504,6 +504,20 @@ export function openRedpacket({ anchor, group, archiveGroup, userId, message, ac
       finally{if(mine===ticket){loading=false;more.disabled=false}}
     }
     draw(true)
+  }
+
+  // 袋子里每个红包的一行：没结束显示还剩多久，结束了显示谁领了多少、手气王 / 手气亡
+  function packetBagLine(bag){
+    if(!bag.ended){
+      if(!bag.ends_at)return null
+      const left=Math.max(0,bag.ends_at-Math.floor(Date.now()/1000)),hours=Math.floor(left/3600),minutes=Math.floor(left%3600/60)
+      return h('time',null,left<=0?'即将结束':'还剩 '+(hours?hours+' 小时 ':'')+(hours?minutes+' 分':Math.max(1,minutes)+' 分钟'))
+    }
+    const people=bag.people||[]
+    if(!people.length)return bag.count?h('span',{class:'rpk-archive-result'},bag.claimed?'打开查看领取记录':'无人领取'):null
+    const names=kind=>people.filter(x=>x.luck===kind).map(x=>x.name).join('、'),king=names('king'),last=names('last')
+    return h('span',{class:'rpk-archive-result'},people.slice(0,8).map(x=>`${x.name} ${x.amount}${x.pending?'（待发放）':''}`).join('、')+(bag.claimed>8?' 等':'')+' '+bag.unit,
+      king&&h('b',null,` 手气王：${king}`),last&&h('b',null,` 手气亡：${last}`))
   }
 
   function senderBoard(){

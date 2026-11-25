@@ -3,6 +3,7 @@ export type MergeEligibilityReason='ok'|'ineligible'|'identity_conflict'|'creden
 
 // 每个用户关联列必须明确处理。MG05实施时复用此清单验收迁移/撤销，不能将清单视为已实现事务。
 export const MERGE_RELATION_POLICY={
+  bottles:{author_id:'block'},bottle_draws:{user_id:'block'},bottle_likes:{user_id:'block'},bottle_keeps:{user_id:'block'},bottle_replies:{user_id:'block'},bottle_reports:{user_id:'block'},bottle_author_views:{viewer_id:'block'},bottle_poops:{user_id:'block'},bottle_rewards:{user_id:'block',actor_id:'block'},
   pet_saves:{user_id:'block'},
   pet_progress:{user_id:'block'},pet_battles:{attacker_id:'block',defender_id:'block'},
   pet_world:{user_id:'block'},
@@ -38,6 +39,7 @@ export const MERGE_RELATION_POLICY={
   packet_draw_entries:{user_id:'block'},packet_events:{user_id:'block'},packet_coin_escrows:{owner_id:'block'},fish_accounts:{user_id:'block'},ldc_accounts:{user_id:'block'},ldc_packets:{owner_id:'block'},ldc_awards:{recipient_id:'block'},ldc_questions:{user_id:'block'},
   ai_jobs:{user_id:'block'},anchors:{user_id:'clear'},api_tokens:{user_id:'revoke'},auth_tokens:{user_id:'revoke'},
   badge_log:{user_id:'clear'},chat_bans:{user_id:'block'},chat_boosts:{user_id:'block'},chat_groups:{created_by:'block'},
+  chat_bot_installations:{bot_id:'block',created_by:'block'},
   chat_join_reqs:{user_id:'clear'},chat_members:{user_id:'membership'},chat_messages:{user_id:'system-join-only'},
   chat_reactions:{user_id:'block'},chat_sticker_favorites:{user_id:'block'},dm_threads:{user_low:'block',user_high:'block'},dm_messages:{sender_id:'block'},chat_redpack_external_views:{user_id:'block'},chat_redpack_opens:{user_id:'block'},
   chat_redpack_successes:{user_id:'block'},chat_title_raffles:{creator_id:'block',winner_id:'block'},chat_title_raffle_entries:{user_id:'block'},comments:{user_id:'block'},fav_folders:{user_id:'clear'},favorites:{user_id:'block'},
@@ -49,6 +51,8 @@ export const MERGE_RELATION_POLICY={
   sessions:{user_id:'revoke'},short_replies:{user_id:'block'},uploads:{user_id:'block'},user_badges:{user_id:'clear'},
   user_limits:{user_id:'block',by_id:'block'},user_official_titles:{user_id:'block',granted_by:'block'},user_unlocks:{user_id:'block'},
   users:{id:'retire',invited_by:'invitation'},view_days:{user_id:'clear'},views:{user_id:'clear'},daily_post_views:{user_id:'clear'},
+  leap_posts:{user_id:'block'},leap_comments:{user_id:'block'},leap_likes:{user_id:'block'},
+  autumn_reports:{reporter_id:'block',handled_by:'block'},autumn_reveals:{actor_id:'block'},autumn_leaves:{user_id:'clear',giver_id:'clear'},autumn_memorial:{user_id:'clear'},autumn_gifts:{sender_id:'block',recipient_id:'block'},autumn_opt_out:{user_id:'clear'},
 } as const
 
 const contentTables:Record<string,string>={guess_free_rounds:'owner_id',guess_room_messages:'user_id',memes:'author_id',comments:'user_id',chat_boosts:'user_id',road_items:'user_id',
@@ -77,8 +81,12 @@ assetsTables.farm_loss_totals='user_id';assetsTables.farm_lease_offers='owner_id
 assetsTables.activity_honor_events='user_id'
 contentTables.chat_message_favorites='user_id'
 contentTables.novel_works='user_id'
+contentTables.bottles='author_id';contentTables.bottle_draws='user_id';contentTables.bottle_likes='user_id';contentTables.bottle_keeps='user_id';contentTables.bottle_replies='user_id';contentTables.bottle_reports='user_id';contentTables.bottle_author_views='viewer_id';contentTables.bottle_poops='user_id';contentTables.bottle_rewards='user_id'
+for(const t of ['leap_posts','leap_comments','leap_likes'])contentTables[t]='user_id'
+contentTables.autumn_reports='reporter_id';contentTables.autumn_gifts='sender_id';assetsTables.autumn_gifts='recipient_id'
 assetsTables.instant_card_fingers='user_id';assetsTables.instant_card_receipts='user_id';assetsTables.instant_card_pools='owner_id';assetsTables.title_awards='user_id'
 assetsTables.coin52_packets='owner_id';assetsTables.coin52_packet_slots='recipient_id'
+assetsTables.chat_bot_installations='created_by'
 
 // 单条只读查询；最终事务可将同一SQL作为标量子查询嵌入claim门槛，避免仅在HTTP预检。
 // 只使用6个绑定参数，防止关联表增长耗尽D1参数预算。

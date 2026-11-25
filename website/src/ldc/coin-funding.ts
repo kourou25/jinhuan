@@ -10,7 +10,7 @@ export function reserveCoinPool(db:D1Database,id:string,uid:number,coins:number,
    AND EXISTS(SELECT 1 FROM ldc_packets WHERE packet_id=?2 AND owner_id=?1 AND payment_provider='coin52')`).bind(uid,id,attempt,coins,t),
   db.prepare(`UPDATE coin52_wallets SET balance=balance-?,revision=revision+1,updated_at=? WHERE user_id=? AND ${gate}`).bind(coins,t,uid,attempt),
   db.prepare(`INSERT OR IGNORE INTO packet_coin_escrows(packet_id,owner_id,reserved,remaining,created_at) SELECT ?,?,?,?,? WHERE ${gate}`).bind(id,uid,coins,coins,t,attempt),
-  db.prepare("SELECT CASE WHEN EXISTS(SELECT 1 FROM packet_coin_escrows WHERE packet_id=?) THEN 1 ELSE json('dcoin_balance_insufficient') END").bind(id),
+  db.prepare('INSERT INTO packet_coin_reservation_checks(packet_id) VALUES (?)').bind(id),
  ]
 }
 export async function settleCoinAward(db:D1Database,awardId:string,uid:number,t:number){

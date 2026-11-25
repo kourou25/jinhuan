@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>第三方应用 · 尽欢</title>
+<link rel="stylesheet" href="/oauth.css">
+</head>
+<body>
+<main class="oauth-page">
+  <p><a href="/me/account">← 账号设置</a></p>
+  <h1>用尽欢账号登录</h1>
+  <p class="oauth-hint">其他网站和应用可以接入「用尽欢账号登录」（标准 OAuth 2.0 + OpenID Connect）。发现文档：<code id="discovery"></code></p>
+  <p id="status" role="status">正在读取…</p>
+
+  <div id="content" hidden>
+    <section id="grants">
+      <h2>已授权的应用</h2>
+      <p class="oauth-hint">撤销后，应用拿到的令牌立即失效；下次登录该应用需要重新同意。</p>
+      <ul class="oauth-list" id="grant-list"></ul>
+      <p id="grant-empty" class="oauth-hint" hidden>还没有授权过任何应用。</p>
+    </section>
+
+    <section id="apps">
+      <h2>我的应用（开发者）</h2>
+      <p class="oauth-hint">登记后需要尽欢站长审核，通过后才能使用。回调地址必须完全一致；除本机调试（http://localhost）外只能用 https。</p>
+      <p id="newbie-note" class="oauth-hint" hidden>注册满 30 天后才能申请应用。</p>
+      <div id="secret-box" class="oauth-secret" hidden></div>
+      <ul class="oauth-list" id="app-list"></ul>
+      <form class="oauth-form" id="app-form">
+        <h2 id="form-title">登记新应用</h2>
+        <input type="hidden" name="client_id">
+        <label for="f-name">应用名称</label><input id="f-name" name="name" maxlength="40" required>
+        <label for="f-homepage">主页</label><input id="f-homepage" name="homepage" type="url" placeholder="https://example.com" required>
+        <label for="f-icon">图标地址（可选）</label><input id="f-icon" name="icon_url" type="url" placeholder="https://example.com/icon.png">
+        <label for="f-desc">简介（可选，显示在授权页）</label><textarea id="f-desc" name="description" maxlength="200"></textarea>
+        <label for="f-redirects">回调地址（每行一个，最多 5 个）</label><textarea id="f-redirects" name="redirect_uris" placeholder="https://example.com/auth/callback" required></textarea>
+        <label for="f-type">应用类型</label>
+        <select id="f-type" name="client_type">
+          <option value="confidential">有服务端（confidential，使用 client_secret）</option>
+          <option value="public">纯前端 / 移动端（public，必须用 PKCE S256，无密钥）</option>
+        </select>
+        <p class="oauth-hint">修改回调地址或类型后需要重新审核。</p>
+        <div class="oauth-row"><button class="oauth-btn" type="submit" id="form-submit">提交审核</button><button class="oauth-btn oauth-secondary" type="button" id="form-cancel" hidden>取消修改</button></div>
+        <p id="form-error" role="alert" class="oauth-hint"></p>
+      </form>
+    </section>
+
+    <section id="admin" hidden>
+      <h2>站长：应用审核</h2>
+      <label class="oauth-hint"><input type="checkbox" id="email-scope"> 开放 email 权限（还需要对每个应用单独勾选）</label>
+      <ul class="oauth-list" id="admin-list"></ul>
+      <p id="admin-empty" class="oauth-hint" hidden>没有应用。</p>
+    </section>
+  </div>
+</main>
+<script src="/oauth-apps.js"></script>
+</body>
+</html>

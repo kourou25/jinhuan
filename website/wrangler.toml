@@ -22,7 +22,7 @@ simple = { limit = 10, period = 60 }
 [assets]
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/auth/*", "/img/*", "/ext", "/m/*", "/s/*", "/admin/ai", "/admin/flags", "/admin/invites", "/me/invites", "/me/account", "/me/account/email", "/me/account/password", "/login", "/register", "/reset", "/i/*", "/i", "/welcome", "/", "/activate", "/music", "/farm", "/chat", "/chat/*", "/road", "/novels", "/novels/*", "/slime", "/arcade", "/arcade/*", "/pets", "/manor", "/hb/*"]
+run_worker_first = ["/api/*", "/auth/*", "/img/*", "/ext", "/m/*", "/s/*", "/admin/ai", "/admin/flags", "/admin/invites", "/me/invites", "/me/account", "/me/account/email", "/me/account/password", "/login", "/register", "/reset", "/i/*", "/i", "/welcome", "/", "/activate", "/music", "/farm", "/chat", "/chat/*", "/road", "/autumn", "/autumn/*", "/novels", "/novels/*", "/slime", "/arcade", "/arcade/*", "/pets", "/manor", "/hb/*", "/oauth/*", "/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"]
 
 [[d1_databases]]
 binding = "DB"
@@ -53,6 +53,8 @@ ADMIN_USER_IDS = "" # 站长账号 ID，登录后从本地数据库查
 REGISTER_MODE = "open"
 # 发图所需最低信任等级
 MIN_POST_TRUST_LEVEL = "1"
+# 「用尽欢账号登录」的签发方（OIDC issuer），见 docs/oauth.md
+OAUTH_ISSUER = "https://52dmeme.com"
 # 频率限制（发太快提示「慢一点」等），填 "on" 才打开；人少先关着
 # RATE_LIMIT = "on"
 # 允许代理的外链图域名（历史图兜底用，只走边缘缓存，不落存储）

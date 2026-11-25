@@ -18,16 +18,16 @@ export function socialCards(message,{h,api,onRemoval,onPost,onOpenMedia,renderVi
   const shell=h('section',{class:'cm-social'+(post?' social-post':''),'aria-label':'分享内容预览'})
   const status=h('p',{class:'cm-social-status',role:'status'},'进入视野后加载内容')
   const origin=h('a',{href:link.url,target:'_blank',rel:'noopener noreferrer',hidden:true},'打开原链接 ↗')
-  const area=h('div',{class:'cm-social-area'})
-  let state='idle',version=0,abort,timeout,observer,visibleObserver,disposePlayer=()=>{}
-  const clear=()=>{version++;abort?.abort();clearTimeout(timeout);observer?.disconnect();disposePlayer();disposePlayer=()=>{};area.querySelectorAll('video').forEach(v=>{v.pause();v.removeAttribute('src');v.load()});area.replaceChildren()}
+  const area=h('div',{class:'cm-social-area is-pending'})
+  let state='idle',version=0,abort,timeout,observer,visibleObserver,disposePlayer=()=>{},busyTries=0,busyTimer
+  const clear=()=>{version++;abort?.abort();clearTimeout(timeout);clearTimeout(busyTimer);observer?.disconnect();disposePlayer();disposePlayer=()=>{};area.querySelectorAll('video').forEach(v=>{v.pause();v.removeAttribute('src');v.load()});area.replaceChildren()}
   const retry=h('button',{type:'button',class:'btn sm',hidden:true,onclick:()=>{if(state==='error'){state='idle';return load()}}},'重试加载')
   async function load(){
    if(state!=='idle'||shell.classList.contains('blur'))return
    clear();state='loading';const run=++version;retry.hidden=true;origin.hidden=true;status.textContent='正在加载内容…'
    const current=()=>run===version&&shell.isConnected
-   const failed=()=>{if(current()){clear();state='error';status.textContent='内容暂未加载或原站限制访问';origin.hidden=false;retry.hidden=false}}
-   const loaded=()=>{if(current()){clearTimeout(timeout);state='ready';status.textContent=''}}
+   const failed=()=>{if(current()){clear();state='error';area.classList.remove('is-pending');status.textContent='内容暂未加载或原站限制访问';origin.hidden=false;retry.hidden=false}}
+   const loaded=()=>{if(current()){clearTimeout(timeout);state='ready';area.classList.remove('is-pending');status.textContent=''}}
    // 短链解析与备用公开端点串行时可能超过15秒；不可在服务端预算内提前销毁播放器。
    timeout=setTimeout(failed,link.provider==='douyin'?35000:20000)
    try{
@@ -50,6 +50,7 @@ export function socialCards(message,{h,api,onRemoval,onPost,onOpenMedia,renderVi
      }
      if(data.embed&&link.provider==='instagram'){area.replaceChildren();area.classList.remove('is-summary');timeout=setTimeout(failed,15000)}else{
      if(data.image){const img=h('img',{src:data.image,alt:'分享封面',loading:'lazy',referrerpolicy:'no-referrer',onerror:e=>e.currentTarget.remove()});area.append(img)}
+     if(!data.available&&data.reason==='login'){clear();state='error';area.classList.remove('is-pending');status.textContent=data.description||'原站需要登录才能查看，可以打开原链接。';origin.hidden=false;retry.hidden=true;return}
      if(!data.available){failed();return}
      loaded();if(data.image){origin.hidden=false;status.textContent='原站仅返回封面，未提供可播放媒体'}return
      }
@@ -71,7 +72,14 @@ export function socialCards(message,{h,api,onRemoval,onPost,onOpenMedia,renderVi
       observer=new win.MutationObserver(()=>{if(area.querySelector('iframe')){observer.disconnect();loaded()}});observer.observe(area,{childList:true,subtree:true});win.instgrm.Embeds.process()
      }
     }
-   }catch(error){if(error.name!=='AbortError')failed()}
+   }catch(error){
+    if(error.name==='AbortError')return
+    if(error.status===429&&busyTries<4&&current()){
+     busyTries++;clearTimeout(timeout);state='idle';status.textContent='预览排队中，稍后自动加载…'
+     busyTimer=setTimeout(()=>{if(shell.isConnected)load()},6000+Math.random()*6000*busyTries);return
+    }
+    failed()
+   }
   }
   const postButton=canSocialPost(link.provider)&&onPost?h('button',{type:'button',class:'btn sm cm-social-post-action',onclick:e=>onPost(e.currentTarget,index)},message.meme_id?'查看帖子':'转成帖子'):null
   shell.append(area,status,h('div',{class:'cm-social-head'},postButton,retry,origin))

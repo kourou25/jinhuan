@@ -1,6 +1,7 @@
 // Shared by the Worker and the lazily generated browser module.
 export const TITLE_MAX_LEVEL=5200
 export const TITLE_PITY=60
+export const TITLE_DRAW_COUNTS: readonly number[]=[1,10,60,100,200]
 export const TITLE_STAGES=[1,10,50,100,300,800,1600,2600,4000,5200] as const
 export const TITLE_STAGE_NAMES=['初遇','萌动','灵巧','共鸣','跃迁','巡游','星辉','幻境','盛典','永恒'] as const
 export const titleStage=(level:number)=>Math.max(1,TITLE_STAGES.filter(n=>n<=Math.min(TITLE_MAX_LEVEL,level)).length)
@@ -16,7 +17,7 @@ export function chickengunSize(level:number,requested:unknown,random=false,seed:
  for(const c of String(seed)){hash^=c.charCodeAt(0);hash=Math.imul(hash,16777619)}
  return CHICKENGUN_MIN_SIZE+(hash>>>0)%(size-CHICKENGUN_MIN_SIZE+1)
 }
-export const titleChance=(finger:number)=>10+Math.max(0,Math.min(5,Math.trunc(finger)))*2
+export const titleChance=(finger:number)=>50+Math.max(0,Math.min(5,Math.trunc(finger)))*2
 const rows=[
  ['newcomer','初见欢欢','带着好奇，开启新的故事','sprout','#659d83','#f1ce86','normal'],
  ['mona','莫奈之王','睡莲与湖光，画中漫游','lotus','#5e9b92','#d8a4ca','normal'],

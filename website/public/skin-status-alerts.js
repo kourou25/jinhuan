@@ -15,7 +15,7 @@ export function createSkinStatusAlerts({fetcher=(...args)=>fetch(...args),storag
     const response=await fetcher(endpoint,{headers:{Accept:'application/vnd.github+json'},signal:controller.signal,credentials:'omit'});if(!response.ok)throw Error('github_unavailable')
     const data=await response.json();if(!Array.isArray(data))throw Error('github_invalid')
     return data.filter(x=>!x.pull_request&&x.user?.login==='github-actions[bot]'&&/^\[装扮自动化\] (检查异常|合并等待|上线等待) #\d+$/.test(x.title)&&Number.isSafeInteger(x.number)&&x.number>0).slice(0,20).map(x=>({kind:'skin_alert',meme_id:x.number,user_id:0,gid:-3,val:x.title.includes('合并等待')?'社区装扮投稿尚未合并，请查看处理记录。':x.title.includes('上线等待')?'社区装扮已合并，但尚无网站上线确认。':'社区装扮自动检查失败或超时，请查看处理记录。',at:Math.floor((Date.parse(x.updated_at)||time)/1000),url:destination+'issues/'+x.number,skinKey:x.number+':'+x.updated_at}))
-   }catch{return [{kind:'skin_alert',meme_id:0,user_id:0,gid:-3,val:'无法读取装扮自动化状态，请前往 GitHub 查看。',at:Math.floor(time/1000),url:destination+'actions',skinKey:'unavailable:'+Math.floor(time/86400000)}]}
+   }catch{return [] /* 网络读不到 GitHub 时不提醒：只有自动化建了未关闭的异常 Issue 才算需要处理 */}
    finally{clearTimeout(timer)}
   })()
   try{cached=await pending;last=time;return view(cached)}finally{pending=null}

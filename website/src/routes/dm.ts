@@ -127,7 +127,7 @@ async function send(c:C,threadId:number,uid:number,input: ReturnType<typeof mess
   const old=await existing();if(old)return replay(old)
   if(input.reply&&!await c.env.DB.prepare('SELECT 1 FROM dm_messages WHERE id=? AND thread_id=?').bind(input.reply,thread.id).first())fail(400,'不能引用其他会话的消息')
   let media:Media[]
-  try{media=await prepareMedia(c,uid,input.media,true,true)}catch(error){const old=await existing();if(old)return replay(old);throw error}
+  try{media=await prepareMedia(c,uid,input.media,true,'d')}catch(error){const old=await existing();if(old)return replay(old);throw error}
   const keys=mediaKeys(media!)
   try{await commitUploadContent(c.env.DB,uid,keys,[
     c.env.DB.prepare(`INSERT OR IGNORE INTO dm_messages(thread_id,sender_id,body,client_nonce,created_at,media,reply_id,updated_at,request_hash)

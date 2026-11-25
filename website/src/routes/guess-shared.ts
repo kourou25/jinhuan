@@ -84,7 +84,7 @@ sharedRoutes.get('/api/guess-sidebar/messages',async c=>{
  // Only game state metadata crosses the original chat boundary; never message text.
  const candidates=await c.env.DB.batch(['ldc_packets','guess_free_rounds'].map(table=>c.env.DB.prepare(`SELECT m.id,m.updated_at,m.deleted,p.room_revision,p.created_at FROM ${table} p
  JOIN chat_redpacks r ON r.id=p.packet_id JOIN chat_messages m ON m.id=r.message_id
- WHERE p.group_id=1 AND p.mode IN ('guess','clues') AND m.created_at>=? ORDER BY p.created_at DESC LIMIT 1`).bind(g.joined_at)));
+ WHERE p.group_id=1 AND p.mode IN ('guess','clues') AND m.created_at>=? AND m.id>=? ORDER BY p.created_at DESC LIMIT 1`).bind(g.joined_at,g.history_floor)));
  const signal=candidates.flatMap(r=>r.results).sort((a:any,b:any)=>b.created_at-a.created_at||b.id-a.id)[0]||null;
  return c.json({items:rows.map(r=>dto(r,u.id,isChatAdmin(u))),changed:changed.results.map(r=>dto(r,u.id,isChatAdmin(u))),more:fresh.results.length>100,day,now:now(),signal});
 });

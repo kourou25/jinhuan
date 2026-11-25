@@ -9,7 +9,7 @@ export type MediaIn = { key?: unknown; poster?: unknown; w?: unknown; h?: unknow
 // kind 'f'：群聊文件附件，n 文件名、s 大小；b：群聊里发的图整张先糊上（点一下看）
 export type Media = { k: string; p?: string; w: number | null; h: number | null; kind?: 'v' | 'l' | 'g' | 'f'; o?: string; n?: string; s?: number; b?: 1; c?: 1 }
 export const fileName = (s: unknown) => String(s ?? '').replace(/[\u0000-\u001f\\/:*?"<>|]+/g, '_').trim().slice(0, 100) || '文件'
-export async function prepareMedia(c: C, uid: number, raw: unknown, allowFile = false, privateOnly = false): Promise<Media[]> {
+export async function prepareMedia(c: C, uid: number, raw: unknown, allowFile = false, privatePrefix: false | 'd' | 'q' | 'x' = false): Promise<Media[]> {
   const list = (Array.isArray(raw) ? raw : []).slice(0, MAX_ITEMS) as MediaIn[]
   const items: Media[] = []
   const keys: string[] = []
@@ -18,7 +18,7 @@ export async function prepareMedia(c: C, uid: number, raw: unknown, allowFile = 
     const p = r?.poster ? String(r.poster) : ''
     const o = r?.orig ? String(r.orig) : ''
     if (!k) continue
-    if ([k,p,o].filter(Boolean).some(key=>privateOnly?!key.startsWith('d/'):key.startsWith('d/'))) fail(400,'附件用途不匹配，请重新上传')
+    if ([k,p,o].filter(Boolean).some(key=>privatePrefix?!key.startsWith(privatePrefix+'/'):/^[dqx]\//.test(key))) fail(400,'附件用途不匹配，请重新上传')
     keys.push(k)
     if (p) keys.push(p)
     if (o) keys.push(o)

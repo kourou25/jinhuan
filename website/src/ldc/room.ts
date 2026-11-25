@@ -5,6 +5,7 @@ import {attachLuckybag} from '../games/guess-luckybag'
 import {guessAnnouncements} from './announcements'
 import {closeVoteView} from './cancel'
 import type {C,User} from '../types'
+import type {ChatHistoryBoundary} from '../services/chat-access'
 import {fail} from '../lib/http'
 import {now} from '../lib/time'
 import {nativeView,ready,type NativePacket} from './packets'
@@ -47,15 +48,16 @@ export async function guessStatsView(c:C,gid:number,uid:number){
  return {period,today,totals:{today:byDay[today]||{rounds:0,wins:0},all:byDay['*']||{rounds:0,wins:0}},leaders:ranks.results,mine:mine?.wins||0,mineRank,winrate:await winrateView(c,gid,uid,day)}
 }
 
-export async function guessRoomView(c:C,gid:number,uid:number,joinedAt:number){
- const data=await guessRoomViewBase(c,gid,uid,joinedAt)
+export async function guessRoomView(c:C,gid:number,uid:number,history:ChatHistoryBoundary){
+ const data=await guessRoomViewBase(c,gid,uid,history)
  return ['overview','result'].includes(c.req.query('view')||'chat')?attachLuckybag(c,data,uid):data
 }
-async function guessRoomViewBase(c:C,gid:number,uid:number,joinedAt:number){
+async function guessRoomViewBase(c:C,gid:number,uid:number,history:ChatHistoryBoundary){
+ const {joined_at:joinedAt,history_floor:historyFloor}=history
  const mid=integer(c.req.query('message_id')),view=c.req.query('view')||'chat'
- if(view==='announcements')return guessAnnouncements(c,gid,joinedAt)
+ if(view==='announcements')return guessAnnouncements(c,gid,history)
  if(view==='participants'){
-  const p=await loadGame(c,gid,mid),offset=integer(c.req.query('offset'));if(offset>50000)fail(400,'名单分页无效')
+  const p=await loadGame(c,gid,history,mid),offset=integer(c.req.query('offset'));if(offset>50000)fail(400,'名单分页无效')
   return p?publicGuessParticipants(c.env.DB,p.packet_id,gameTables(p).questions,p.owner_id,p.message_id,offset):{message_id:null,total:0,items:[],next:null}
  }
  if(!['chat','guesses','facts','negative','unknown','not_question','overview','history','result'].includes(view))fail(400,'专区视图无效')
@@ -64,14 +66,14 @@ async function guessRoomViewBase(c:C,gid:number,uid:number,joinedAt:number){
   const batches=await Promise.all(gameStores.map(store=>c.env.DB.prepare(`SELECT p.packet_id,p.created_at,p.ends_at,${store.total} AS total_cents,'${store.reward}' AS reward_type,${store.reward==='none'?"'credit'":'p.payment_provider'} AS payment_provider,p.guess_count,p.question_count,
    m.id AS message_id,COALESCE(u.nick,u.name,u.username) AS owner_name FROM ${store.rounds} p INDEXED BY ${store.history}
    JOIN chat_redpacks r ON r.id=p.packet_id JOIN chat_messages m ON m.id=r.message_id LEFT JOIN users u ON u.id=p.owner_id
-   WHERE p.group_id=? AND p.mode IN ('guess','clues') AND m.deleted=0 AND NOT (${store.open})
+   WHERE p.group_id=? AND p.mode IN ('guess','clues') AND m.deleted=0 AND NOT (${store.open}) AND m.created_at>=? AND m.id>=?
    ${cursor?'AND (p.created_at,p.packet_id)<(?,?)':''} ORDER BY p.created_at DESC,p.packet_id DESC LIMIT 13`)
-   .bind(gid,now(),...cursor||[]).all<{packet_id:string;created_at:number;ends_at:number;total_cents:number;guess_count:number;question_count:number;message_id:number;owner_name:string;reward_type:string;payment_provider:string}>()))
+   .bind(gid,now(),joinedAt,historyFloor,...cursor||[]).all<{packet_id:string;created_at:number;ends_at:number;total_cents:number;guess_count:number;question_count:number;message_id:number;owner_name:string;reward_type:string;payment_provider:string}>()))
   const rows={results:batches.flatMap(b=>b.results).sort((a,b)=>b.created_at-a.created_at||b.packet_id.localeCompare(a.packet_id))}
   const page=rows.results.slice(0,12),last=page.at(-1)
   return {items:page.map(({packet_id,total_cents,...r})=>({...r,total:money(total_cents),currency:r.payment_provider==='coin52'?'D币':'LDC'})),next:rows.results.length>12&&last?encode([last.created_at,last.packet_id]):null,now:now()}
  }
- const p=await loadGame(c,gid,mid)
+ const p=await loadGame(c,gid,history,mid)
  if(!p)return {round:null,items:[],next:null,now:now()}
  const packetId=p.packet_id,tables=gameTables(p),rewardType=p.reward_type==='none'?'none':'ldc'
  const state=await nativeView(c,p.packet_id,uid,p)
@@ -97,7 +99,7 @@ async function guessRoomViewBase(c:C,gid:number,uid:number,joinedAt:number){
  const scored=kind==='guesses',cursor=decode(c.req.query(view==='overview'?kind+'_cursor':'cursor'),scored?3:2)
  const live=`${guessVisibleUserSql('q.user_id','?2')}
   AND ((q.source_room_id IS NOT NULL AND EXISTS(SELECT 1 FROM guess_room_messages s WHERE s.id=q.source_room_id AND s.created_at>=${joinedAt} AND s.deleted=0 AND s.body=q.source_body AND s.user_id=q.user_id))
-   OR (q.source_room_id IS NULL AND EXISTS(SELECT 1 FROM chat_messages s WHERE s.id=q.source_message_id AND s.created_at>=${joinedAt} AND s.deleted=0 AND s.body=q.source_body AND s.user_id=q.user_id)))`
+   OR (q.source_room_id IS NULL AND EXISTS(SELECT 1 FROM chat_messages s WHERE s.id=q.source_message_id AND s.group_id=?2 AND s.created_at>=${joinedAt} AND s.id>=${historyFloor} AND s.deleted=0 AND s.body=q.source_body AND s.user_id=q.user_id)))`
  // Reuse this request's visibility-filtered rows for ranking and both participant
  // aggregates. Inlining repeats member/source checks for each output candidate.
  const statement=c.env.DB.prepare(`WITH eligible AS MATERIALIZED (

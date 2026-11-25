@@ -36,3 +36,7 @@ public/xs/art/
 # 本地构建比对产物
 .build/
 node_modules
+
+# 服务器版构建产物
+server/dist/
+server/vars.json

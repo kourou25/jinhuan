@@ -29,6 +29,8 @@ platform.put('/api/admin/flags', async c => {
   await setSetting(c.env.DB, 'plan', body.value as string)
   return c.json({ok:true})
 })
+// 第三方应用管理页在 /oauth-apps；大家顺手输入的 /apps 也带过去（以前会落到前端 404）
+for (const path of ['/apps', '/apps/']) platform.get(path, c => c.redirect('/oauth-apps' + new URL(c.req.url).search, 302))
 for (const path of ['/admin/ai','/admin/invites','/admin/flags','/me/invites','/me/account','/me/account/email','/me/account/password','/login','/register','/reset','/auth/email/verify','/auth/email/change','/i/:code','/i','/welcome']) platform.get(path, async c => {
   if(path==='/i/:code'){
     const code=(c.req.param('code')??'').toUpperCase()

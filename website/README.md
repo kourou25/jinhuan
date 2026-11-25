@@ -1,6 +1,6 @@
 # 尽欢主站
 
-这是线上站点的完整源码：Cloudflare Worker（Hono + D1 + R2）、无构建的静态前端 `public/`、React 账号页 `web/`。
+这是线上站点的完整源码：Hono 后端、无构建的静态前端 `public/`、React 账号页 `web/`。线上自 2026-11-23 起运行在自有服务器的 Node.js 上；`server/` 用 SQLite 和本地磁盘实现 D1、R2 的接口，同一套业务代码仍可部署到 Cloudflare Workers。
 
 ## 本地运行
 
@@ -9,16 +9,28 @@
 ```sh
 npm ci
 npx wrangler d1 execute meme-hall --local --file=schema.sql
-for f in migrations/01[3-5]*.sql; do npx wrangler d1 execute meme-hall --local --file="$f"; done
 cp .dev.vars.example .dev.vars   # 填一个至少 16 位的 DEV_LOGIN_KEY
 npm run dev
 ```
 
 打开 http://localhost:8787/ ，访问 `/auth/dev` 用测试口令登录。需要站长权限时，从本地数据库查到测试账号 ID 填进 `wrangler.toml` 的 `ADMIN_USER_IDS`。
 
-`schema.sql` 截至 0132 号迁移；之后的结构在 `migrations/0133`–`0157`，新库按上面的命令依次执行。
+`schema.sql` 是当前线上的完整表结构（含 0201 号及之前的全部迁移），新库只需执行它。`migrations/` 供已有实例升级使用。
 
-## 自己部署
+## 自己部署（Node.js 服务器）
+
+```sh
+npm ci && npx vite build && node server/build.mjs
+mkdir -p /meme/data/db /meme/data/storage /meme/config /meme/logs /meme/cache
+sqlite3 /meme/data/db/meme-hall.sqlite < schema.sql
+# 新库已包含全部迁移，登记为已执行，否则发布脚本会再跑一遍
+for f in migrations/*.sql; do sqlite3 /meme/data/db/meme-hall.sqlite "INSERT INTO d1_migrations(name) VALUES('$(basename $f)')"; done
+cd server && MEME_ROOT=/meme CLIENT_DIR=../web/dist/client node main.mjs   # 监听 127.0.0.1:8080
+```
+
+机密写在 `/meme/config/.env`。`deploy/` 里有 nginx、systemd、备份和发布脚本，服务器地址用环境变量 `MEME_HOST` 指定。漂流瓶的内置敏感词库不随仓库分发，部署后在站长后台自行维护。
+
+## 自己部署（Cloudflare）
 
 1. 用自己的 Cloudflare 账号创建 D1（`meme-hall`，另建一个小程序沙箱库可选）和 R2（`meme-hall-images`），把 ID 填进 `wrangler.toml`。
 2. 在 `wrangler.toml` 的 `[vars]` 填好站点配置，见下表。`B12_CLOCK_START`（鱼鱼谷岛钟起点）首次部署填当前 Unix 秒数，之后不要改。

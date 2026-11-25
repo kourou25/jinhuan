@@ -1,6 +1,7 @@
 // src/shared/title-collection.ts
 var TITLE_MAX_LEVEL = 5200;
 var TITLE_PITY = 60;
+var TITLE_DRAW_COUNTS = [1, 10, 60, 100, 200];
 var TITLE_STAGES = [1, 10, 50, 100, 300, 800, 1600, 2600, 4e3, 5200];
 var TITLE_STAGE_NAMES = ["\u521D\u9047", "\u840C\u52A8", "\u7075\u5DE7", "\u5171\u9E23", "\u8DC3\u8FC1", "\u5DE1\u6E38", "\u661F\u8F89", "\u5E7B\u5883", "\u76DB\u5178", "\u6C38\u6052"];
 var titleStage = (level) => Math.max(1, TITLE_STAGES.filter((n) => n <= Math.min(TITLE_MAX_LEVEL, level)).length);
@@ -18,7 +19,7 @@ function chickengunSize(level, requested, random = false, seed = "preview") {
   }
   return CHICKENGUN_MIN_SIZE + (hash >>> 0) % (size - CHICKENGUN_MIN_SIZE + 1);
 }
-var titleChance = (finger) => 10 + Math.max(0, Math.min(5, Math.trunc(finger))) * 2;
+var titleChance = (finger) => 50 + Math.max(0, Math.min(5, Math.trunc(finger))) * 2;
 var rows = [
   ["newcomer", "\u521D\u89C1\u6B22\u6B22", "\u5E26\u7740\u597D\u5947\uFF0C\u5F00\u542F\u65B0\u7684\u6545\u4E8B", "sprout", "#659d83", "#f1ce86", "normal"],
   ["mona", "\u83AB\u5948\u4E4B\u738B", "\u7761\u83B2\u4E0E\u6E56\u5149\uFF0C\u753B\u4E2D\u6F2B\u6E38", "lotus", "#5e9b92", "#d8a4ca", "normal"],
@@ -66,6 +67,7 @@ export {
   CHICKENGUN_MAX_SIZE,
   CHICKENGUN_MIN_SIZE,
   TITLE_COLLECTION,
+  TITLE_DRAW_COUNTS,
   TITLE_MAX_LEVEL,
   TITLE_PITY,
   TITLE_STAGES,

@@ -1,1 +1,21 @@
 .cskin-title{display:inline-flex;align-items:center;max-width:12em;vertical-align:middle}.cskin-title-name{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.cskin-badge{flex:none}.cskin-bubble,.cskin-reply{min-width:0}.community-picker{display:grid;gap:12px}.community-picker label{display:grid;gap:4px}.community-picker select{max-width:100%}.community-picker .muted{overflow-wrap:anywhere}
+.cskin-frame-wrap{position:relative;display:inline-flex;flex:none;vertical-align:middle;isolation:isolate}.cskin-frame-wrap>.avatar{position:relative;z-index:0}
+/* 社区套装卡片（设置 → 装扮 → 社区装扮） */
+.cs-suites{display:grid;gap:10px;grid-template-columns:repeat(auto-fill,minmax(220px,1fr))}
+.cs-suite{display:grid;gap:8px;align-content:start;padding:12px;border:1px solid var(--line);border-radius:12px;background:var(--surface);min-width:0}
+.cs-suite.worn{border-color:var(--primary);box-shadow:0 0 0 1px var(--primary) inset;background:var(--primary-soft,var(--surface))}
+.cs-suite header{display:flex;align-items:baseline;gap:6px;min-width:0}
+.cs-suite header strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.cs-suite header small{flex:none}
+.cs-suite-sample{display:flex;flex-wrap:wrap;align-items:center;gap:8px 10px;min-height:52px;padding:8px 10px;border-radius:10px;background:var(--surface-2);overflow:hidden}
+.cs-suite-bubble{display:inline-block;padding:4px 10px;border-radius:12px;background:var(--surface);font-size:13px;white-space:nowrap}
+.cs-suite-title{font-size:12px}
+.cs-suite-parts{display:flex;flex-wrap:wrap;gap:4px}
+.cs-chip{font-size:12px;line-height:1.6;padding:0 8px;border-radius:999px;background:var(--surface-2);color:var(--muted)}
+.cs-chip.on{background:var(--primary);color:#fff}
+.cs-chip.locked{opacity:.7}
+.cs-suite>.btn{justify-self:start}
+.cs-singles{margin-top:12px}
+.cs-singles>summary{cursor:pointer;font-weight:600;padding:6px 0}
+.cs-singles .community-picker{margin-top:8px}
+@media (max-width:560px){.cs-suites{grid-template-columns:1fr}.cs-suite>.btn{justify-self:stretch}}

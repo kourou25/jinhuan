@@ -1,3 +1,4 @@
+import {DCOIN_PACKET_MAX,parseDcoinPacketAmount} from '/dcoin-packet-rules.js?v=472f7fbf'
 import {fishAccountPanel,creditAccountPanel,packetSections,fundingState} from '/packet-funding.js?v=472f7fbf'
 import {packetRecords,packetAmount} from '/packet-records.js?v=472f7fbf'
 import {packetPreferences} from '/packet-preferences.js?v=472f7fbf'
@@ -64,7 +65,7 @@ export function nativeCreateForm({h,api,group,userId,host,signal,uploadCover,onS
  const participateField=h('div',{class:'rpk-field'},h('label',{class:'rpk-setting-toggle'},participate,h('span',null,'本人参与本轮猜词'),participateState),h('small',null,'参与：不显示答案；不参与：可私下查看答案并补充线索。开局后不能更改。'))
  const judgeContext=h('textarea',{class:'rpk-input','aria-label':'仅AI可见的出题说明',rows:3,maxlength:1000,placeholder:'可补充具体含义、背景和判定边界。例如：水星指太阳系行星，不是神话人物。'})
  const contextField=field('出题说明 · 仅 AI 可见',judgeContext,'选填，最多1000字。仅辅助相关度和是非判断，不作为公开线索，开局后不可修改。')
- const amount=input('本站LDC总额',{inputmode:'decimal',placeholder:coin?'1–200000 整数':'0.01–2000',required:true}),count=input('本站LDC份数',{type:'number',min:1,max:100,value:1}),minutes=input('本站LDC有效分钟',{type:'number',min:1,max:1440,value:1440})
+ const amount=input('本站LDC总额',{inputmode:'decimal',placeholder:coin?`1–${DCOIN_PACKET_MAX} 整数`:'0.01–2000',required:true}),count=input('本站LDC份数',{type:'number',min:1,max:100,value:1}),minutes=input('本站LDC有效分钟',{type:'number',min:1,max:1440,value:1440})
  const answers=h('textarea',{class:'rpk-input','aria-label':'猜词答案及同义答案',rows:2,maxlength:400,placeholder:'每行一个，最多6个；中奖前不公开'}),hints=h('textarea',{class:'rpk-input','aria-label':'猜词线索',rows:2,maxlength:1000,placeholder:'可不填，每行一条；@欢欢 索要时揭示一条，冷却30秒'})
  const wish=input('本站LDC祝福语',{maxlength:120,placeholder:'写一句祝福或游戏介绍'}),answerField=field('答案 / 同义答案',answers),hintField=field('提示',hints),countField=field('份数',count)
  const exclusiveOn=h('input',{type:'checkbox','aria-label':'专属红包'}),recipient=h('select',{class:'rpk-input','aria-label':'指定领取成员'},h('option',{value:''},'请选择群成员'))
@@ -105,7 +106,7 @@ export function nativeCreateForm({h,api,group,userId,host,signal,uploadCover,onS
   escalationToggle.hidden=forced;escalationEveryField.hidden=forced;forcedInterval.hidden=!forced
   escalationField.hidden=!game||isFree();escalationInputs.hidden=!enabled;escalationOn.disabled=busy||forced||isFree();escalationEvery.disabled=busy||!enabled||forced;escalationAmount.disabled=escalationCap.disabled=busy||!enabled
   escalationAmount.required=escalationCap.required=enabled;escalationEvery.required=enabled
-  const initial=Number(amount.value),cap=Number(escalationCap.value),step=Number(escalationAmount.value),limit=coin?200000:2000
+  const initial=Number(amount.value),cap=Number(escalationCap.value),step=Number(escalationAmount.value),limit=coin?DCOIN_PACKET_MAX:2000
   escalationAmount.setCustomValidity(enabled&&(!Number.isFinite(step)||step<(forced?10:coin?1:0.01)||step>limit||(coin&&!Number.isInteger(step)))?`单次追加需为${forced?10:coin?1:0.01}–${limit} ${unit}${coin?'整数':''}`:'')
   escalationCap.setCustomValidity(enabled&&(!Number.isFinite(cap)||cap<step||initial+cap>limit||(coin&&!Number.isInteger(cap)))?`累计上限不能低于单次追加，初始奖励加累计上限最多${limit} ${unit}`:'')
   escalationHelp.textContent=enabled?`按页面 AI 总调用次数触发，含线索和计入次数的失败请求。每 ${escalationEvery.value} 次仍未猜中，追加 ${escalationAmount.value} ${unit}；最多额外追加 ${escalationCap.value} ${unit}${Number.isFinite(initial+cap)?`，最高承诺 ${(initial+cap).toFixed(2)} ${unit}`:''}。${coin?'创建时预留初始奖励及追加上限，结算后退回未用部分。':'不预扣托管，中奖后按总额发放。'}`:'可配置追加间隔、单次金额和累计上限；关闭时奖励固定。'
@@ -199,7 +200,12 @@ export function nativeCreateForm({h,api,group,userId,host,signal,uploadCover,onS
   h('details',{class:'rpk-options rpk-create-rules'},h('summary',null,'本次发起规则'),rules),
   queueField,h('div',{class:'rpk-create-footer'},info,submit),queueList,compact?null:button('返回',onBack))
  function lock(value){busy=value;submit.disabled=value;onBusy?.(value);for(const el of form.querySelectorAll('button,input,textarea,select'))el.disabled=value;syncHintControls();syncQueue();syncEscalation();syncMulti();syncExclusive()}
- function modeChange(){minutes.max=mode.value==='guess'?30:1440;if(mode.value==='guess'&&Number(minutes.value)>30)minutes.value=30;if(mode.value==='guess'&&queueState?.author_policy?.restricted)reward='ldc';const game=mode.value==='guess',automatic=game&&answerSource.value==='auto',free=isFree();responseField.hidden=sourceField.hidden=rewardField.hidden=autoHintField.hidden=!game;answerField.hidden=hintField.hidden=contextField.hidden=!game||automatic;lengthField.hidden=!automatic;participateField.hidden=!automatic||!free;countField.hidden=game;answers.required=game&&!automatic;hints.required=false;amount.required=!free;amountField.hidden=free;bindingInfo.hidden=binding.hidden=coin||free;ledger.hidden=free;rewardButtons.forEach((b,i)=>b.setAttribute('aria-pressed',String(reward===['ldc','none'][i])));submit.textContent=free?'发起无奖励猜词':automatic?`确认发起 · ${/^\d{1,5}(?:\.\d{1,2})?$/.test(amount.value.trim())?Number(amount.value).toFixed(2):'填写金额'} ${unit} 奖励`:'发到群里';rules.textContent=free?`无需绑定 LDC 应用，不扣积分。${automatic&&participate.checked?'AI 保密出词，你可以参与，但不能查看答案。':'你不参与本轮猜词，可私下查看答案并提供线索。'}首位答对计入猜词等级；每群同时一局。答案交给本站 AI 判题，结束后公布；发起人可在专区流局。`:coin?'创建时预留 D币奖池及追加上限，中奖后入账本站钱包，未用部分结算退回。300 次 AI 调用后自动流局。':paymentProvider==='credit'?'通过本人 Credit 应用发放；到账与手续费以 Credit 为准。整包不预扣，已有红包按原渠道结算。':'领取时从本人 Fish 余额转入收款人的 🐟额，1:1 LDC，无手续费；整包不预扣。收款人需先登录过 Fish。猜词每群同时一局，300 次 AI 调用后自动流局并公布答案。';participateState.textContent=participate.checked?'参与':'不参与';syncHintControls();syncQueue();syncEscalation();syncMulti();syncExclusive();categories.refresh()}
+ function rewardAmountLabel(){
+  const value=amount.value.trim()
+  if(coin)return parseDcoinPacketAmount(value)??'填写金额'
+  return /^\d{1,5}(?:\.\d{1,2})?$/.test(value)?Number(value).toFixed(2):'填写金额'
+ }
+ function modeChange(){minutes.max=mode.value==='guess'?30:1440;if(mode.value==='guess'&&Number(minutes.value)>30)minutes.value=30;if(mode.value==='guess'&&queueState?.author_policy?.restricted)reward='ldc';const game=mode.value==='guess',automatic=game&&answerSource.value==='auto',free=isFree();responseField.hidden=sourceField.hidden=rewardField.hidden=autoHintField.hidden=!game;answerField.hidden=hintField.hidden=contextField.hidden=!game||automatic;lengthField.hidden=!automatic;participateField.hidden=!automatic||!free;countField.hidden=game;answers.required=game&&!automatic;hints.required=false;amount.required=!free;amountField.hidden=free;bindingInfo.hidden=binding.hidden=coin||free;ledger.hidden=free;rewardButtons.forEach((b,i)=>b.setAttribute('aria-pressed',String(reward===['ldc','none'][i])));submit.textContent=free?'发起无奖励猜词':automatic?`确认发起 · ${rewardAmountLabel()} ${unit} 奖励`:'发到群里';rules.textContent=free?`无需绑定 LDC 应用，不扣积分。${automatic&&participate.checked?'AI 保密出词，你可以参与，但不能查看答案。':'你不参与本轮猜词，可私下查看答案并提供线索。'}首位答对计入猜词等级；每群同时一局。答案交给本站 AI 判题，结束后公布；发起人可在专区流局。`:coin?'创建时预留 D币奖池及追加上限，中奖后入账本站钱包，未用部分结算退回。300 次 AI 调用后自动流局。':paymentProvider==='credit'?'通过本人 Credit 应用发放；到账与手续费以 Credit 为准。整包不预扣，已有红包按原渠道结算。':'领取时从本人 Fish 余额转入收款人的 🐟额，1:1 LDC，无手续费；整包不预扣。收款人需先登录过 Fish。猜词每群同时一局，300 次 AI 调用后自动流局并公布答案。';participateState.textContent=participate.checked?'参与':'不参与';syncHintControls();syncQueue();syncEscalation();syncMulti();syncExclusive();categories.refresh()}
 
  form.addEventListener('invalid',e=>{for(let d=e.target.closest('details');d;d=d.parentElement.closest('details'))d.open=true},true)
  if(!accountOnly)applyPreferences(preferences.read())
@@ -213,7 +219,7 @@ export function nativeCreateForm({h,api,group,userId,host,signal,uploadCover,onS
  if(!fundingControl&&!coin)loadAccount().catch(e=>{bindingInfo.textContent=e.message})
  if(!accountOnly&&(initialMode==='guess'||!compact))loadQueue().catch(()=>{queueList.textContent='暂时无法读取等候队列，可稍后刷新。'})
  if(accountOnly){const credit=creditAccountPanel({h,api,signal,onBusy:v=>lock(v)});bindingInfo.hidden=binding.hidden=false;form.replaceChildren(bindingInfo,binding,credit.element,nativeLedger({h,api}),info,button('关闭',onBack));credit.load().catch(e=>{info.textContent=e.message})}
- form.setFunding=provider=>{paymentProvider=provider;coin=provider==='coin52';unit=coin?'D币':'LDC';amountField.firstChild.textContent='总额 · '+unit;amount.setAttribute('aria-label','红包总额');amount.placeholder=coin?'1–200000 整数':'0.01–2000';rewardButtons[0].textContent=unit+' 奖励';escalationAmountField.firstChild.textContent='单次追加 · '+unit;escalationCapField.firstChild.textContent='累计追加上限 · '+unit;modeChange()}
+ form.setFunding=provider=>{paymentProvider=provider;coin=provider==='coin52';unit=coin?'D币':'LDC';amountField.firstChild.textContent='总额 · '+unit;amount.setAttribute('aria-label','红包总额');amount.placeholder=coin?`1–${DCOIN_PACKET_MAX} 整数`:'0.01–2000';rewardButtons[0].textContent=unit+' 奖励';escalationAmountField.firstChild.textContent='单次追加 · '+unit;escalationCapField.firstChild.textContent='累计追加上限 · '+unit;modeChange()}
  form.footer=form.querySelector('.rpk-create-footer');submit.setAttribute('form',form.id)
  if(fundingControl)form.setFunding(fundingControl.provider())
  return form

@@ -96,11 +96,48 @@ export async function mountIsle(root, { toast, onOpen, user } = {}) {
   let pendingRequest = null
   const now = () => Date.now() / 1000 + skew
   const pendingGot = [] // 等服务端揭晓的随机产出：{ k, x, y, kind }
+  // 存档读取走 /api/isle/sync（同一份存档 + 邻居摘要 + 守护记录 + 赛季），被限流时退回旧接口。
+  let syncCursor = '', syncTimer = 0, syncIdle = 0, syncBase = 30, syncBusy = false
+  async function syncFetch() {
+    const r = await fetch('/api/isle/sync' + (syncCursor ? '?since=' + encodeURIComponent(syncCursor) : ''), { credentials: 'same-origin', cache: 'no-store' })
+    const j = await r.json().catch(() => ({}))
+    return { r, j }
+  }
+  function syncNote(j) {
+    syncCursor = j.cursor || syncCursor
+    if (Number.isFinite(j.next)) syncBase = Math.min(120, Math.max(15, j.next))
+    if (j.neighbors) window.dispatchEvent(new CustomEvent('isle-neighbors', { detail: j.neighbors }))
+    if (j.guard?.battles?.length && !j.guard.reset) window.dispatchEvent(new CustomEvent('isle-guard', { detail: j.guard.battles }))
+    if (j.season) window.dispatchEvent(new CustomEvent('isle-season', { detail: { season: j.season, wallet: j.wallet } }))
+  }
   async function load() {
-    const r = await fetch('/api/pet/world', { credentials: 'same-origin' })
-    const j = await r.json()
+    let { r, j } = await syncFetch().catch(() => ({ r: null, j: {} }))
+    if (r?.ok && j.world) { syncCursor = ''; syncNote(j); accept(j.world); return }
+    r = await fetch('/api/pet/world', { credentials: 'same-origin' })
+    j = await r.json()
     if (!r.ok) throw new Error(j.error || '小岛加载失败')
     accept(j)
+  }
+  // 后台低频同步：看得见时 30 秒起，连续没变化逐步放慢到 2 分钟；页面隐藏时停止，回到前台立刻补一次。
+  function syncLater(sec) { clearTimeout(syncTimer); syncTimer = (destroyed || document.hidden) ? 0 : setTimeout(syncTick, sec * 1000) }
+  async function syncTick() {
+    syncTimer = 0
+    if (destroyed || document.hidden) return
+    if (syncBusy || visit || inflight || queue.length) { syncLater(syncBase); return }
+    syncBusy = true
+    let wait = syncBase
+    try {
+      const { r, j } = await syncFetch()
+      if (r.status === 429) wait = Math.max(syncBase, Number(j.retry) || 60)
+      else if (r.ok) {
+        syncNote(j)
+        if (j.changed) syncIdle = 0; else syncIdle++
+        // 正在操作 / 做客时不覆盖本地；只接受不旧于当前的存档。
+        if (j.world && !visit && !inflight && !queue.length && Number.isSafeInteger(j.world.rev) && j.world.rev >= rev) { accept(j.world); dirty(); syncCritters(srv); drawBar() }
+        wait = Math.min(120, syncBase * (1 + Math.min(3, syncIdle) * 0.5) * (syncIdle >= 6 ? 4 / 3 : 1))
+      } else wait = 60
+    } catch { wait = 60 } finally { syncBusy = false }
+    syncLater(wait)
   }
   function accept(j) {
     if(j.clockStart) R.b12ConfigureClock(j.clockStart);
@@ -1657,7 +1694,7 @@ export async function mountIsle(root, { toast, onOpen, user } = {}) {
     if (bubbleAnchor && frame % 2 === 0) placeBubble()
   }
   // 屏幕外：停帧、把队列立即提交
-  const onVis = () => { if (document.hidden) { cancelAnimationFrame(raf); raf = 0; if (queue.length) beacon() } else if (!raf && !destroyed) { last = performance.now(); raf = requestAnimationFrame(loop) } }
+  const onVis = () => { if (document.hidden) { cancelAnimationFrame(raf); raf = 0; clearTimeout(syncTimer); syncTimer = 0; if (queue.length) beacon() } else if (!raf && !destroyed) { last = performance.now(); raf = requestAnimationFrame(loop); syncIdle = 0; syncLater(1) } }
   function beacon() { if(queue.length&&!inflight&&!destroyed) void flush() }
   const friendCheck=e=>{e.detail.busy ||= inflight||queue.length>0};const friendSaved=e=>{const d=e.detail;if(!destroyed&&!inflight&&!queue.length&&Number.isSafeInteger(d.rev)&&d.rev>rev){srv=d.state;rev=d.rev;dirty();drawBar()}};window.addEventListener('pet-friend-check',friendCheck);window.addEventListener('pet-friend-saved',friendSaved);
   document.addEventListener('visibilitychange', onVis)
@@ -1670,6 +1707,7 @@ export async function mountIsle(root, { toast, onOpen, user } = {}) {
   else if (R.autoDue(srv, now())) setTimeout(() => autoPost().catch((e) => say(e.message, 'err')), 400)
   camX = whaleX - vw / 2; camY = whaleY - vh / 2; clampCam()
   raf = requestAnimationFrame(loop)
+  syncLater(syncBase)
   if (/isledebug/.test(location.search)) window.__isle = { toScreen, local, plotXY, critters, TRAP_POS, LAYOUT, get scene() { return scene }, get cave() { return cave }, get fishing() { return fishing }, get queue() { return queue }, get whale() { return [whaleX, whaleY] }, walkableAt: (x, y) => walkableAt(x, y), path: (x, y) => findPath(whaleX, whaleY, ...nearestLand(x, y, whaleX, whaleY)), get task() { return task && { x: task.x, y: task.y, path: task.path } }, walkTo: (x, y) => { tasks.length = 0; task = null; follow = true; goDo(x, y, null, 2) }, setScale: (n) => { forceScale = n; resize() }, setNight: (n)=>{b12VisualNight=n;dirty()}, setWeather: (w) => { weather = w; dirty() }, setSeason: (x) => { season = x; dirty(); drawBar() }, setHour: (h) => { const cur = R.hourOf(now()); skew += ((h - cur + 24) % 24) * 3600; dirty() } }
   // 新手引导：第一次进来时提示怎么玩
   try { if (!localStorage.getItem('isleTip')) { localStorage.setItem('isleTip', '1'); setTimeout(() => { hint.textContent = '点空地种菜，熟了再点一下收获；手指划过一排地块能连着种。点猫猫摊主卖货，点码头钓鱼，点矿洞挖矿。'; hint.classList.add('show'); setTimeout(() => hint.classList.remove('show'), 7000) }, 800) } } catch {}
@@ -1679,6 +1717,6 @@ export async function mountIsle(root, { toast, onOpen, user } = {}) {
     get manualWarehouse(){return b12ManualWarehouse},setManualWarehouse(value){b12ManualWarehouse=value===true;drawBar()},
     actNow, foodMenu, visit: (id) => goVisit(id), get visiting() { return !!visit }, get state() { return local().s }, get coins() { return local().coins }, get prices() { return prices }, get day() { return day }, get season() { return season }, get weather() { return weather }, get serverInv() { return srv.inv },
     push: (a, fx) => push(a, fx), flush: () => flush(), autoSave: (cfg) => autoPost(cfg), now: () => now(), busy: () => inflight || queue.length > 0, coinBurst, refresh: () => { dirty(); drawBar() },
-    async destroy() { window.removeEventListener('pet-friend-check',friendCheck);window.removeEventListener('pet-friend-saved',friendSaved);destroyed = true; cancelAnimationFrame(raf); ro.disconnect(); document.removeEventListener('visibilitychange', onVis); removeEventListener('pagehide', beacon); removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', outside, true); clearTimeout(flushTimer); if (queue.length) { destroyed = false; inflight = false; await flush().catch(() => beacon()); destroyed = true } },
+    async destroy() { window.removeEventListener('pet-friend-check',friendCheck);window.removeEventListener('pet-friend-saved',friendSaved);destroyed = true; cancelAnimationFrame(raf); clearTimeout(syncTimer); ro.disconnect(); document.removeEventListener('visibilitychange', onVis); removeEventListener('pagehide', beacon); removeEventListener('keydown', onKey); document.removeEventListener('pointerdown', outside, true); clearTimeout(flushTimer); if (queue.length) { destroyed = false; inflight = false; await flush().catch(() => beacon()); destroyed = true } },
   }
 }

@@ -1,0 +1,28 @@
+[Unit]
+Description=尽欢 meme-hall (Node)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=meme
+Group=meme
+WorkingDirectory=/meme/app/current/server
+Environment=MEME_ROOT=/meme
+Environment=PORT=8080
+Environment=NODE_ENV=production
+ExecStart=/usr/local/bin/node --disable-warning=ExperimentalWarning main.mjs
+Restart=always
+RestartSec=3
+TimeoutStopSec=20
+LimitNOFILE=65535
+StandardOutput=append:/meme/logs/app.log
+StandardError=append:/meme/logs/app.log
+# 只允许写数据、缓存、日志目录
+ProtectSystem=strict
+ReadWritePaths=/meme/data /meme/cache /meme/logs
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

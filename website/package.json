@@ -12,7 +12,9 @@
     "dev:wt": "vite dev --port 8788",
     "build": "vite build && node scripts/check-bundle.mjs",
     "schema:check": "node scripts/schema-snapshot.mjs --check",
-    "deploy:go": "node scripts/deploy.mjs --yes"
+    "deploy:go": "node scripts/deploy.mjs --yes",
+    "build:server": "node server/build.mjs",
+    "start:server": "node server/main.mjs"
   },
   "dependencies": {
     "@hono/valibot-validator": "0.6.1",

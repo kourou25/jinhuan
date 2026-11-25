@@ -6,7 +6,7 @@ import type {Env} from '../env'
 import type {C,Ctx,User} from '../types'
 import {HTTPException} from 'hono/http-exception'
 import {needUser,canManageAi} from '../services/auth'
-import {needMember,assertCurrentAccess} from '../services/chat-access'
+import {needMember,assertCurrentAccess,assertChatHistory} from '../services/chat-access'
 import {boundedJson,fail,sameOrigin} from '../lib/http'
 import {now} from '../lib/time'
 import {seal,unseal,normalizeAnswer,money,cents,rewardCents} from '../ldc/core'
@@ -50,7 +50,7 @@ nativeLdc.post('/api/chat/groups/:gid/guess-queue',async c=>{
  const result=await saveGuessQueue(c,u,gid,await boundedJson(c));return c.json(result)
 })
 nativeLdc.delete('/api/chat/groups/:gid/guess-queue/:qid',async c=>{mutating(c);const gid=Number(c.req.param('gid'));const {u}=await needMember(c,gid,false);await assertCurrentAccess(c,u.id,gid);return c.json(await cancelQueued(c,gid,u.id,c.req.param('qid')))})
-nativeLdc.get('/api/chat/groups/:gid/guess-room',async c=>{const gid=Number(c.req.param('gid'));if(!Number.isSafeInteger(gid)||gid<1)fail(400,'群编号无效');const {u,g}=await needMember(c,gid,false);await assertCurrentAccess(c,u.id,gid);c.header('cache-control','no-store');return c.json(await guessRoomView(c,gid,u.id,g.joined_at))})
+nativeLdc.get('/api/chat/groups/:gid/guess-room',async c=>{const gid=Number(c.req.param('gid'));if(!Number.isSafeInteger(gid)||gid<1)fail(400,'群编号无效');const {u,g}=await needMember(c,gid,false);await assertCurrentAccess(c,u.id,gid);c.header('cache-control','no-store');return c.json(await guessRoomView(c,gid,u.id,g))})
 nativeLdc.get('/api/chat/groups/:gid/guess-stats',async c=>{const gid=Number(c.req.param('gid'));if(!Number.isSafeInteger(gid)||gid<1)fail(400,'群编号无效');const {u}=await needMember(c,gid,false);await assertCurrentAccess(c,u.id,gid);c.header('cache-control','private, max-age=30');return c.json(await guessStatsView(c,gid,u.id))})
 nativeLdc.get('/api/chat/groups/:gid/packet-luck-stats',async c=>{const gid=Number(c.req.param('gid'));const {u}=await needMember(c,gid,false);await assertCurrentAccess(c,u.id,gid);c.header('cache-control','no-store');return c.json(await packetLuckStats(c,gid,u.id))})
 nativeLdc.get('/api/chat/groups/:gid/sender-stats',async c=>{const gid=Number(c.req.param('gid'));if(!Number.isSafeInteger(gid)||gid<1)fail(400,'群编号无效');const {u}=await needMember(c,gid,false);await assertCurrentAccess(c,u.id,gid);c.header('cache-control','private, max-age=30');return c.json(await senderStatsView(c,gid,u.id))})
@@ -158,9 +158,14 @@ nativeLdc.post('/api/me/ldc/awards/:award/reconcile',async c=>{
 })
 async function load(c:C,allowFree=false){
  const mid=Number(c.req.param('id'));if(!Number.isSafeInteger(mid)||mid<1)fail(400,'红包编号无效')
- let p=await c.env.DB.prepare(`SELECT p.*,m.group_id,m.id message_id,m.deleted FROM ldc_packets p JOIN chat_redpacks r ON r.id=p.packet_id JOIN chat_messages m ON m.id=r.message_id WHERE m.id=?`).bind(mid).first<NativePacket&{group_id:number;message_id:number;deleted:number}>()
- if(!p&&allowFree)p=await c.env.DB.prepare(`SELECT p.*,'none' AS reward_type,m.id message_id,m.deleted FROM guess_free_rounds p JOIN chat_redpacks r ON r.id=p.packet_id JOIN chat_messages m ON m.id=r.message_id WHERE m.id=?`).bind(mid).first<NativePacket&{group_id:number;message_id:number;deleted:number}>()
- if(!p||p.deleted)fail(404,'红包已撤回或不存在');const {u}=await needMember(c,p!.group_id,false);await assertCurrentAccess(c,u.id,p!.group_id);return {p:p!,u}
+ type PacketMessage=NativePacket&{message_id:number;message_at:number;deleted:number}
+ let p=await c.env.DB.prepare(`SELECT p.*,m.group_id,m.id message_id,m.created_at message_at,m.deleted FROM ldc_packets p JOIN chat_redpacks r ON r.id=p.packet_id JOIN chat_messages m ON m.id=r.message_id WHERE m.id=?`).bind(mid).first<PacketMessage>()
+ if(!p&&allowFree)p=await c.env.DB.prepare(`SELECT p.*,'none' AS reward_type,m.group_id,m.id message_id,m.created_at message_at,m.deleted FROM guess_free_rounds p JOIN chat_redpacks r ON r.id=p.packet_id JOIN chat_messages m ON m.id=r.message_id WHERE m.id=?`).bind(mid).first<PacketMessage>()
+ if(!p||p.deleted)fail(404,'红包已撤回或不存在')
+ const {u,g}=await needMember(c,p!.group_id,false)
+ await assertCurrentAccess(c,u.id,p!.group_id)
+ assertChatHistory(g,p!.message_id,p!.message_at)
+ return {p:p!,u}
 }
 async function settle(c:C,p:NativePacket,a:Award,retry=false){
  if(p.escalation_every&&a.state==='reserved'){
@@ -388,8 +393,9 @@ export async function handleNativeGameMessage(c:C,input:AiSource,u:User){
   // Explicit chat never loads a packet or its encrypted answer, even when replying to one.
   if(command.kind==='chat'){await chatWithHuan(c,input,u,command.text);return}
   // Group/time index bounds the active candidate set; never scan group history.
-  const specified=input.reply_to?await loadGame(c,input.group_id,input.reply_to):null
-  const p=specified||await activeGame(c,input.group_id)
+  const {g}=await needMember(c,input.group_id)
+  const specified=input.reply_to?await loadGame(c,input.group_id,g,input.reply_to):null
+  const p=specified||await activeGame(c,input.group_id,g)
   const question=command.text
   if(command.kind==='mention'&&/^(?:流局|取消(?:本轮(?:猜词)?|猜词|游戏)?|结束本轮(?:猜词)?)[。!！]?$/.test(question)){
    await finishAiBoost(c,input,u,p?await cancelNativeGame(c,p,u,input):'当前没有进行中的猜词红包。');return

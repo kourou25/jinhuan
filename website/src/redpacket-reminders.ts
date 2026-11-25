@@ -6,7 +6,10 @@ export async function sendPacketReminders(db: D1Database, at: number) {
       FROM chat_redpacks p JOIN chat_messages m ON m.id=p.message_id JOIN chat_groups g ON g.id=m.group_id
       WHERE p.notify_at<=? AND p.reminded_at IS NULL AND p.draw_announced_at IS NULL AND m.deleted=0
       AND NOT EXISTS(SELECT 1 FROM chat_messages n WHERE n.system_kind='redpack_result' AND n.system_ref=CAST(m.id AS TEXT))
-      ORDER BY p.notify_at LIMIT 100`).bind(at,at,at),
+      AND NOT EXISTS(SELECT 1 FROM ldc_packets lp WHERE lp.packet_id=p.id AND (lp.state='closed' OR lp.ends_at<=?))
+      ORDER BY p.notify_at LIMIT 100`).bind(at,at,at,at),
+    db.prepare(`UPDATE chat_redpacks SET reminded_at=? WHERE reminded_at IS NULL AND notify_at<=?
+      AND EXISTS(SELECT 1 FROM ldc_packets lp WHERE lp.packet_id=chat_redpacks.id AND (lp.state='closed' OR lp.ends_at<=?))`).bind(at,at,at),
     db.prepare(`UPDATE chat_redpacks SET reminded_at=? WHERE reminded_at IS NULL AND notify_at<=?
       AND EXISTS(SELECT 1 FROM chat_messages e WHERE e.system_kind='redpack_due' AND e.system_ref=CAST(chat_redpacks.message_id AS TEXT))`).bind(at,at),
   ])

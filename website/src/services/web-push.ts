@@ -1,6 +1,7 @@
 import webpush from 'web-push'
 import type {Env} from '../env'
 import {sha256} from '../lib/crypto'
+import {CHAT_HISTORY_FLOOR} from './chat-access'
 
 export function pushConfigured(env:Env){return !!(env.PUSH_VAPID_PUBLIC_KEY&&env.PUSH_VAPID_PRIVATE_KEY)}
 // Exact provider hosts only. Never follow a redirect supplied by a subscription.
@@ -21,7 +22,7 @@ type Device={id:string;user_id:number;session_id:string;endpoint:string;p256dh:s
 // Mutes suppress ordinary messages; existing @username behavior is preserved.
 export const PUSH_UNREAD_SQL=`SELECT cm.group_id,
  (SELECT m.id FROM chat_messages m WHERE m.group_id=cm.group_id
-  AND m.id>MAX(cm.last_read,p.last_message_id) AND m.created_at>=cm.joined_at
+  AND m.id>MAX(cm.last_read,p.last_message_id,${CHAT_HISTORY_FLOOR}-1) AND m.created_at>=cm.joined_at
   AND m.deleted=0 AND m.user_id<>p.user_id
   AND (cm.muted=0 OR (instr(lower(m.body),lower('@'||u.username))>0 AND COALESCE(json_extract(CASE WHEN json_valid(u.notif_prefs) THEN u.notif_prefs ELSE '{}' END,'$.chat_at'),1)<>0))
   ORDER BY m.id DESC LIMIT 1) AS message_id

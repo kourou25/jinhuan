@@ -1,5 +1,6 @@
 import type {C} from '../types'
 import {now} from '../lib/time'
+import type {ChatHistoryBoundary} from '../services/chat-access'
 
 type Player={id:number;name:string;avatar:string|null}
 type Event={id:number;kind:string;created_at:number;updated_at:number;packet_id:string|null;actor_id:number;name:string;avatar:string|null}
@@ -17,7 +18,7 @@ export const ANNOUNCEMENT_SQL=`WITH packets AS MATERIALIZED (
  LEFT JOIN ldc_packets p ON p.packet_id=r.id AND p.mode IN ('guess','clues')
  LEFT JOIN guess_free_rounds f ON f.packet_id=r.id
  JOIN users u ON u.id=COALESCE(p.owner_id,f.owner_id,m.user_id)
- WHERE m.group_id=?1 AND m.deleted=0 AND m.created_at>=?2 AND m.system_kind IS NULL
+ WHERE m.group_id=?1 AND m.deleted=0 AND m.created_at>=?2 AND m.id>=?3 AND m.system_kind IS NULL
  ORDER BY m.created_at DESC,m.id DESC LIMIT 20
 ), events AS (
  SELECT m.id,m.system_kind AS kind,m.created_at,m.updated_at,
@@ -27,19 +28,19 @@ export const ANNOUNCEMENT_SQL=`WITH packets AS MATERIALIZED (
   LEFT JOIN ldc_packets p ON p.packet_id=r.id AND p.mode IN ('guess','clues')
   LEFT JOIN guess_free_rounds f ON f.packet_id=r.id
   JOIN users u ON u.id=COALESCE(p.owner_id,f.owner_id,m.user_id)
-  WHERE m.group_id=?1 AND m.deleted=0 AND m.created_at>=?2
+  WHERE m.group_id=?1 AND m.deleted=0 AND m.created_at>=?2 AND m.id>=?3
    AND m.system_kind IN ('join','guess_level','ldc_winner','ldc_cancel','ldc_expired')
    AND (m.system_kind IN ('join','guess_level') OR
     (m.system_kind IN ('ldc_winner','ldc_cancel','ldc_expired')
      AND (p.packet_id IS NOT NULL OR f.packet_id IS NOT NULL)
-     AND EXISTS(SELECT 1 FROM chat_messages origin WHERE origin.id=r.message_id AND origin.group_id=m.group_id AND origin.deleted=0)))
+     AND EXISTS(SELECT 1 FROM chat_messages origin WHERE origin.id=r.message_id AND origin.group_id=m.group_id AND origin.deleted=0 AND origin.created_at>=?2 AND origin.id>=?3)))
   ORDER BY m.created_at DESC,m.id DESC LIMIT 20
  ) SELECT * FROM (SELECT * FROM starts UNION ALL SELECT * FROM events)
  ORDER BY created_at DESC,id DESC LIMIT 20`
 
 // Never expose message bodies: a result notice may contain a protected answer.
-export async function guessAnnouncements(c:C,gid:number,joinedAt:number){
- const rows=await c.env.DB.prepare(ANNOUNCEMENT_SQL).bind(gid,joinedAt).all<Event>()
+export async function guessAnnouncements(c:C,gid:number,history:ChatHistoryBoundary){
+ const rows=await c.env.DB.prepare(ANNOUNCEMENT_SQL).bind(gid,history.joined_at,history.history_floor).all<Event>()
  const items=await Promise.all(rows.results.map(async row=>{
   let players:Player[]=[{id:row.actor_id,name:row.name,avatar:row.avatar}]
   if(row.kind==='ldc_winner'&&row.packet_id){

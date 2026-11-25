@@ -12,13 +12,17 @@ export async function publishPacketResults(db:D1Database,t:number){
   const luck=p.mode==='random'&&complete&&hi>lo?'\n手气王：'+claimed.filter(r=>r.amount_cents===hi).map(r=>r.name).join('、')+'；手气亡：'+claimed.filter(r=>r.amount_cents===lo).map(r=>r.name).join('、'):''
   const cancelled=!!p.draw_at&&p.settled_at!==null&&p.settled_at<p.draw_at
   const body=cancelled?'红包抽奖已取消，本轮未开奖。':(p.draw_at?'红包开奖结果：':'红包已结束：')+result+luck
-  const event=(uid:number,text:string)=>db.prepare(`INSERT INTO packet_events(packet_id,user_id,kind,body,created_at) SELECT ?,?,'result',?,? WHERE EXISTS(SELECT 1 FROM packet_notice_jobs WHERE packet_id=? AND revision=?) ON CONFLICT(packet_id,user_id,kind) DO UPDATE SET body=excluded.body WHERE body<>excluded.body`).bind(id,uid,text,t,id,revision)
-  const statements=[db.prepare(`INSERT INTO chat_messages(group_id,user_id,body,created_at,updated_at,system_kind,system_ref) SELECT ?,?,?,?,?,'redpack_result',? WHERE ?=0 AND EXISTS(SELECT 1 FROM packet_notice_jobs WHERE packet_id=? AND revision=?) ON CONFLICT DO UPDATE SET body=excluded.body,updated_at=excluded.updated_at WHERE chat_messages.system_kind='redpack_result' AND chat_messages.deleted=0 AND chat_messages.body<>excluded.body`).bind(p.group_id,p.owner_id,body,t,t,String(p.message_id),p.deleted,id,revision),event(p.owner_id,body),
+  // 2026-11-25 站长要求：红包结束不再往群里发消息，结果在群红包袋的「历史 / 我发的」里看。
+  // 个人提醒只保留抽奖结果和发放没到账、需要处理的；已有的提醒仍会更新到最新状态。
+  const notable=!!p.draw_at||claimed.some(r=>r.state!=='accepted')?1:0
+  const event=(uid:number,text:string)=>db.prepare(`INSERT INTO packet_events(packet_id,user_id,kind,body,created_at) SELECT ?1,?2,'result',?3,?4 WHERE EXISTS(SELECT 1 FROM packet_notice_jobs WHERE packet_id=?1 AND revision=?5) AND (?6=1 OR EXISTS(SELECT 1 FROM packet_events e WHERE e.packet_id=?1 AND e.user_id=?2 AND e.kind='result')) ON CONFLICT(packet_id,user_id,kind) DO UPDATE SET body=excluded.body WHERE body<>excluded.body`).bind(id,uid,text,t,revision,notable)
+  const statements=[db.prepare(`UPDATE chat_messages SET body=?,updated_at=? WHERE group_id=? AND system_kind='redpack_result' AND system_ref=? AND deleted=0 AND body<>? AND EXISTS(SELECT 1 FROM packet_notice_jobs WHERE packet_id=? AND revision=?)`).bind(body,t,p.group_id,String(p.message_id),body,id,revision),event(p.owner_id,body),
    db.prepare(`INSERT INTO packet_events(packet_id,user_id,kind,body,created_at)
     SELECT ?1,e.user_id,'result',CASE WHEN a.recipient_id IS NULL THEN ?2 ELSE '你获得 '||CASE WHEN ?3=1 THEN CAST(a.amount_cents/100 AS TEXT) ELSE printf('%.2f',a.amount_cents/100.0) END||' '||?4||'，'||CASE WHEN a.state='accepted' THEN ?5 WHEN a.state='rejected' THEN '发放待发包者处理，中奖名额保留。' ELSE '发放结果待核对，中奖名额保留。' END END,?6
     FROM (SELECT user_id FROM packet_draw_entries WHERE packet_id=?1 UNION SELECT recipient_id FROM ldc_awards WHERE packet_id=?1 AND recipient_id IS NOT NULL) e
     LEFT JOIN ldc_awards a ON a.packet_id=?1 AND a.recipient_id=e.user_id WHERE e.user_id<>?7 AND EXISTS(SELECT 1 FROM packet_notice_jobs WHERE packet_id=?1 AND revision=?8)
-    ON CONFLICT(packet_id,user_id,kind) DO UPDATE SET body=excluded.body WHERE body<>excluded.body`).bind(id,cancelled?'红包已取消，本轮未开奖。':'本次未抽中；可打开红包查看完整结果。',coin?1:0,unit,coin?'已到账本站钱包。':p.payment_provider==='fish'?'已到账 Fish 🐟额。':'Credit 已受理。',t,p.owner_id,revision),
+    AND (?9=1 OR a.state IS NOT 'accepted' OR EXISTS(SELECT 1 FROM packet_events k WHERE k.packet_id=?1 AND k.user_id=e.user_id AND k.kind='result'))
+    ON CONFLICT(packet_id,user_id,kind) DO UPDATE SET body=excluded.body WHERE body<>excluded.body`).bind(id,cancelled?'红包已取消，本轮未开奖。':'本次未抽中；可打开红包查看完整结果。',coin?1:0,unit,coin?'已到账本站钱包。':p.payment_provider==='fish'?'已到账 Fish 🐟额。':'Credit 已受理。',t,p.owner_id,revision,p.draw_at?1:0),
    db.prepare(`UPDATE chat_redpacks SET draw_data=json_set(draw_data,'$.draw_complete',json('true')) WHERE id=? AND draw_data IS NOT NULL AND EXISTS(SELECT 1 FROM packet_notice_jobs WHERE packet_id=? AND revision=?)`).bind(id,id,revision)]
   // Idempotent events allow bounded batches after a worker restart.
   for(let i=0;i<statements.length;i+=40)await db.batch(statements.slice(i,i+40))

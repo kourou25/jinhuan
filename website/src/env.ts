@@ -1,5 +1,7 @@
 export interface Env {
   DB: D1Database
+  CHAT_BOT_WEBHOOK_KEY?: string
+  CHAT_BOT_WEBHOOK_ORIGINS?: string
   MUSIC_ORIGIN?: string
   MUSIC_TOKEN?: string
   PUSH_VAPID_PUBLIC_KEY?: string
@@ -43,6 +45,9 @@ export interface Env {
   EXT_HOSTS?: string
   DEV_LOGIN_KEY?: string // 测试登录口令（secret），不配就没有测试登录
   BLOCK_COUNTRIES?: string // 拒绝访问的国家/地区代码，逗号分隔，比如 CN；不填或填 none 不限制
+  OAUTH_ISSUER?: string // OIDC 签发方，如 https://52dmeme.com；不填按请求域名
+  OAUTH_SIGNING_KEY?: string // ID Token 签名私钥（ES256，一行 P-256 JWK JSON，只放 /meme/config/.env），生成方法见 docs/oauth.md
+  OAUTH_SIGNING_KEY_PREVIOUS?: string // 轮换时的旧私钥：只在 JWKS 里继续公布公钥
   RATE_LIMIT?: string // 频率限制（发帖 / 评论 / 回应 / 群聊发太快）：填 on 才打开；人少的时候先关着
 }
 

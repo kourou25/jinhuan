@@ -1,14 +1,15 @@
+import {DCOIN_PACKET_MAX} from '/dcoin-packet-rules.js?v=472f7fbf'
 import {dcoinIcon,dcoinAmount} from '/dcoin.js?v=472f7fbf'
 import {packetLuckRanks} from '/packet-luck.js?v=472f7fbf'
 export function coin52Create({h,api,group,onSent,onBack,onBusy}){
- const nonce=crypto.randomUUID(),amount=h('input',{type:'number',min:1,max:2000000,step:1,required:true,class:'rpk-input','aria-label':'总额 · D币'}),count=h('input',{type:'number',min:1,max:100,step:1,value:'1',required:true,class:'rpk-input','aria-label':'份数'}),kind=h('select',{class:'rpk-input','aria-label':'分配方式'},h('option',{value:'random'},'拼手气'),h('option',{value:'fixed'},'等额')),minutes=h('input',{type:'number',min:1,max:10080,value:'1440',required:true,class:'rpk-input','aria-label':'有效期 · 分钟'}),prompt=h('input',{maxlength:120,class:'rpk-input','aria-label':'祝福语',placeholder:'给大家一点经营的收获'}),status=h('p',{class:'rpk-status',role:'status'}),submit=h('button',{type:'submit',class:'rpk-primary'},'确认发出 ',dcoinIcon(h),' 红包'),back=h('button',{type:'button',class:'rpk-secondary',onclick:onBack},'返回其他红包方式')
+ const nonce=crypto.randomUUID(),amount=h('input',{type:'number',min:1,max:DCOIN_PACKET_MAX,step:1,required:true,class:'rpk-input','aria-label':'总额 · D币'}),count=h('input',{type:'number',min:1,max:100,step:1,value:'1',required:true,class:'rpk-input','aria-label':'份数'}),kind=h('select',{class:'rpk-input','aria-label':'分配方式'},h('option',{value:'random'},'拼手气'),h('option',{value:'fixed'},'等额')),minutes=h('input',{type:'number',min:1,max:1440,value:'1440',required:true,class:'rpk-input','aria-label':'有效期 · 分钟'}),prompt=h('input',{maxlength:120,class:'rpk-input','aria-label':'祝福语',placeholder:'给大家一点经营的收获'}),status=h('p',{class:'rpk-status',role:'status'}),submit=h('button',{type:'submit',class:'rpk-primary'},'确认发出 ',dcoinIcon(h),' 红包'),back=h('button',{type:'button',class:'rpk-secondary',onclick:onBack},'返回其他红包方式')
  const field=(name,input)=>h('label',{class:'rpk-field'},h('span',null,name),input)
  let locked=null,busy=false
  const form=h('form',{class:'rpk-create',onsubmit:async e=>{e.preventDefault();if(busy)return;busy=true;onBusy(true);submit.disabled=true;back.disabled=true
   locked??={provider:'coin52',nonce,amount:Number(amount.value),count:Number(count.value),kind:kind.value,minutes:Number(minutes.value),prompt:prompt.value}
   for(const el of [amount,count,kind,minutes,prompt])el.disabled=true
   try{const d=await api(`/chat/groups/${group.id}/redpacks`,{method:'POST',body:locked});onSent(d.message)}catch(e){status.textContent=e.message+'；重试沿用同一红包，不会重复扣款。';submit.textContent='重试确认发送'}finally{busy=false;onBusy(false);submit.disabled=false;back.disabled=false}
- }},h('h3',{class:'dcoin-heading'},dcoinIcon(h),'红包'),h('p',{class:'rpk-help'},'使用农场与站内积分余额，发出时扣除总额。每人限领一份，不能领取自己发的红包；过期余款自动退回。'),field(h('span',null,'总额 ',dcoinIcon(h)),amount),field('份数',count),field('分配方式',kind),field('有效期 · 分钟',minutes),field('祝福语',prompt),status,submit,back)
+ }},h('h3',{class:'dcoin-heading'},dcoinIcon(h),'红包'),h('p',{class:'rpk-help'},'使用农场与站内积分余额，发出时扣除总额。每人限领一份，不能领取自己发的红包；过期余款自动退回。'),field(h('span',null,'总额 ',dcoinIcon(h)),amount),field('份数',count),field('分配方式',kind),field('有效期 · 分钟（最多 24 小时）',minutes),field('祝福语',prompt),status,submit,back)
  return form
 }
 export function coin52Detail({h,api,packet,messageId,onRefresh,onUpdate,onBusy,celebrate=false}){

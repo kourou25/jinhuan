@@ -1,9 +1,10 @@
 const layouts = new WeakMap()
 function snapshot(root) {
   if (!root.clientHeight) return null
+  if (root.scrollHeight-root.scrollTop-root.clientHeight<3) return {bottom:true}
   const top = root.getBoundingClientRect().top
   const row = [...root.querySelectorAll('[data-row]')].find(el => el.getBoundingClientRect().bottom > top)
-  return {bottom:root.scrollHeight-root.scrollTop-root.clientHeight<3, row, id:row?.dataset.row, offset:row ? row.getBoundingClientRect().top-top : 0, scroll:root.scrollTop}
+  return {bottom:false, row, id:row?.dataset.row, offset:row ? row.getBoundingClientRect().top-top : 0, scroll:root.scrollTop}
 }
 function apply(root, saved) {
   if (!root.isConnected || !root.clientHeight || !saved) return
@@ -47,4 +48,7 @@ export const observeChatScroll=root=>{const c=controller(root);return()=>c.dispo
 // Explicit navigation supersedes a pending layout restore; never scroll the page outside the chat.
 export function focusChatMessage(root,el){
   controller(root).position(()=>{const r=el.getBoundingClientRect(),top=root.getBoundingClientRect().top;root.scrollTop+=r.top-top-Math.max(0,(root.clientHeight-r.height)/2)})
+}
+export function focusChatBottom(root){
+  controller(root).position(()=>root.scrollTo({top:root.scrollHeight,behavior:'instant'}))
 }

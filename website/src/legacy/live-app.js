@@ -1,6 +1,8 @@
 // @ts-nocheck
 // 起点由 scripts/consolidate/extract-legacy.mjs 从线上 b39 包提取（2026-11-23）：线上有、但没有 TS 源码的代码，按原包顺序。
 // 提取之后这里就是正式源码（已删除音乐模块等），不要再重新生成覆盖；整理时按功能拆分，见 docs/consolidation-plan.md。
+import { assertChatHistory } from '../services/chat-access'
+import { ANON_GROUP_IDS, ANON_IDLE_SECONDS, TRUSTED_GROUP_IDS, identityMaskMiddleware, inTrustedGroup, isNewbie, maskChatMessages, seesAnonGroup } from '../services/identity-mask'
 import { accountProof } from '../services/account-binding'
 import { handleExt } from '../services/ext-proxy'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
@@ -72,9 +74,18 @@ import { fishFunding } from '../routes/fish-funding'
 import { gameHub } from '../routes/game-hub'
 import { sharedRoutes } from '../routes/guess-shared'
 import { huancai } from '../routes/huancai'
+import { isleLegacyLimit, isleRoutes } from '../routes/isle'
 import { instantCards } from '../routes/instant-cards'
+import { chatBots } from '../routes/chat-bots'
+import { circleTagMiddleware, seesCircle } from '../services/circle-tag'
+import { bottles } from '../routes/bottles'
+import { settleRewards as settleBottleRewards } from '../services/bottle-money'
+import { buildMemorial } from '../services/autumn'
+import { autumn } from '../routes/autumn'
+import { botCommandInsert, deliverBotEvent, pruneBotEvents, runBotDeliveries } from '../services/chat-bots'
 import { claimNative, handleNativeGameMessage, nativeLdc, settleCompensationAwards, settlePacketDraws, settlePendingEscalationAwards } from '../routes/native-ldc'
 import { novels } from '../routes/novels'
+import { OAUTH_CORS_PATHS, oauth } from '../routes/oauth'
 import { platform } from '../routes/platform'
 import { resources } from '../routes/resources'
 import { cachedSocialPreview, socialMediaResponse, socialPreview } from '../routes/social-preview'
@@ -141,7 +152,9 @@ async function b9WebsiteVisit(c){sameOrigin(c);await boundedJson(c,256);if(c.env
 // 每15分钟最多处理500个成员关系，沿用被移出状态，允许重新申请。
 async function b9ChatRetention(env,t){
  const owners=(env.ADMIN_USER_IDS||'').split(',').map(x=>Number(x.trim())).filter(x=>Number.isSafeInteger(x)&&x!==0),cut=t-10*86400;
- const select="SELECT cm.group_id,cm.user_id FROM chat_members cm JOIN users u ON u.id=cm.user_id WHERE u.kind='user' AND COALESCE(u.is_admin,0)=0 AND COALESCE(u.role,'') NOT IN ('admin','gadmin') AND u.id NOT IN (SELECT value FROM json_each(?2)) AND COALESCE(u.last_seen,0)<?1 AND cm.joined_at<?1 AND cm.group_id NOT IN (SELECT group_id FROM chat_group_policy) ORDER BY cm.group_id,cm.user_id LIMIT 500";
+ // 匿名群（chat/1）5 天既没发言也没登录就移出（last_seen 随每次登录访问更新，发言也会更新）；其他群仍是 10 天
+ const anonCut=Math.floor(t-ANON_IDLE_SECONDS),anonIds=[...ANON_GROUP_IDS].map(Number).filter(Number.isSafeInteger).join(',')||'0',idle='CASE WHEN cm.group_id IN ('+anonIds+') THEN '+anonCut+' ELSE ?1 END',trustedIds=[...TRUSTED_GROUP_IDS].map(Number).filter(Number.isSafeInteger).join(',')||'0';
+ const select="SELECT cm.group_id,cm.user_id FROM chat_members cm JOIN users u ON u.id=cm.user_id WHERE u.kind='user' AND COALESCE(u.is_admin,0)=0 AND COALESCE(u.role,'') NOT IN ('admin','gadmin') AND u.id NOT IN (SELECT value FROM json_each(?2)) AND COALESCE(u.last_seen,0)<"+idle+" AND cm.joined_at<"+idle+" AND cm.group_id NOT IN (SELECT group_id FROM chat_group_policy) AND NOT (cm.group_id IN ("+anonIds+") AND EXISTS(SELECT 1 FROM chat_members t WHERE t.user_id=cm.user_id AND t.group_id IN ("+trustedIds+"))) ORDER BY cm.group_id,cm.user_id LIMIT 500";
  const found=await env.DB.prepare(select).bind(cut,JSON.stringify(owners)).first();if(!found)return {removed:0};
  const result=await env.DB.batch([
   env.DB.prepare('INSERT OR IGNORE INTO chat_kick_notes(group_id,user_id,at,reason) SELECT group_id,user_id,?3,\'idle\' FROM ('+select+')').bind(cut,JSON.stringify(owners),t),
@@ -438,6 +451,10 @@ var farewellRelease = (() => {
       return;
     }
     if (path === "/api/me") return c.json({ user: null, main_activation_required: true });
+    if (c.req.method === "POST" && /^\/api\/chat-bots\/[a-f0-9-]{36}\/messages$/.test(path)) {
+      await next();
+      return;
+    }
     if (path === "/activate" || path === "/api/main-access" || path.startsWith("/auth/") || path.startsWith("/api/auth/") || path.startsWith("/api/invites/") || path.startsWith("/api/me/account") || path.startsWith("/api/me/bind/") || path === "/api/me" || path === "/api/config" || /^\/(?:login|register|reset|welcome|i)(?:\/|$)/.test(path) || path.startsWith("/img/") || path === "/ext" || path.startsWith("/assets/") || /\.(?:js|css|woff2?|png|webp|svg|ico|html)$/.test(path)) {
       await next();
       return;
@@ -7963,7 +7980,7 @@ var communitySkinRelease = (() => {
     if (raw2.schemaVersion !== 1 || typeof id !== "string" || !/^[a-z0-9][a-z0-9-]{2,47}$/.test(id) || raw2.id !== id || raw2.permission !== true) throw Error("\u5957\u88C5\u7F16\u53F7\u6216\u6388\u6743\u58F0\u660E\u65E0\u6548");
     const name = text(raw2.name, 24), author = text(raw2.author, 24), license = text(raw2.license, 100);
     if (typeof raw2.github !== "string" || !/^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/i.test(raw2.github)) throw Error("\u4F5C\u8005 GitHub \u7528\u6237\u540D\u65E0\u6548");
-    keys(raw2.components, ["bubble", "title", "badge", "reply"]);
+    keys(raw2.components, ["bubble", "title", "badge", "reply", "frame"]);
     const components = {};
     for (const [kind, v] of Object.entries(raw2.components)) {
       keys(v, ["file", "slice", "style"]);
@@ -8073,7 +8090,7 @@ var communitySkinRelease = (() => {
   var Node3 = import_postcss.default.Node;
 
   // src/community-skins/css.mjs
-  var kinds = /* @__PURE__ */ new Set(["bubble", "title", "badge", "reply"]);
+  var kinds = /* @__PURE__ */ new Set(["bubble", "title", "badge", "reply", "frame"]);
   var unsafeProperty = /^(?:behavior|-moz-binding|cursor|pointer-events|user-select|content-visibility|contain|all)$/i;
   var unsafeValue = /(?:javascript\s*:|expression\s*\(|@import|image-set\s*\(|element\s*\(|-moz-binding|behavior\s*:)/i;
   function validSvg(value) {
@@ -8271,6 +8288,8 @@ var communitySkinRelease = (() => {
         const expectedType = { "png": "image/png", "jpg": "image/jpeg", "webp": "image/webp" }[spec.file.split(".").at(-1)];
         if (!/^[a-f0-9]{64}$/.test(meta.sha256 || "") || !Number.isSafeInteger(meta.bytes) || meta.bytes < 20 || meta.bytes > 4 * 1024 * 1024 || meta.type !== expectedType || !Number.isInteger(meta.width) || !Number.isInteger(meta.height) || meta.width < 1 || meta.height < 1 || meta.width > 2048 || meta.height > 2048 || meta.width * meta.height > 4194304) throw Error("\u7D20\u6750\u6458\u8981\u65E0\u6548");
         if (spec.slice && (spec.slice[0] + spec.slice[2] >= meta.height || spec.slice[1] + spec.slice[3] >= meta.width)) throw Error("\u8FB9\u6846\u5207\u7247\u8D85\u51FA\u56FE\u7247");
+        // 头像框：64–1024 像素的正方形图，中间透明，叠在头像外圈
+        if (kind === "frame" && (meta.width !== meta.height || meta.width < 64 || meta.width > 1024)) throw Error("头像框需为 64–1024 像素的正方形图片");
         const previous = known.get(meta.sha256);
         if (previous && (previous.type !== meta.type || previous.width !== meta.width || previous.height !== meta.height)) throw Error("\u7D20\u6750\u5143\u4FE1\u606F\u4E0D\u4E00\u81F4");
         if (!known.has(meta.sha256) && !done.has(meta.sha256)) {
@@ -8310,7 +8329,7 @@ var communitySkinRelease = (() => {
     return bucket.get("community-skins/images/" + hash);
   }
   async function readCommunityCss(bucket, id, kind, hash) {
-    if (!/^[a-z0-9][a-z0-9-]{2,47}$/.test(id) || !["bubble", "title", "badge", "reply"].includes(kind) || !/^[a-f0-9]{64}$/.test(hash)) return null;
+    if (!/^[a-z0-9][a-z0-9-]{2,47}$/.test(id) || !["bubble", "title", "badge", "reply", "frame"].includes(kind) || !/^[a-f0-9]{64}$/.test(hash)) return null;
     return bucket.get(`community-skins/css/${id}/${kind}/${hash}`);
   }
 
@@ -8351,7 +8370,9 @@ var communitySkinRelease = (() => {
     if (result.pending || result.conflict) return result;
     const catalog = await readCommunityCatalog(env.BUCKET);
     if (!catalog.source || !catalog.entries.length) return result;
-    const key = "community-skins-" + catalog.source, exists = await env.DB.prepare("SELECT 1 FROM site_release_notices WHERE release_key=?").bind(key).first();
+    // 2026-11-23：按北京时间每天最多一条，避免投稿频繁合并时反复提醒全站
+    const day = new Date((t + 28800) * 1e3).toISOString().slice(0, 10);
+    const key = "community-skins-day-" + day, exists = await env.DB.prepare("SELECT 1 FROM site_release_notices WHERE release_key=? OR (release_key LIKE 'community-skins-%' AND created_at>?)").bind(key, t - 86400).first();
     if (!exists) {
       const body = "\u3010\u66F4\u65B0\u63D0\u9192\u3011\u793E\u533A\u88C5\u626E\u4E0A\u65B0\n\u2022 \u65B0\u7684\u793E\u533A\u6295\u7A3F\u5DF2\u540C\u6B65\uFF0C\u53EF\u5728\u4E2A\u4EBA\u4E2D\u5FC3\u7684\u300C\u88C5\u626E\u300D\u4E2D\u9009\u62E9\u3002\n\u8BF7\u5148\u4FDD\u5B58\u6B63\u5728\u7F16\u8F91\u7684\u5185\u5BB9\uFF0C\u518D\u5237\u65B0\u5F53\u524D\u754C\u9762\u4EE5\u52A0\u8F7D\u65B0\u7248\u3002";
       await env.DB.prepare("INSERT OR IGNORE INTO site_release_notices(release_key,worker_version,title,body,created_at) VALUES(?,?,'\u793E\u533A\u88C5\u626E\u4E0A\u65B0',?,?)").bind(key, "community:" + catalog.source, body, t).run();
@@ -8830,7 +8851,8 @@ function b9Day(t){return new Date((t+28800)*1000).toISOString().slice(0,10)}
 function b9DayStart(day){if(!/^\d{4}-\d{2}-\d{2}$/.test(day))fail(400,'日期无效');const t=Date.parse(day+'T00:00:00+08:00')/1000;if(!Number.isFinite(t)||b9Day(t)!==day)fail(400,'日期无效');return t}
 const B9_BASE="m.hidden=0 AND m.kind='image' AND (m.image_url IS NOT NULL OR m.image_key IS NOT NULL OR m.gallery IS NOT NULL) AND COALESCE(m.image_url,'') NOT LIKE '%/social-media/%' AND instr(COALESCE(m.gallery,''),'\"external_url\"')=0 AND instr(COALESCE(m.gallery,''),'\"external_video\"')=0";
 function b9Where(c){
- const terms=[B9_BASE],args=[],q=c.req.query('q')==='hot'&&!c.req.query('sort')?'':c.req.query('q')||'',tag=c.req.query('tag')||'',type=c.req.query('type')||'all';
+ // 「！xx」圈内帖子不进 linux.do 小程序图廊（见 services/circle-tag.ts）
+ const terms=[B9_BASE,"NOT EXISTS(SELECT 1 FROM meme_tags ct WHERE ct.meme_id=m.id AND (lower(ct.tag) LIKE '%！xx%' OR lower(ct.tag) LIKE '%!xx%'))"],args=[],q=c.req.query('q')==='hot'&&!c.req.query('sort')?'':c.req.query('q')||'',tag=c.req.query('tag')||'',type=c.req.query('type')||'all';
  if(q.length>60||tag.length>30||!['all','image','gif','video'].includes(type))fail(400,'筛选条件无效');
  if(c.req.query('nsfw')!=='show'){terms.push("m.nsfw=0 AND m.spoiler=0 AND NOT EXISTS(SELECT 1 FROM meme_tags t WHERE t.meme_id=m.id AND t.tag IN ("+SENSITIVE_TAGS.map(()=>'?').join(',')+")) AND NOT EXISTS(SELECT 1 FROM json_each(CASE WHEN json_valid(m.gallery) THEN m.gallery ELSE '[]' END) j WHERE json_extract(j.value,'$.o')=1)");args.push(...SENSITIVE_TAGS)}
  if(q){terms.push('(m.title LIKE ? ESCAPE \'\\\' OR m.content LIKE ? ESCAPE \'\\\')');const v='%'+q.replace(/[\\%_]/g,'\\$&')+'%';args.push(v,v)}
@@ -9908,10 +9930,16 @@ app.use("*", async (c, next) => {
 		"OPTIONS"
 	].includes(c.req.method)) {
 		const origin = c.req.header("origin");
-		if (origin && origin !== new URL(c.req.url).origin) fail(403, "非法来源");
+		// OAuth 令牌 / 用户信息 / 撤销接口给第三方网站调用，不读 Cookie，允许跨域（routes/oauth.ts）
+		if (origin && origin !== new URL(c.req.url).origin && !OAUTH_CORS_PATHS.test(c.req.path)) fail(403, "非法来源");
 	}
 	await next();
 });
+// 身份遮罩与新用户模块限制（services/identity-mask.ts）：必须在识别用户之后、业务路由之前
+app.use("*", identityMaskMiddleware);
+app.use("*", circleTagMiddleware);
+// 用尽欢账号登录（OAuth 2.0 / OIDC）：放在主站激活闸门之前，令牌接口没有登录用户
+app.route("/", oauth);
 app.get('/api/manor/farewell',async c=>{const u=needUser(c);c.header('cache-control','private, no-store');return c.json(await b10ManorFarewell.status(c.env.DB,u.id))});
 app.route("/",farewellRelease.mainActivation);
 app.use("*",farewellRelease.mainAccessGate);
@@ -10218,7 +10246,8 @@ app.get("/api/me", async (c) => {
 			farm_badge_progress: farmBadgeProgress(farmSave?.state),
 			unlocks: unlocks?.results.map((x) => x.item) ?? [],
 			official_titles: officialTitles,
-			linuxdo_username: linuxdo?.username ?? null
+			linuxdo_username: linuxdo?.username ?? null,
+			miss_gifts: (await c.env.DB.prepare("SELECT COUNT(*) n FROM autumn_gifts WHERE recipient_id=? AND seen_at IS NULL AND hidden=0").bind(u.id).first())?.n ?? 0
 		},
 		emojis: EMOJIS.map(([key, label]) => ({
 			key,
@@ -10429,7 +10458,9 @@ var card = (m) => {
 			trust_level: m.author_tl,
 			is_admin: m.author_admin
 		}),
-		has_puzzle: !!m.puzzle_id
+		has_puzzle: !!m.puzzle_id,
+		featured: Number(m.featured_at) > 0 ? Number(m.featured_at) : 0,
+		featured_note: Number(m.featured_at) > 0 ? m.featured_note || null : null
 	};
 };
 async function decorate(c, rows, full = false) {
@@ -10507,10 +10538,13 @@ async function decorate(c, rows, full = false) {
 			liked: liked.has(m.id),
 			fav_folders: (gFav.get(m.id) ?? []).map((r) => r.folder_id),
 			seen_at: u ? seen.get(m.id) ?? null : null,
-			can_manage: canManage(u, m.author_id)
+			can_manage: canManage(u, m.author_id),
+			can_feature: canFeature(c, u)
 		};
 	});
 }
+// 加精：站点管理员和站长（2026-11-24 站长确认，群管理员不行）
+var canFeature = (c, u) => !!u && (u.is_admin === 1 || isOwner(c, u));
 var listOrder = {
 	hot: "m.hot DESC, m.id DESC",
 	old: "m.created_at ASC, m.id ASC",
@@ -10523,7 +10557,7 @@ var galleryFrom = (c) => c.get("user") ? MEME_FROM : `${galleryCoreFrom(c)} LEFT
 var memeId = (c) => intIn(c.req.param("id"), 0, Number.MAX_SAFE_INTEGER, 0);
 async function listFilter(c) {
 	const u = c.get("user");
-	const { q = "", tag = "", author = "", puzzle = "", series = "", unseen = "", text = "" } = c.req.query();
+	const { q = "", tag = "", author = "", puzzle = "", series = "", unseen = "", text = "", featured = "" } = c.req.query();
 	const where = ["m.hidden = 0"];
 	const args = [];
 	if (q.trim()) {
@@ -10547,12 +10581,13 @@ async function listFilter(c) {
 		args.push(series);
 	}
 	if (puzzle) where.push("EXISTS (SELECT 1 FROM puzzles z WHERE z.meme_id = m.id)");
+	if (featured === "1") where.push("m.featured_at > 0");
 	if (text === "only") where.push("m.kind = 'text'");
 	else if (text === "0") where.push("m.kind != 'text'");
 	const mode = nsfwMode(c);
 	if (NSFW_WHERE[mode]) where.push(NSFW_WHERE[mode]);
 	const localSeen = !u && c.req.method === "POST" ? cleanSeen((await jsonBody(c)).seen) : [];
-	const plain = !q.trim() && !tag && !author && !series && !puzzle && text !== "only" && text !== "0" && !localSeen.length;
+	const plain = !q.trim() && !tag && !author && !series && !puzzle && featured !== "1" && text !== "only" && text !== "0" && !localSeen.length;
 	const base = {
 		where: [...where],
 		args: [...args]
@@ -11257,6 +11292,144 @@ app.delete("/api/memes/:id/fav", async (c) => {
 	await c.env.DB.batch([c.env.DB.prepare("DELETE FROM favorites WHERE user_id = ? AND meme_id = ?").bind(u.id, id), recount(c, id, "fav_count")]);
 	return itemJson(c, id);
 });
+// ---------- 群聊侧边图廊分栏 + 精华（2026-11-24） ----------
+// 路径不放在 /api/memes/ 下：那里的 /api/memes/:id 先注册，会吞掉 /api/memes/feed。
+// 出口仍经过 circle-tag（剔除「！xx」帖）和 identity-mask（访客 / 新用户遮罩）中间件；这里另在 SQL 里排除「！xx」帖，计数才准。
+var FEED_DAYS = 14;
+// 近期优先，互动多的往前提：每一分互动相当于晚发 3 小时，最多提前 3 天
+var FEED_SCORE = "(m.created_at + 10800 * MIN(m.like_count + m.reaction_count + m.reply_count + m.comment_count * 2 + m.fav_count, 24))";
+var FEED_UNREAD = "NOT EXISTS (SELECT 1 FROM meme_feed_reads r WHERE r.user_id = ? AND r.meme_id = m.id)";
+var FEED_NO_CIRCLE = "NOT EXISTS (SELECT 1 FROM meme_tags ct WHERE ct.meme_id = m.id AND (lower(ct.tag) LIKE '%！xx%' OR lower(ct.tag) LIKE '%!xx%'))";
+// 「不喜欢」的帖子：除了「我不喜欢的」视图，侧边栏一律不再出现
+var FEED_NOT_HIDDEN = "NOT EXISTS (SELECT 1 FROM meme_feed_hides x WHERE x.user_id = ? AND x.meme_id = m.id)";
+async function feedBase(c, u, { hiddenView = false } = {}) {
+	const where = ["m.hidden = 0"], args = [];
+	// NSFW 默认不进侧边栏，nsfw=1 才显示；「我不喜欢的」列出全部（图照样按设置模糊）
+	if (!hiddenView && c.req.query("nsfw") !== "1") where.push("m.nsfw = 0");
+	if (!await seesCircle(c.env, u)) where.push(FEED_NO_CIRCLE);
+	if (!hiddenView) {
+		where.push(FEED_NOT_HIDDEN);
+		args.push(u.id);
+	}
+	return { where, args };
+}
+// 新用户（不在 chat/8）：侧边栏完全不显示发帖人
+async function feedHidesAuthor(c, u) {
+	return isNewbie(c.env, u) && !await inTrustedGroup(c.env.DB, u.id);
+}
+var feedStripAuthor = (m) => ({ ...m, author_name: null, author_nick: null, author_avatar: null, author_deco: null, author_fancy: false, author_hidden: true });
+async function feedCounts(c, u, base) {
+	const row = await c.env.DB.prepare(`SELECT COUNT(*) AS n, SUM(CASE WHEN ${FEED_UNREAD} THEN 1 ELSE 0 END) AS unread, MAX(m.id) AS latest
+     FROM memes m WHERE ${base.where.join(" AND ")} AND m.created_at > ?`).bind(u.id, ...base.args, now() - FEED_DAYS * 86400).first();
+	const hid = await c.env.DB.prepare("SELECT COUNT(*) AS n FROM meme_feed_hides WHERE user_id = ?").bind(u.id).first();
+	return { recent: row?.n ?? 0, unread: row?.unread ?? 0, latest: row?.latest ?? 0, hidden: hid?.n ?? 0 };
+}
+app.get("/api/gallery-feed", async (c) => {
+	const u = needUser(c);
+	const view = ["all", "featured", "random", "hidden"].includes(c.req.query("view")) ? c.req.query("view") : "unread";
+	const base = await feedBase(c, u, { hiddenView: view === "hidden" });
+	const where = [...base.where], args = [...base.args];
+	const tag = String(c.req.query("tag") ?? "").trim().slice(0, 40);
+	if (tag) {
+		where.push("EXISTS (SELECT 1 FROM meme_tags t WHERE t.meme_id = m.id AND t.tag = ?)");
+		args.push(tag);
+	}
+	// random：全站随机一批（不限 14 天），read=1 时包含已阅过的；hidden：我不喜欢的，按标记时间倒序
+	if (view === "featured") where.push("m.featured_at > 0");
+	else if (view === "hidden") {
+		where.push("EXISTS (SELECT 1 FROM meme_feed_hides x WHERE x.user_id = ? AND x.meme_id = m.id)");
+		args.push(u.id);
+	} else if (view !== "random") {
+		where.push("m.created_at > ?");
+		args.push(now() - FEED_DAYS * 86400);
+	} else if (["today", "week", "month"].includes(c.req.query("span"))) {
+		// 随机的时间范围：今天（北京时间）/ 一周内 / 一月内；不传就是全站
+		const t = now(), span = c.req.query("span");
+		where.push("m.created_at > ?");
+		args.push(span === "today" ? Math.floor((t + 28800) / 86400) * 86400 - 28800 : t - (span === "week" ? 7 : 30) * 86400);
+	}
+	if (view === "unread" || (view === "random" && c.req.query("read") !== "1")) {
+		where.push(FEED_UNREAD);
+		args.push(u.id);
+	}
+	const offset = view === "random" ? 0 : intIn(c.req.query("offset"), 0, 2e3, 0), limit = intIn(c.req.query("limit"), 1, 30, 20);
+	const order = view === "featured" ? "m.featured_at DESC, m.id DESC" : view === "random" ? "RANDOM()"
+		: view === "hidden" ? "(SELECT x.at FROM meme_feed_hides x WHERE x.user_id = " + Number(u.id) + " AND x.meme_id = m.id) DESC, m.id DESC" : `${FEED_SCORE} DESC, m.id DESC`;
+	const db = c.env.DB;
+	const { results } = await db.prepare(`SELECT ${MEME_COLS} FROM ${MEME_FROM} WHERE ${where.join(" AND ")} ORDER BY ${order} LIMIT ? OFFSET ?`).bind(...args, limit + 1, offset).all();
+	const rows = results.slice(0, limit);
+	const [items, reads, counts, tags] = await Promise.all([
+		decorate(c, rows),
+		rows.length ? db.prepare("SELECT meme_id FROM meme_feed_reads WHERE user_id = ? AND meme_id IN (SELECT value FROM json_each(?))").bind(u.id, JSON.stringify(rows.map((r) => r.id))).all() : { results: [] },
+		offset === 0 ? (view === "hidden" ? feedBase(c, u).then((b) => feedCounts(c, u, b)) : feedCounts(c, u, base)) : null,
+		// 近期热门标签（快速筛选用）：只在第一页给
+		offset === 0 ? db.prepare(`SELECT t.tag, COUNT(*) AS n FROM memes m JOIN meme_tags t ON t.meme_id = m.id
+         WHERE ${base.where.join(" AND ")} AND m.created_at > ? GROUP BY t.tag ORDER BY n DESC LIMIT 16`).bind(...base.args, now() - FEED_DAYS * 86400).all() : { results: [] }
+	]);
+	const read = new Set(reads.results.map((r) => r.meme_id));
+	const hide = await feedHidesAuthor(c, u);
+	return c.json({
+		view,
+		items: items.map((m) => ({ ...(hide ? feedStripAuthor(m) : m), feed_read: read.has(m.id), ...(view === "hidden" ? { feed_hidden: true } : {}) })),
+		more: view === "random" ? false : results.length > limit,
+		offset,
+		counts,
+		tags: tags.results.filter((t) => !STRIP_HIDE.test(t.tag) && !SENSITIVE_TAGS.includes(t.tag)).slice(0, 10)
+	});
+});
+// 新帖提醒：只数 since 之后、还没已阅的帖子，走主键范围扫描，开销很小
+app.get("/api/gallery-feed/new", async (c) => {
+	const u = needUser(c);
+	const since = intIn(c.req.query("since"), 0, Number.MAX_SAFE_INTEGER, 0);
+	const base = await feedBase(c, u);
+	const row = await c.env.DB.prepare(`SELECT COUNT(*) AS n, MAX(m.id) AS latest FROM memes m WHERE m.id > ? AND ${base.where.join(" AND ")} AND ${FEED_UNREAD}`).bind(since, ...base.args, u.id).first();
+	return c.json({ count: since ? row?.n ?? 0 : 0, latest: row?.latest ?? since });
+});
+// 已阅：ids 逐条标记（undo=true 撤销）；all=true 把当前筛选下近期未读的全部标记
+app.post("/api/gallery-feed/read", async (c) => {
+	const u = needUser(c);
+	const body = await jsonBody(c);
+	const db = c.env.DB, t = now();
+	if (body.all) {
+		const base = await feedBase(c, u);
+		// scope：all = 近 14 天全部；today = 今天（北京时间）发的；older7 = 7 天前发的（侧边栏只显示近 14 天）
+		const scope = ["today", "older7"].includes(body.scope) ? body.scope : "all";
+		const from = scope === "today" ? Math.floor((t + 28800) / 86400) * 86400 - 28800 : t - FEED_DAYS * 86400;
+		const until = scope === "older7" ? t - 7 * 86400 : t + 1;
+		const r = await db.prepare(`INSERT OR IGNORE INTO meme_feed_reads (user_id, meme_id, at)
+       SELECT ?, m.id, ? FROM memes m WHERE ${base.where.join(" AND ")} AND m.created_at > ? AND m.created_at <= ? AND ${FEED_UNREAD} LIMIT 2000`).bind(u.id, t, ...base.args, from, until, u.id).run();
+		return c.json({ ok: true, marked: r.meta.changes ?? 0 });
+	}
+	const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number).filter((x) => Number.isSafeInteger(x) && x > 0))].slice(0, 200) : [];
+	if (!ids.length) fail(400, "没有要标记的帖子");
+	if (body.undo) await db.prepare("DELETE FROM meme_feed_reads WHERE user_id = ? AND meme_id IN (SELECT value FROM json_each(?))").bind(u.id, JSON.stringify(ids)).run();
+	else await db.prepare("INSERT OR IGNORE INTO meme_feed_reads (user_id, meme_id, at) SELECT ?, m.id, ? FROM json_each(?) j JOIN memes m ON m.id = j.value").bind(u.id, t, JSON.stringify(ids)).run();
+	return c.json({ ok: true });
+});
+// 不喜欢 / 不再出现：ids 标记，undo=true 恢复
+app.post("/api/gallery-feed/hide", async (c) => {
+	const u = needUser(c);
+	const body = await jsonBody(c);
+	const ids = Array.isArray(body.ids) ? [...new Set(body.ids.map(Number).filter((x) => Number.isSafeInteger(x) && x > 0))].slice(0, 200) : [];
+	if (!ids.length) fail(400, "没有要标记的帖子");
+	const db = c.env.DB;
+	if (body.undo) await db.prepare("DELETE FROM meme_feed_hides WHERE user_id = ? AND meme_id IN (SELECT value FROM json_each(?))").bind(u.id, JSON.stringify(ids)).run();
+	else await db.prepare("INSERT OR IGNORE INTO meme_feed_hides (user_id, meme_id, at) SELECT ?, m.id, ? FROM json_each(?) j JOIN memes m ON m.id = j.value").bind(u.id, now(), JSON.stringify(ids)).run();
+	const n = await db.prepare("SELECT COUNT(*) AS n FROM meme_feed_hides WHERE user_id = ?").bind(u.id).first();
+	return c.json({ ok: true, hidden_total: n?.n ?? 0 });
+});
+// 加精 / 取消加精；已是精华时只改理由，不重发通知
+app.post("/api/memes/:id/feature", async (c) => {
+	const u = needUser(c);
+	if (!canFeature(c, u)) fail(403, "只有管理员能加精");
+	const id = memeId(c);
+	await loadMeme(c, id);
+	const { on, note } = await jsonBody(c);
+	const text = String(note ?? "").replace(/\s+/g, " ").trim().slice(0, 60) || null;
+	if (on) await c.env.DB.prepare("UPDATE memes SET featured_at = CASE WHEN featured_at > 0 THEN featured_at ELSE ? END, featured_by = CASE WHEN featured_at > 0 THEN featured_by ELSE ? END, featured_note = ? WHERE id = ?").bind(now(), u.id, text, id).run();
+	else await c.env.DB.prepare("UPDATE memes SET featured_at = 0, featured_by = NULL, featured_note = NULL WHERE id = ?").bind(id).run();
+	return itemJson(c, id);
+});
 app.post("/api/views", async (c) => {
 	const u = c.get("user");
 	if (!u) return c.json({ ok: true });
@@ -11506,15 +11679,25 @@ var NOTIF_PARTS = {
 	creply: `SELECT 'creply' AS kind, c.meme_id, 0 AS gid, c.user_id, c.body AS val, c.created_at AS at FROM comments p
     CROSS JOIN comments c INDEXED BY idx_comments_reply_live ON c.reply_to = p.id JOIN memes m ON m.id = c.meme_id
     WHERE p.user_id = ?1 AND m.author_id IS NOT ?1 AND m.hidden = 0 AND c.user_id != ?1 AND c.deleted = 0 AND c.created_at > ?2`,
+	featured: `SELECT 'featured' AS kind, m.id AS meme_id, 0 AS gid, COALESCE(m.featured_by, 0) AS user_id, m.featured_note AS val, m.featured_at AS at FROM memes m
+    WHERE m.author_id = ?1 AND m.featured_at > 0 AND m.featured_at > ?2 AND m.hidden = 0 AND m.featured_by IS NOT ?1`,
 	post: `SELECT 'post' AS kind, m.id AS meme_id, 0 AS gid, m.author_id AS user_id, NULL AS val, m.created_at AS at FROM memes m
     WHERE m.hidden = 0 AND m.author_id != ?1 AND m.created_at > ?2`,
 	mention: `SELECT 'mention' AS kind, c.meme_id, 0 AS gid, c.user_id, c.body AS val, c.created_at AS at FROM comments c INDEXED BY idx_comments_mentions
     CROSS JOIN memes m ON m.id = c.meme_id LEFT JOIN comments p ON p.id = c.reply_to
-    WHERE c.created_at > ?2 AND c.deleted = 0 AND instr(c.body, '@') > 0 AND c.user_id != ?1 AND m.hidden = 0 AND m.author_id IS NOT ?1 AND p.user_id IS NOT ?1
+    WHERE c.created_at > ?2 AND c.deleted = 0 AND instr(c.body, '@') > 0 AND m.hidden = 0 AND ((c.user_id = ?1 AND instr(c.body, '[quote=') = 0) OR (c.user_id != ?1 AND m.author_id IS NOT ?1 AND p.user_id IS NOT ?1))
       AND instr(lower(c.body), '@' || lower((SELECT username FROM users WHERE id = ?1))) > 0`,
 	post_at: `SELECT 'post_at' AS kind, m.id AS meme_id, 0 AS gid, m.author_id AS user_id, m.title AS val, m.created_at AS at FROM memes m INDEXED BY idx_memes_mentions
     WHERE m.hidden = 0 AND (instr(m.title, '@') > 0 OR instr(m.content, '@') > 0) AND m.created_at > ?2 AND m.author_id IS NOT ?1
       AND instr(lower(m.title || ' ' || m.content), '@' || lower((SELECT username FROM users WHERE id = ?1))) > 0`,
+	// 漂流瓶（gid=-4）：瓶主看到互动人；瓶主的回信在这里就把 user_id 换成 0，收到的人只看到「瓶主」
+	bottle_like: `SELECT 'bottle_like' AS kind, b.id AS meme_id, -4 AS gid, l.user_id, NULL AS val, l.created_at AS at FROM bottles b
+    JOIN bottle_likes l ON l.bottle_id = b.id WHERE b.author_id = ?1 AND b.deleted = 0 AND l.user_id != ?1 AND l.created_at > ?2`,
+	bottle_reply: `SELECT 'bottle_reply' AS kind, b.id AS meme_id, -4 AS gid, r.user_id, r.body AS val, r.created_at AS at FROM bottles b
+    JOIN bottle_replies r ON r.bottle_id = b.id WHERE b.author_id = ?1 AND b.deleted = 0 AND r.is_host = 0 AND r.deleted = 0 AND r.hidden = 0 AND r.created_at > ?2`,
+	bottle_re: `SELECT 'bottle_re' AS kind, r.bottle_id AS meme_id, -4 AS gid, CASE WHEN r.is_host = 1 AND b.anon = 1 THEN 0 ELSE r.user_id END AS user_id, r.body AS val, r.created_at AS at FROM bottle_replies p
+    JOIN bottle_replies r ON r.reply_to = p.id JOIN bottles b ON b.id = r.bottle_id
+    WHERE p.user_id = ?1 AND p.is_host = 0 AND r.user_id != ?1 AND r.deleted = 0 AND r.hidden = 0 AND b.deleted = 0 AND b.hidden = 0 AND r.created_at > ?2`,
 	join_req: `SELECT 'join_req' AS kind, 0 AS meme_id, r.group_id AS gid, r.user_id, COALESCE(b.kind,'new') AS val, r.created_at AS at FROM chat_join_reqs r
     LEFT JOIN chat_bans b ON b.group_id = r.group_id AND b.user_id = r.user_id
     WHERE r.status = 0 AND r.created_at > ?2 AND (SELECT is_admin = 1 OR role = 'gadmin' FROM users WHERE id = ?1) AND (COALESCE((SELECT trust_level FROM users WHERE id = r.user_id),0) < 4 OR (SELECT is_admin FROM users WHERE id = ?1) = 1) AND (r.group_id NOT IN (SELECT group_id FROM chat_group_policy) OR (SELECT is_admin FROM users WHERE id = ?1) = 1)`,
@@ -11524,7 +11707,7 @@ var NOTIF_PARTS = {
     WHERE l.user_id = ?1 AND l.at > ?2`,
 	chat_at: `SELECT 'chat_at' AS kind, x.id AS meme_id, x.group_id AS gid, x.user_id, x.body AS val, x.created_at AS at FROM chat_messages x INDEXED BY idx_chat_msg_mentions
     JOIN chat_members cm ON cm.group_id = x.group_id AND cm.user_id = ?1
-    WHERE x.created_at > ?2 AND x.created_at >= cm.joined_at AND x.id >= ${CHAT_HISTORY_FLOOR} AND x.deleted = 0 AND instr(x.body, '@') > 0 AND x.user_id != ?1
+    WHERE x.created_at > ?2 AND x.created_at >= cm.joined_at AND x.id >= ${CHAT_HISTORY_FLOOR} AND x.deleted = 0 AND instr(x.body, '@') > 0 AND (x.user_id != ?1 OR instr(x.body, '[quote=') = 0)
       AND instr(lower(x.body), '@' || lower((SELECT username FROM users WHERE id = ?1))) > 0`,
 	chat_reply: `SELECT 'chat_reply' AS kind, x.id AS meme_id, x.group_id AS gid, x.user_id, x.body AS val, x.created_at AS at FROM chat_messages x
     JOIN chat_messages p ON p.id = x.reply_to JOIN chat_members cm ON cm.group_id = x.group_id AND cm.user_id = ?1
@@ -11545,6 +11728,7 @@ var NOTIF_DEFAULT = {
 	reply: true,
 	comment: true,
 	creply: true,
+	featured: true,
 	post: false,
 	mention: true,
 	chat_at: true,
@@ -11557,6 +11741,9 @@ var NOTIF_DEFAULT = {
 	badge: true,
 	ai_comment: true,
 	farm_conflict: true,
+	bottle_like: true,
+	bottle_reply: true,
+	bottle_re: true,
 	release: true
 };
 function notifPrefs(u) {
@@ -11570,11 +11757,13 @@ var notifSql = (p, recent = false) => {
 	const parts = Object.keys(NOTIF_PARTS).filter((k) => p[k]).map((k) => {
 		const hint = recent && NOTIF_RECENT_INDEX[k];
 		const part = hint ? NOTIF_PARTS[k].replace(`FROM ${hint[0]}`, `FROM ${hint[0]} INDEXED BY ${hint[1]}`) : NOTIF_PARTS[k];
+		// 每类只取最新 100 条再合并：最终只显示 60 条，避免「新帖」一类把 30 天内几千条全部拿去判断已读和排序
+		const capped = `SELECT * FROM (${part} ORDER BY at DESC LIMIT 100)`;
 		return p.ai_comment === false && [
 			"comment",
 			"creply",
 			"mention"
-		].includes(k) ? `SELECT * FROM (${part}) WHERE user_id != ${AI_BOT_ID}` : part;
+		].includes(k) ? `SELECT * FROM (${capped}) WHERE user_id != ${AI_BOT_ID}` : capped;
 	});
 	const chunks = [];
 	for (let i = 0; i < parts.length; i += 4) chunks.push(`SELECT * FROM (${parts.slice(i, i + 4).join("\n  UNION ALL ")})`);
@@ -11582,6 +11771,7 @@ var notifSql = (p, recent = false) => {
 };
 var NOT_READ = `NOT EXISTS (SELECT 1 FROM notif_reads r WHERE r.user_id = ?1 AND r.kind = n.kind
   AND r.meme_id = CASE WHEN n.kind = 'join_req' THEN n.gid ELSE n.meme_id END AND r.actor_id = n.user_id AND r.at = n.at)
+  AND NOT (n.kind IN ('chat_at', 'mention') AND n.user_id = ?1)
   AND NOT (n.kind IN ('chat_at', 'chat_reply') AND n.meme_id <= COALESCE((SELECT last_read FROM chat_members WHERE group_id = n.gid AND user_id = ?1), 0))`;
 var notifPlanCache = /* @__PURE__ */ new Map();
 async function notifRecentPlan(db, uid) {
@@ -11595,8 +11785,24 @@ async function notifRecentPlan(db, uid) {
 	});
 	return recent;
 }
+// 通知列表每人缓存 10 秒（轮询频繁、查询较重）；本人标记已读或改设置时立即清掉
+var notifCache = /* @__PURE__ */ new Map();
+var NOTIF_CACHE_MS = 1e4;
+app.use("/api/notifs/*", async (c, next) => {
+	await next();
+	const u = c.get("user");
+	if (u && c.req.method !== "GET") notifCache.delete(u.id);
+});
 app.get("/api/notifs", async (c) => {
 	const u = needUser(c);
+	const cacheKey = c.req.url, hit = notifCache.get(u.id);
+	if (hit && hit.key === cacheKey && hit.notifRead === (u.notif_read ?? 0) && Date.now() - hit.at < NOTIF_CACHE_MS) return c.json(hit.body);
+	const res = await notifsList(c, u);
+	if (notifCache.size > 5e3) notifCache.clear();
+	notifCache.set(u.id, { key: cacheKey, notifRead: u.notif_read ?? 0, at: Date.now(), body: await res.clone().json() });
+	return res;
+});
+async function notifsList(c, u) {
 	const read = u.notif_read ?? 0;
 	const since = now() - 2592e3;
 	const prefs = notifPrefs(u);
@@ -11605,7 +11811,7 @@ app.get("/api/notifs", async (c) => {
 	const sql = notifSql(prefs, await notifRecentPlan(db, u.id));
 	const list = await db.prepare(`SELECT n.*, u.username, u.name, u.avatar, m.title, m.thumb_url, m.image_url, m.image_key, g.name AS group_name,
        CASE WHEN n.kind='badge' THEN COALESCE((SELECT n FROM user_badges WHERE user_id=n.user_id AND badge=n.val),0) END AS badge_n,
-       (m.id IS NOT NULL OR g.id IS NOT NULL OR n.kind IN ('badge','farm_conflict','release')) AS displayable
+       (m.id IS NOT NULL OR g.id IS NOT NULL OR n.kind IN ('badge','farm_conflict','release','bottle_like','bottle_reply','bottle_re')) AS displayable
        FROM (SELECT n.*, n.at > ?3 AND ${NOT_READ} AS unread FROM (${sql}) n ORDER BY unread DESC, at DESC LIMIT 60) n
        LEFT JOIN users u ON u.id = n.user_id LEFT JOIN memes m ON m.id = n.meme_id AND n.gid = 0
        LEFT JOIN chat_groups g ON g.id = n.gid AND n.gid > 0
@@ -11623,13 +11829,15 @@ app.get("/api/notifs", async (c) => {
 				"comment",
 				"creply",
 				"mention",
-				"post_at"
+				"post_at",
+				"bottle_reply",
+				"bottle_re"
 			].includes(r.kind) ? snippet(r.val ?? "", 60) : r.val,
 			thumb: thumb_url ?? (image_key ? `/img/${image_key}` : image_url),
 			unread: !!r.unread
 		})), ...alerts].sort((a, b) => Number(b.unread) - Number(a.unread) || b.at - a.at).slice(0, 60)
 	});
-});
+}
 app.post("/api/notifs/read", async (c) => {
 	const u = needUser(c);
 	const { item } = await jsonBody(c);
@@ -11955,22 +12163,27 @@ async function atReads(c, rows) {
 	if (!want.length) return out;
 	const gids = [...new Set(want.map((x) => x.r.group_id))];
 	const names = [...new Set(want.flatMap((x) => x.names))];
-	const { results } = await c.env.DB.prepare(`SELECT cm.group_id, lower(u.username) AS n, cm.last_read FROM json_each(?2) names
+	const { results } = await c.env.DB.prepare(`SELECT cm.group_id, lower(u.username) AS n, cm.last_read, cm.joined_at, ${CHAT_HISTORY_FLOOR} AS history_floor FROM json_each(?2) names
      CROSS JOIN users u ON u.username = names.value COLLATE NOCASE
      CROSS JOIN chat_members cm ON cm.user_id = u.id
      WHERE cm.group_id IN (SELECT value FROM json_each(?1))`).bind(JSON.stringify(gids), JSON.stringify(names)).all();
-	const lr = new Map(results.map((x) => [x.group_id + ":" + x.n, x.last_read]));
+	const lr = new Map(results.map((x) => [x.group_id + ":" + x.n, x]));
 	for (const { r, names: ns } of want) {
 		const o = {};
 		for (const n of ns) {
 			const v = lr.get(r.group_id + ":" + n);
-			if (v !== void 0) o[n] = v >= r.id;
+			if (v && r.created_at >= v.joined_at && r.id >= v.history_floor) o[n] = v.last_read >= r.id;
 		}
 		if (Object.keys(o).length) out.set(r.id, o);
 	}
 	return out;
 }
+// 匿名群（chat/1）：除站长外，消息里的发言者、引用、回应名单一律换成化名（services/identity-mask.ts）
 async function decorateMsgs(c, rows) {
+	const out = await decorateMsgsRaw(c, rows), viewer = c.get("user");
+	return seesAnonGroup(c.env, viewer) ? out : maskChatMessages(c.env, viewer, out);
+}
+async function decorateMsgsRaw(c, rows) {
 	if (!rows.length) return [];
 	const u = c.get("user");
 	const ids = JSON.stringify(rows.map((r) => r.id));
@@ -11989,8 +12202,10 @@ async function decorateMsgs(c, rows) {
 		c.env.DB.prepare(`SELECT b.message_id, b.text, b.user_id, b.created_at, b.ai_status, b.ai_score, u.kind, u.username, u.name, u.avatar, u.deco FROM chat_boosts b LEFT JOIN users u ON u.id = b.user_id
        WHERE b.message_id IN (SELECT value FROM json_each(?)) ORDER BY b.created_at`).bind(ids).all(),
 		atReads(c, rows),
-		c.env.DB.prepare(`SELECT reply_to AS id, COUNT(*) AS n FROM chat_messages
-       WHERE reply_to IN (SELECT value FROM json_each(?)) AND deleted = 0 GROUP BY reply_to`).bind(ids).all(),
+		c.env.DB.prepare(`SELECT x.reply_to AS id, COUNT(*) AS n FROM chat_messages x
+       JOIN chat_members cm ON cm.group_id=x.group_id AND cm.user_id=?2
+       WHERE x.reply_to IN (SELECT value FROM json_each(?1)) AND x.deleted=0
+         AND x.created_at>=cm.joined_at AND x.id>=${CHAT_HISTORY_FLOOR} GROUP BY x.reply_to`).bind(ids, u?.id ?? 0).all(),
 		c.env.DB.prepare("SELECT source_msg_id AS mid, id FROM road_items INDEXED BY idx_road_source_msg WHERE source_msg_id IN (SELECT value FROM json_each(?)) AND hidden = 0 AND source_hidden = 0").bind(ids).all(),
 		rows.some((r) => !r.deleted && (r.redpack_id || sharedPacket(r.body))) ? c.env.DB.prepare(`SELECT p.message_id, p.mode, p.game, p.prompt, p.provider, p.notify_at, p.draw_data, COALESCE(lp.mode,fp.mode) AS ldc_mode, COALESCE(lp.room_revision,fp.room_revision) AS guess_revision, lp.total_cents AS ldc_total,lp.count AS ldc_count,lp.payment_provider AS payment_provider, COALESCE(lp.response_mode,fp.response_mode) AS ldc_response_mode, CASE WHEN COALESCE(lp.response_mode,fp.response_mode)='similarity' THEN COALESCE(lp.answer_length,fp.answer_length) ELSE NULL END AS ldc_answer_length, CASE WHEN cp.packet_id IS NOT NULL THEN json_object('state',CASE WHEN cp.expires_at<=unixepoch() THEN 'expired' WHEN cp.remaining_count=0 THEN 'exhausted' ELSE 'active' END,'claimed',EXISTS(SELECT 1 FROM coin52_packet_slots WHERE packet_id=p.id AND recipient_id=${u?.id ?? 0}),'remaining',cp.remaining_count,'total',cp.count,'claimed_count',cp.count-cp.remaining_count,'expires_at',cp.expires_at,'kind',cp.mode) ELSE v.data END AS snapshot, v.synced_at, o.solved_at,
        (SELECT COUNT(*) FROM chat_redpack_opens s WHERE s.packet_id=p.id AND s.solved_at IS NOT NULL) AS opened
@@ -12113,11 +12328,11 @@ app.get("/api/chat/groups", async (c) => {
      ORDER BY g.is_default DESC, b.created_at DESC`).bind(u.id).all();
 	const pend = isChatAdmin(u) ? await c.env.DB.prepare(`SELECT group_id AS gid, COUNT(*) AS n FROM chat_join_reqs r WHERE status = 0 ${isOwner(c, u) ? "" : "AND COALESCE((SELECT trust_level FROM users WHERE id = r.user_id),0) < 4 AND r.group_id NOT IN (SELECT group_id FROM chat_group_policy)"} GROUP BY group_id`).all() : null;
 	const pm = new Map((pend?.results ?? []).map((x) => [x.gid, x.n]));
-	const { results } = await c.env.DB.prepare(`SELECT g.id, g.name, g.is_default, g.created_at, cm.last_read, cm.muted, g.notice, g.notice_at, (SELECT open_apply FROM chat_group_policy p WHERE p.group_id=g.id) AS internal_open,
+	const { results } = await c.env.DB.prepare(`SELECT g.id, g.name, g.avatar, g.is_default, g.created_at, cm.last_read, cm.muted, g.notice, g.notice_at, (SELECT open_apply FROM chat_group_policy p WHERE p.group_id=g.id) AS internal_open,
        g.member_count-(SELECT COUNT(*) FROM chat_members bm JOIN users bu ON bu.id=bm.user_id WHERE bm.group_id=g.id AND bu.kind='bot') AS members,
        (SELECT COUNT(*) FROM chat_members om JOIN users ou ON ou.id = om.user_id WHERE om.group_id = g.id AND ou.kind='user' AND ou.last_seen > ?3) AS online,
-       (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m WHERE m.group_id = g.id AND m.id > cm.last_read AND m.created_at>=cm.joined_at AND m.deleted = 0 AND m.user_id != ?1 LIMIT 100)) AS unread,
-       (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m INDEXED BY idx_chat_msg_at_unread WHERE m.group_id = g.id AND m.id > cm.last_read AND m.deleted = 0 AND m.user_id != ?1
+       (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m WHERE m.group_id = g.id AND m.id > MAX(cm.last_read,${CHAT_HISTORY_FLOOR}-1) AND m.created_at>=cm.joined_at AND m.deleted = 0 AND m.user_id != ?1 LIMIT 100)) AS unread,
+       (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m INDEXED BY idx_chat_msg_at_unread WHERE m.group_id = g.id AND m.id > MAX(cm.last_read,${CHAT_HISTORY_FLOOR}-1) AND m.deleted = 0 AND m.user_id != ?1
           AND m.created_at>=cm.joined_at AND instr(m.body,'@') > 0 AND m.body LIKE ?2 ESCAPE '\\' LIMIT 20)) AS at_me,
        l.id AS last_id, l.body AS last_body, l.image_key AS last_image, l.deleted AS last_deleted, l.created_at AS last_at,
        lu.username AS last_by, lu.name AS last_by_name
@@ -12152,6 +12367,7 @@ app.get("/api/chat/groups", async (c) => {
 		groups: results.map((g) => ({
 			id: g.id,
 			name: g.name,
+			avatar: g.avatar || null,
 			is_default: !!g.is_default,
 			internal: g.internal_open != null,
 			apply_open: !!g.internal_open,
@@ -12205,6 +12421,29 @@ app.patch("/api/chat/groups/:id", async (c) => {
 	if (!(await c.env.DB.prepare("UPDATE chat_groups SET name = ? WHERE id = ?").bind(name, groupId(c)).run()).meta.changes) fail(404, "群不存在");
 	return c.json({ ok: true });
 });
+// 群头像：群管理员（和改群名同一权限）上传本人的图片（/api/uploads for=avatar 得到 a/... key）；key 为空恢复站标
+app.put("/api/chat/groups/:id/avatar", async (c) => {
+	const u = needAdmin(c), gid = groupId(c), db = c.env.DB;
+	if (await b33Internal(db, gid) && !isOwner(c, u)) fail(403, "只有站长能管理这个群");
+	const g = await db.prepare("SELECT avatar FROM chat_groups WHERE id = ?").bind(gid).first();
+	if (!g) fail(404, "群不存在");
+	const b = await boundedJson(c), key = b.key == null || b.key === "" ? null : String(b.key);
+	if (key === null) {
+		await db.prepare("UPDATE chat_groups SET avatar = NULL WHERE id = ?").bind(gid).run();
+		return c.json({ ok: true, avatar: null });
+	}
+	if (!/^a\/\d{4}\/\d{2}\/[a-f0-9]{24}\.(?:png|jpg|gif|webp)$/.test(key)) fail(400, "请选择本人上传的图片");
+	const avatar = "/img/" + key;
+	if (g.avatar === avatar) return c.json({ ok: true, avatar });
+	if (!await db.prepare("SELECT 1 FROM uploads WHERE key=? AND user_id=? AND used=0 AND mime IN ('image/png','image/jpeg','image/gif','image/webp') AND size<=5242880").bind(key, u.id).first()) fail(400, "图片上传已失效，请重新选择");
+	try {
+		await commitUploadContent(db, u.id, [key], [db.prepare("UPDATE chat_groups SET avatar = ? WHERE id = ?").bind(avatar, gid)]);
+	} catch (e) {
+		if (String(e).includes("upload_claim_conflict") || String(e).includes("malformed JSON")) fail(409, "图片已被使用，请重新选择");
+		throw e;
+	}
+	return c.json({ ok: true, avatar });
+});
 app.delete("/api/chat/groups/:id", async (c) => {
 	needSiteAdmin(c);
 	const gid = groupId(c);
@@ -12231,35 +12470,44 @@ app.get("/api/chat/groups/:id/activity-stats", async (c) => {
 	c.header("cache-control", "private, max-age=30");
 	return c.json(await chatRankView(c, gid, u.id));
 });
+// 成员列表；view=manage（管理员）支持按最久未发言排序、搜索、分页（移植自 kourou25/jinhuan#4，radish40）
 app.get("/api/chat/groups/:id/members", async (c) => {
 	const { g } = await needMember(c, groupId(c));
+	const t = now();
 	if (c.req.query("view") === "mention") {
-		const { results } = await c.env.DB.prepare(`SELECT u.username, u.name, u.avatar FROM chat_members cm
+		const [members, bots] = await c.env.DB.batch([c.env.DB.prepare(`SELECT u.username, u.name, u.avatar FROM chat_members cm
        JOIN users u ON u.id = cm.user_id WHERE cm.group_id = ? AND u.kind='user'
-       ORDER BY (u.last_seen > ?) DESC, cm.joined_at ASC, cm.rowid ASC LIMIT 300`).bind(g.id, now() - 180).all();
-		return c.json({ members: results });
+       ORDER BY (u.last_seen > ?) DESC, cm.joined_at ASC, cm.rowid ASC LIMIT 300`).bind(g.id, t - 180), c.env.DB.prepare(`SELECT u.username,u.name,u.avatar FROM chat_bot_installations i
+      JOIN users u ON u.id=i.bot_id AND u.kind='bot' AND u.disabled=0 WHERE i.group_id=? AND i.enabled=1 ORDER BY i.created_at,i.id`).bind(g.id)]);
+		return c.json({ members: [...bots.results, ...members.results] });
 	}
-	const [list, total] = await c.env.DB.batch([c.env.DB.prepare(`SELECT u.id, u.username, u.name, u.avatar, u.trust_level, u.is_admin, u.role, u.fancy, u.deco, u.bio, u.last_seen, cm.joined_at FROM chat_members cm
-       JOIN users u ON u.id = cm.user_id WHERE cm.group_id = ? AND u.kind='user'
-       ORDER BY (u.last_seen > ?) DESC, cm.joined_at ASC, cm.rowid ASC LIMIT 300`).bind(g.id, now() - 180), c.env.DB.prepare("SELECT member_count-(SELECT COUNT(*) FROM chat_members bm JOIN users bu ON bu.id=bm.user_id WHERE bm.group_id=g.id AND bu.kind='bot') AS n, created_by FROM chat_groups g WHERE id = ?").bind(g.id)]);
-	const creator = total.results[0].created_by;
+	const manage = c.req.query("view") === "manage";
+	if (manage) needAdmin(c);
+	const pageSize = 50, page = intIn(c.req.query("page"), 0, 1e6, 0), q = (c.req.query("q") ?? "").trim().slice(0, 50);
+	const fields = "u.id, u.username, u.name, u.avatar, u.trust_level, u.is_admin, u.role, u.fancy, u.deco, u.bio, u.last_seen, cm.joined_at";
+	const roster = "FROM chat_members cm JOIN users u ON u.id = cm.user_id WHERE cm.group_id = ?1 AND u.kind='user'";
+	const order = manage && c.req.query("sort") === "inactive" ? "last_spoke_at ASC" : "(u.last_seen > ?2) DESC";
+	const listQuery = manage ? c.env.DB.prepare(`SELECT ${fields},
+       (SELECT MAX(m.created_at) FROM chat_messages m
+        WHERE m.group_id = cm.group_id AND m.user_id = cm.user_id AND m.deleted = 0 AND m.system_kind IS NULL) AS last_spoke_at
+     ${roster}
+       AND (?3 IS NULL OR u.username LIKE ?3 ESCAPE '\\' OR u.name LIKE ?3 ESCAPE '\\' OR u.bio LIKE ?3 ESCAPE '\\')
+     ORDER BY ${order}, cm.joined_at ASC, cm.rowid ASC LIMIT ?4 OFFSET ?5`).bind(g.id, t - 180, q ? `%${likeEsc(q)}%` : null, pageSize + 1, page * pageSize)
+		: c.env.DB.prepare(`SELECT ${fields} ${roster} ORDER BY ${order}, cm.joined_at ASC, cm.rowid ASC LIMIT 300`).bind(g.id, t - 180);
+	const totals = "SELECT member_count-(SELECT COUNT(*) FROM chat_members bm JOIN users bu ON bu.id=bm.user_id WHERE bm.group_id=g.id AND bu.kind='bot') AS n, created_by";
+	const online = ", (SELECT COUNT(*) FROM chat_members om JOIN users ou ON ou.id = om.user_id WHERE om.group_id = g.id AND ou.kind='user' AND ou.last_seen > ?2) AS online";
+	const totalsQuery = c.env.DB.prepare(`${totals}${manage ? online : ""} FROM chat_groups g WHERE id = ?1`);
+	const [list, total] = await c.env.DB.batch([listQuery, manage ? totalsQuery.bind(g.id, t - 180) : totalsQuery.bind(g.id)]);
+	const summary = total.results[0];
+	if (!summary) return fail(404, "群不存在");
+	const creator = summary.created_by, rows = manage ? list.results.slice(0, pageSize) : list.results;
 	return c.json({
-		group: {
-			id: g.id,
-			name: g.name,
-			is_default: !!g.is_default
-		},
-		members: list.results.map((m) => ({
-			...m,
-			is_admin: !!m.is_admin,
-			fancy: isFancy(m),
-			deco: decoOf(m.deco),
-			last_seen: m.last_seen || null,
-			creator: creator != null && m.id === creator,
-			owner: creator == null && isOwner(c, m)
-		})),
-		now: now(),
-		total: total.results[0].n
+		group: { id: g.id, name: g.name, is_default: !!g.is_default },
+		members: rows.map((m) => ({ ...m, is_admin: !!m.is_admin, fancy: isFancy(m), deco: decoOf(m.deco), last_seen: m.last_seen || null,
+			creator: creator != null && m.id === creator, owner: creator == null && isOwner(c, m) })),
+		now: t,
+		total: summary.n,
+		...(manage ? { online: summary.online, more: list.results.length > pageSize } : {})
 	});
 });
 app.post("/api/chat/groups/:id/members", async (c) => {
@@ -12521,7 +12769,8 @@ app.get("/api/chat/groups/:id/messages", async (c) => {
 			id: g.id,
 			name: g.name,
 			is_default: !!g.is_default,
-			history_since: g.joined_at
+			history_since: g.real_joined_at ?? g.joined_at,
+			history_floor: g.history_floor
 		},
 		items,
 		changed: await decorateMsgs(c, changed),
@@ -12694,15 +12943,19 @@ app.post("/api/chat/groups/:id/messages", async (c) => {
 		w: dims.w,
 		h: dims.h
 	}] : [];
-	const id = (await commitUploadContent(db, u.id, legacyUpload ? [legacyUpload] : mediaKeys(media), [
+	const botEvent = botCommandInsert(db, g.id, body, t, !!c.env.CHAT_BOT_WEBHOOK_KEY);
+	const committed = await commitUploadContent(db, u.id, legacyUpload ? [legacyUpload] : mediaKeys(media), [
 		...favoriteGuard ? [favoriteGuard] : [],
 		db.prepare(`INSERT INTO chat_messages (group_id, user_id, body, image_key, width, height, media, reply_to, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).bind(g.id, u.id, body, key, key ? dims.w || null : null, key ? dims.h || null : null, mediaJson, replyTo || null, t, t),
+		...botEvent ? [botEvent.statement] : [],
 		...chatRoadStatements(db, null, body, roadAttachments, t)
 	]).catch((error) => {
 		if (String(error).includes("favorite_source_changed")) fail(409, "来源消息已变化，请重新打开收藏");
 		throw error;
-	}))[favoriteGuard ? 1 : 0].results[0].id;
+	});
+	const id = committed[favoriteGuard ? 1 : 0].results[0].id;
+	if (botEvent && committed[favoriteGuard ? 2 : 1].results.length) c.executionCtx.waitUntil(deliverBotEvent(c.env, botEvent.id).catch(() => console.error("chat_bot_delivery_failed")));
 	const shared = sharedPacket(body);
 	if (shared) await db.batch(sharedPacketStatements(db, id, body, shared));
 	c.executionCtx.waitUntil(handleNativeGameMessage(c, {
@@ -12724,8 +12977,8 @@ async function chatMessage(c) {
 	const m = await c.env.DB.prepare(`${CHAT_SELECT} WHERE x.id = ?`).bind(id).first();
 	if (!m) fail(404, "消息不存在");
 	const { g } = await needMember(c, m.group_id);
-	if (m.created_at < g.joined_at || m.id < g.history_floor) fail(404, "消息不在你的可见范围内");
-	if (m.system_kind && c.req.method !== "GET" && !(c.req.method === "DELETE" && isChatAdmin(u))) fail(400, "系统提醒不能修改或回应");
+	assertChatHistory(g, m.id, m.created_at);
+	if (m.system_kind && m.system_kind !== "chat_bot" && c.req.method !== "GET" && !(c.req.method === "DELETE" && isChatAdmin(u))) fail(400, "系统提醒不能修改或回应");
 	return {
 		u,
 		m,
@@ -12990,10 +13243,15 @@ app.post("/api/chat/groups/:id/redpacks/import", async (c) => {
 		next
 	});
 });
+// 站内红包有效期：最长 24 小时
+var PACKET_TTL = 86400;
+// 带站内奖励的红包还能领：进行中、没到截止、还有名额、我没领过、不是别人的专属（lp / la 由调用方 LEFT JOIN，?1 = 当前用户）
+var packetRewardOpen = (t) => `(lp.state='open' AND lp.ends_at>${t} AND la.id IS NULL AND (lp.exclusive_user_id IS NULL OR lp.exclusive_user_id=?1)
+      AND EXISTS(SELECT 1 FROM ldc_awards slots WHERE slots.packet_id=p.id AND slots.state='ready'))`;
 app.get("/api/chat/groups/:id/redpacks/available", async (c) => {
 	const { u, g } = await needMember(c, groupId(c));
 	const current = now();
-	const dayStart = Math.max(g.joined_at, Math.floor((current + 28800) / 86400) * 86400 - 28800);
+	const dayStart = Math.max(g.joined_at, current - PACKET_TTL);
 	const fresh = current - 600;
 	const available = await c.env.DB.prepare(`SELECT p.id FROM chat_redpacks p CROSS JOIN chat_messages x ON x.id=p.message_id
     LEFT JOIN chat_redpack_opens o ON o.packet_id=p.id AND o.user_id=?
@@ -13002,15 +13260,14 @@ app.get("/api/chat/groups/:id/redpacks/available", async (c) => {
     LEFT JOIN chat_redpack_external_views v ON v.packet_id=p.id AND v.user_id=?
     WHERE x.group_id=? AND x.user_id<>? AND x.id>=${g.history_floor} AND x.created_at>=? AND x.deleted=0 AND (
       (p.provider='coin52' AND EXISTS(SELECT 1 FROM coin52_packets cp WHERE cp.packet_id=p.id AND cp.remaining_count>0 AND cp.refunded_at IS NULL AND cp.expires_at>unixepoch()) AND NOT EXISTS(SELECT 1 FROM coin52_packet_slots cs WHERE cs.packet_id=p.id AND cs.recipient_id=?1)) OR
-      (p.provider='native' AND p.game NOT IN ('ldc','free_guess') AND o.solved_at IS NULL) OR
-      (p.game='ldc' AND lp.mode IN ('fixed','random') AND lp.state='open' AND lp.ends_at>? AND la.id IS NULL
-        AND EXISTS(SELECT 1 FROM ldc_awards slots WHERE slots.packet_id=p.id AND slots.state='ready')) OR
+      (p.provider='native' AND p.game NOT IN ('ldc','free_guess') AND o.solved_at IS NULL AND (lp.packet_id IS NULL OR ${packetRewardOpen(current)})) OR
+      (p.game='ldc' AND lp.mode IN ('fixed','random') AND ${packetRewardOpen(current)}) OR
       (p.provider<>'native' AND v.data IS NOT NULL AND v.synced_at>=? AND json_extract(v.data,'$.state')='active'
         AND COALESCE(json_extract(v.data,'$.claimed'),0)=0 AND json_extract(v.data,'$.blocked') IS NULL
         AND (json_extract(v.data,'$.remaining') IS NULL OR json_extract(v.data,'$.remaining')>0)
         AND (json_extract(v.data,'$.total') IS NULL OR json_extract(v.data,'$.claimed_count') IS NULL OR json_extract(v.data,'$.claimed_count')<json_extract(v.data,'$.total'))
         AND (COALESCE(json_extract(v.data,'$.expires_at'),0)=0 OR json_extract(v.data,'$.expires_at')>?))
-    ) LIMIT 1`).bind(u.id, u.id, u.id, g.id, u.id, dayStart, current, fresh, current).first();
+    ) LIMIT 1`).bind(u.id, u.id, u.id, g.id, u.id, dayStart, fresh, current).first();
 	c.header("Cache-Control", "no-store");
 	return c.json({ has_available: !!available });
 });
@@ -13019,11 +13276,12 @@ app.get("/api/chat/groups/:id/redpacks", async (c) => {
 	const before = intIn(c.req.query("before"), 1, Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER);
 	const view = c.req.query("view") || "all";
 	const current = now();
-	const todayStart = Math.floor((current + 28800) / 86400) * 86400 - 28800;
-	const dayStart = Math.max(g.joined_at, view === "history" ? 0 : todayStart);
+	// 滚动 24 小时：0 点前发的红包不会一过零点就从袋子里消失
+	const validStart = current - PACKET_TTL;
+	const dayStart = Math.max(g.joined_at, view === "history" ? 0 : validStart);
 	const terminal = `(x.deleted=1 OR (p.provider='coin52' AND (EXISTS(SELECT 1 FROM coin52_packets cp WHERE cp.packet_id=p.id AND (cp.remaining_count=0 OR cp.expires_at<=${current})) OR EXISTS(SELECT 1 FROM coin52_packet_slots cs WHERE cs.packet_id=p.id AND cs.recipient_id=?1))) OR (p.provider='native' AND o.solved_at IS NOT NULL) OR
     (p.game='free_guess' AND (fp.state='closed' OR fp.ends_at<=${current} OR fp.winner_id IS NOT NULL)) OR
-    (p.game='ldc' AND (lp.state='closed' OR lp.ends_at<=${current} OR la.recipient_id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM ldc_awards slots WHERE slots.packet_id=p.id AND slots.state='ready'))) OR
+    (p.provider='native' AND lp.packet_id IS NOT NULL AND (lp.state='closed' OR lp.ends_at<=${current} OR la.recipient_id IS NOT NULL OR NOT EXISTS(SELECT 1 FROM ldc_awards slots WHERE slots.packet_id=p.id AND slots.state='ready'))) OR
     (v.data IS NOT NULL AND (json_extract(v.data,'$.claimed')=1 OR json_extract(v.data,'$.state') IN ('exhausted','expired','cancelled','drawn','not_won') OR
       (json_extract(v.data,'$.state')='active' AND (
         COALESCE(json_extract(v.data,'$.remaining'),-1)=0 OR
@@ -13037,11 +13295,10 @@ app.get("/api/chat/groups/:id/redpacks", async (c) => {
     AND (json_extract(v.data,'$.remaining') IS NULL OR json_extract(v.data,'$.remaining')>0)
     AND (json_extract(v.data,'$.total') IS NULL OR json_extract(v.data,'$.claimed_count') IS NULL OR json_extract(v.data,'$.claimed_count')<json_extract(v.data,'$.total'))
     AND (COALESCE(json_extract(v.data,'$.expires_at'),0)=0 OR json_extract(v.data,'$.expires_at')>${current}))`;
-	const ready = `(${`((p.provider='native' AND p.game NOT IN ('ldc','free_guess') AND o.solved_at IS NULL) OR
-    (p.game='ldc' AND lp.mode IN ('fixed','random') AND lp.state='open' AND lp.ends_at>${current} AND la.id IS NULL
-      AND EXISTS(SELECT 1 FROM ldc_awards slots WHERE slots.packet_id=p.id AND slots.state='ready')))`} OR ${externalReady} OR ${`(p.provider='coin52' AND EXISTS(SELECT 1 FROM coin52_packets cp WHERE cp.packet_id=p.id AND cp.remaining_count>0 AND cp.refunded_at IS NULL AND cp.expires_at>${current}) AND NOT EXISTS(SELECT 1 FROM coin52_packet_slots cs WHERE cs.packet_id=p.id AND cs.recipient_id=?1))`})`;
+	const ready = `(${`((p.provider='native' AND p.game NOT IN ('ldc','free_guess') AND o.solved_at IS NULL AND (lp.packet_id IS NULL OR ${packetRewardOpen(current)})) OR
+    (p.game='ldc' AND lp.mode IN ('fixed','random') AND ${packetRewardOpen(current)}))`} OR ${externalReady} OR ${`(p.provider='coin52' AND EXISTS(SELECT 1 FROM coin52_packets cp WHERE cp.packet_id=p.id AND cp.remaining_count>0 AND cp.refunded_at IS NULL AND cp.expires_at>${current}) AND NOT EXISTS(SELECT 1 FROM coin52_packet_slots cs WHERE cs.packet_id=p.id AND cs.recipient_id=?1))`})`;
 	const other = "x.user_id<>?1";
-	const category = view === "mine" ? "x.user_id=?1" : view === "puzzle" ? `${other} AND NOT ${terminal} AND ${puzzle}` : view === "pending" ? `${other} AND NOT ${terminal} AND NOT ${puzzle} AND ${ready}` : view === "check" ? `${other} AND p.provider NOT IN ('native','coin52') AND NOT ${terminal} AND NOT ${puzzle} AND NOT ${externalReady}` : view === "history" ? `(x.created_at<${todayStart} OR (${other} AND ${terminal}))` : "1=1";
+	const category = view === "mine" ? "x.user_id=?1" : view === "puzzle" ? `${other} AND NOT ${terminal} AND ${puzzle}` : view === "pending" ? `${other} AND NOT ${terminal} AND NOT ${puzzle} AND ${ready}` : view === "check" ? `${other} AND p.provider NOT IN ('native','coin52') AND NOT ${terminal} AND NOT ${puzzle} AND NOT ${externalReady}` : view === "history" ? `(x.created_at<${validStart} OR (${other} AND ${terminal}))` : "1=1";
 	const rows = (await c.env.DB.prepare(`${CHAT_PACKET_SELECT}
     LEFT JOIN chat_redpack_opens o ON o.packet_id=p.id AND o.user_id=?
     LEFT JOIN chat_redpack_external_views v ON v.packet_id=p.id AND v.user_id=?
@@ -13050,23 +13307,65 @@ app.get("/api/chat/groups/:id/redpacks", async (c) => {
     LEFT JOIN ldc_awards la ON la.packet_id=p.id AND la.recipient_id=?
     WHERE x.group_id=? AND x.id<? AND x.id>=${g.history_floor} AND x.created_at>=? AND ${category} ORDER BY x.id DESC LIMIT 31`).bind(u.id, u.id, u.id, g.id, before, dayStart).all()).results;
 	const more = rows.length > 30;
+	const items = await decorateMsgs(c, rows.slice(0, 30));
+	const bag = await packetBagInfo(c.env.DB, items.filter((m) => m.redpack && !m.redpack.shared).map((m) => m.id), current);
 	c.header("Cache-Control", "no-store");
 	return c.json({
-		items: await decorateMsgs(c, rows.slice(0, 30)),
+		items: items.map((m) => m.redpack && bag.has(m.id) ? { ...m, redpack: { ...m.redpack, bag: bag.get(m.id) } } : m),
 		more,
 		next: more ? rows[29].id : null
 	});
 });
+// 红包袋里的截止时间和领取结果（原来发到群里的「红包已结束」）。人名放在带 user_id / username 的对象里，匿名群照常换成化名
+async function packetBagInfo(db, ids, t) {
+	const out = new Map();
+	if (!ids.length) return out;
+	const list = JSON.stringify(ids);
+	const [packets, people] = await db.batch([
+		db.prepare(`SELECT p.message_id,m.created_at,p.provider,p.game,lp.mode,lp.state,lp.ends_at,lp.count,lp.payment_provider,fp.ends_at AS free_ends,fp.state AS free_state,fp.winner_id,cp.expires_at,cp.remaining_count,cp.count AS coin_count,cp.mode AS coin_mode,
+       (SELECT COUNT(*) FROM ldc_awards a WHERE a.packet_id=p.id AND a.recipient_id IS NOT NULL) AS claimed
+       FROM chat_redpacks p JOIN chat_messages m ON m.id=p.message_id LEFT JOIN ldc_packets lp ON lp.packet_id=p.id LEFT JOIN guess_free_rounds fp ON fp.packet_id=p.id LEFT JOIN coin52_packets cp ON cp.packet_id=p.id
+       WHERE p.message_id IN (SELECT value FROM json_each(?))`).bind(list),
+		db.prepare(`SELECT * FROM (SELECT r.*,ROW_NUMBER() OVER(PARTITION BY r.message_id ORDER BY r.slot) AS rn FROM (
+       SELECT p.message_id,a.slot,a.recipient_id AS user_id,CAST(a.amount_cents AS REAL)/100 AS amount,a.state FROM chat_redpacks p JOIN ldc_packets lp ON lp.packet_id=p.id AND lp.mode IN ('fixed','random') JOIN ldc_awards a ON a.packet_id=p.id AND a.recipient_id IS NOT NULL WHERE p.message_id IN (SELECT value FROM json_each(?1))
+       UNION ALL SELECT p.message_id,s.slot,s.recipient_id,s.amount,'accepted' FROM chat_redpacks p JOIN coin52_packet_slots s ON s.packet_id=p.id AND s.recipient_id IS NOT NULL WHERE p.message_id IN (SELECT value FROM json_each(?1))) r) WHERE rn<=100`).bind(list)
+	]);
+	const ids2 = [...new Set(people.results.map((r) => r.user_id))];
+	const users = new Map(ids2.length ? (await db.prepare("SELECT id,username,COALESCE(nick,name,username) AS name FROM users WHERE id IN (SELECT value FROM json_each(?))").bind(JSON.stringify(ids2)).all()).results.map((u) => [u.id, u]) : []);
+	for (const p of packets.results) {
+		const got = people.results.filter((r) => r.message_id === p.message_id), coin = p.provider === "coin52";
+		const ends_at = coin ? p.expires_at : p.ends_at ?? p.free_ends ?? (p.provider === "native" ? p.created_at + PACKET_TTL : null);
+		const full = coin ? p.remaining_count === 0 && got.length >= p.coin_count : p.mode ? p.claimed >= p.count : !!p.winner_id;
+		const expired = ends_at != null && ends_at <= t, ended = full || expired || p.state === "closed" || p.free_state === "closed";
+		const mode = coin ? p.coin_mode : p.mode, amounts = got.map((r) => r.amount), hi = Math.max(...amounts), lo = Math.min(...amounts);
+		// 手气王 / 手气亡：拼手气、已结束、至少两人且都到账（和原来的结束消息口径一致）
+		const luck = ended && mode === "random" && got.length >= 2 && got.every((r) => r.state === "accepted") && hi > lo;
+		out.set(p.message_id, {
+			ends_at,
+			ended,
+			why: full ? "full" : expired ? "expired" : ended ? "closed" : null,
+			claimed: coin ? got.length : p.claimed,
+			count: coin ? p.coin_count : p.count ?? null,
+			unit: coin || p.payment_provider === "coin52" ? "D币" : "LDC",
+			people: ended ? got.slice(0, 30).map((r) => ({ user_id: r.user_id, username: users.get(r.user_id)?.username ?? "", name: users.get(r.user_id)?.name ?? "群成员", amount: r.amount, pending: r.state !== "accepted", luck: luck && r.amount === hi ? "king" : luck && r.amount === lo ? "last" : null })) : []
+		});
+	}
+	return out;
+}
 app.get("/api/chat/groups/:id/redpacks/matches", async (c) => {
 	const { u, g } = await needMember(c, groupId(c));
 	const mid = intIn(c.req.query("message_id"), 1, Number.MAX_SAFE_INTEGER, 0);
 	const said = await c.env.DB.prepare(`SELECT body FROM chat_messages WHERE id=? AND group_id=? AND user_id=? AND deleted=0
     AND redpack_id IS NULL AND system_kind IS NULL AND id>=${g.history_floor} AND created_at>=?`).bind(mid, g.id, u.id, g.joined_at).first();
 	if (!said) fail(403, "只能查询自己在本群发送的有效口令");
+	const current = now();
 	const rows = (await c.env.DB.prepare(`${CHAT_PACKET_SELECT}
-    LEFT JOIN chat_redpack_opens o ON o.packet_id=p.id AND o.user_id=?
+    LEFT JOIN chat_redpack_opens o ON o.packet_id=p.id AND o.user_id=?1
+    LEFT JOIN ldc_packets lp ON lp.packet_id=p.id
+    LEFT JOIN ldc_awards la ON la.packet_id=p.id AND la.recipient_id=?1
     WHERE x.group_id=? AND x.id<? AND x.id>=${g.history_floor} AND x.deleted=0 AND x.user_id<>? AND p.mode='phrase' AND p.phrase=? AND x.created_at>=?
-    AND (p.provider<>'native' OR o.solved_at IS NULL) ORDER BY x.id DESC LIMIT 10`).bind(u.id, g.id, mid, u.id, said.body, g.joined_at).all()).results;
+    AND p.provider='native' AND o.solved_at IS NULL AND (lp.packet_id IS NULL OR ${packetRewardOpen(current)})
+    ORDER BY x.id DESC LIMIT 10`).bind(u.id, g.id, mid, u.id, said.body, Math.max(g.joined_at, current - PACKET_TTL)).all()).results;
 	c.header("Cache-Control", "no-store");
 	return c.json({ items: await decorateMsgs(c, rows) });
 });
@@ -13094,7 +13393,7 @@ app.post("/api/chat/messages/:id/redpack/sync", async (c) => {
 	const candidate = u.id === m.user_id && ["hb", "fish"].includes(p.provider) ? publicPacketDraw(data) : null;
 	const draw = candidate && candidate.draw_at > now() - 7776e3 && candidate.draw_at <= now() + 7776e3 && (!known || candidate.kind === known.kind && candidate.draw_at === known.draw_at) ? candidate : null;
 	await c.env.DB.batch([c.env.DB.prepare(`INSERT INTO chat_redpack_external_views(packet_id,user_id,data,synced_at) VALUES(?,?,?,?)
-    ON CONFLICT(packet_id,user_id) DO UPDATE SET data=excluded.data,synced_at=excluded.synced_at`).bind(p.id, u.id, JSON.stringify(data), now()), ...draw ? drawSyncStatements(c.env.DB, p, draw, u.name || u.username || String(u.id), now()) : []]);
+    ON CONFLICT(packet_id,user_id) DO UPDATE SET data=excluded.data,synced_at=excluded.synced_at`).bind(p.id, u.id, JSON.stringify(data), now()), ...draw ? drawSyncStatements(c.env.DB, p, draw, now()) : []]);
 	if (draw) p.draw_data = JSON.stringify(draw);
 	if (data.claimed) await c.env.DB.prepare("INSERT OR IGNORE INTO chat_redpack_successes(packet_id,user_id,created_at) VALUES(?,?,?)").bind(p.id, u.id, now()).run();
 	return c.json({
@@ -13124,6 +13423,11 @@ app.post("/api/chat/messages/:id/redpack/open", async (c) => {
 	c.header("Cache-Control", "no-store");
 	const db = c.env.DB, t = now();
 	if (!(await db.prepare("SELECT solved_at FROM chat_redpack_opens WHERE packet_id=? AND user_id=?").bind(p.id, u.id).first())?.solved_at) {
+		// 站内红包最长 24 小时；带奖励的以奖励截止时间为准
+		if (p.provider === "native") {
+			const ends = (await db.prepare("SELECT ends_at FROM ldc_packets WHERE packet_id=?").bind(p.id).first())?.ends_at ?? m.created_at + PACKET_TTL;
+			if (Math.min(ends, m.created_at + PACKET_TTL) <= t) fail(410, "这个红包已过期，最长有效 24 小时");
+		}
 		if (p.mode === "image" && !await packetImage(c, p)) fail(404, "关联帖子不可用，这个红包暂时无法解锁");
 		const attempt = await db.prepare(`INSERT INTO chat_redpack_opens(packet_id,user_id,attempts,window_at,window_n)
       SELECT ?,?,1,?,1 WHERE EXISTS(SELECT 1 FROM chat_messages WHERE id=? AND deleted=0)
@@ -13324,7 +13628,7 @@ app.get("/api/chat/messages/:id/replies", async (c) => {
 	const { m, g } = await chatMessage(c);
 	const { results } = await c.env.DB.prepare(`SELECT x.id, x.body, x.image_key, x.media, x.created_at AS at, u.username, u.name, u.avatar FROM chat_messages x
      LEFT JOIN users u ON u.id = x.user_id
-     WHERE x.reply_to = ? AND x.group_id = ? AND x.created_at>=? AND x.deleted = 0 ORDER BY x.id LIMIT 100`).bind(m.id, m.group_id, g.joined_at).all();
+     WHERE x.reply_to = ? AND x.group_id = ? AND x.created_at>=? AND x.id>=? AND x.deleted = 0 ORDER BY x.id LIMIT 100`).bind(m.id, m.group_id, g.joined_at, g.history_floor).all();
 	return c.json({ items: results.map((r) => ({
 		id: r.id,
 		at: r.at,
@@ -13387,7 +13691,7 @@ app.get("/api/chat/groups/:id/reads", async (c) => {
 	const { g } = await needMember(c, groupId(c));
 	const ids = String(c.req.query("ids") ?? "").split(",").map((x) => intIn(x, 1, Number.MAX_SAFE_INTEGER, 0)).filter(Boolean).slice(0, 100);
 	if (!ids.length) return c.json({ reads: {} });
-	const { results } = await c.env.DB.prepare("SELECT id, group_id, body, deleted FROM chat_messages WHERE group_id = ? AND id IN (SELECT value FROM json_each(?)) AND created_at>=?").bind(g.id, JSON.stringify(ids), g.joined_at).all();
+	const { results } = await c.env.DB.prepare("SELECT id, group_id, body, deleted, created_at FROM chat_messages WHERE group_id = ? AND id IN (SELECT value FROM json_each(?)) AND created_at>=? AND id>=?").bind(g.id, JSON.stringify(ids), g.joined_at, g.history_floor).all();
 	return c.json({ reads: Object.fromEntries(await atReads(c, results)) });
 });
 app.put("/api/chat/groups/:id/mute", async (c) => {
@@ -13663,7 +13967,8 @@ app.get("/api/puzzles", async (c) => {
 });
 app.get("/img/*", async (c) => {
 	const key = decodeURIComponent(c.req.path.slice(5));
-	if (key.startsWith("d/")) return c.notFound();
+	// 私有前缀（d 私信、q 跃进、x XP）只能走各自带权限的接口
+	if (/^[dqx]\//.test(key)) return c.notFound();
 	const range = c.req.header("range");
 	const obj = await c.env.BUCKET.get(key, range ? { range: c.req.raw.headers } : void 0);
 	if (!obj) return c.notFound();
@@ -13956,11 +14261,13 @@ app.post("/api/road/:id/comments", async (c) => {
 	return c.json({ ok: true });
 });
 app.route("/", novels);
+app.route("/", autumn);
 app.route("/", resources);
 app.route("/", platform);
 app.route("/", aiAdmin);
 app.route("/", aiChat);
 app.route("/", nativeLdc);
+app.route("/", chatBots);
 app.route("/", fishFunding);
 app.route("/", dm);
 var chatRetentionRoutes = (() => {
@@ -23096,57 +23403,101 @@ var bubblePoolRelease = (() => {
     return BUBBLE_PRIZE_POLICY.baseMin + pick(BUBBLE_PRIZE_POLICY.baseSpan);
   };
   var result = (r) => ({ request_id: r.request_id, item_id: r.item_id, won: !!r.won, duplicate: !!r.duplicate, guaranteed: !!r.guaranteed, pity: r.pity_after, chance: r.chance, level: r.finger_level, source: r.catalog_source, card_id: r.card_id, card_duplicate: !!r.card_duplicate, reward: r.reward_amount, created_at: r.created_at, price: PRICE, refund: r.duplicate ? PRICE : 0 });
+  var batchResult = (rows) => {
+    const receipts = rows.map(result), last = receipts[receipts.length - 1];
+    return { ...last, receipts, count: receipts.length, price: PRICE * receipts.length, refund: receipts.reduce((n, x) => n + x.refund, 0), reward: receipts.reduce((n, x) => n + x.reward, 0) };
+  };
   async function bubbleReceipt(db, uid, id) {
     return db.prepare("SELECT request_id,item_id,won,duplicate,guaranteed,pity_after,chance,finger_level,catalog_source,card_id,card_duplicate,reward_amount,created_at FROM community_bubble_draws WHERE user_id=? AND request_id=?").bind(uid, id).first();
   }
+  // 社区 PR #8：60 连一次结算。批内子抽的 request_id 为 <id>:001 … <id>:059
+  async function bubbleBatchReceipts(db, uid, id) {
+    return (await db.prepare("SELECT request_id,item_id,won,duplicate,guaranteed,pity_after,chance,finger_level,catalog_source,card_id,card_duplicate,reward_amount,created_at FROM community_bubble_draws WHERE user_id=?1 AND (request_id=?2 OR (request_id>=?3 AND request_id<?4)) ORDER BY request_id").bind(uid, id, id + ":", id + ";").all()).results;
+  }
   async function drawCommunityBubble(db, bucket, p, roll = raffleRoll, pick = randomIndex) {
-    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id) || !Number.isSafeInteger(p.ownerId) || p.ownerId < 1) throw new BubbleRuleError("\u62BD\u5956\u53C2\u6570\u6216\u5956\u6C60\u8D26\u6237\u65E0\u6548");
-    const prior = await bubbleReceipt(db, p.uid, p.id);
-    if (prior) return result(prior);
+    const count = p.count ?? 1;
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(p.id) || !Number.isSafeInteger(p.ownerId) || p.ownerId < 1 || ![1, 60].includes(count)) throw new BubbleRuleError("抽奖参数或奖池账户无效");
+    const prior = await bubbleBatchReceipts(db, p.uid, p.id);
+    if (prior.length) {
+      if (prior.length !== count) throw new BubbleRuleError("请求标识已用于其他操作");
+      return batchResult(prior);
+    }
     const catalog = await readCommunityCatalog(bucket), items = available(catalog);
-    if (!catalog.source || !items.length) throw new BubbleRuleError("\u9650\u5B9A\u6C14\u6CE1\u6C60\u6682\u672A\u4E0A\u65B0");
+    if (!catalog.source || !items.length) throw new BubbleRuleError("限定气泡池暂未上新");
     await ensureCoinWallet(db, p.uid, p.t);
     if (p.ownerId !== p.uid) await ensureCoinWallet(db, p.ownerId, p.t);
     await db.prepare("INSERT OR IGNORE INTO community_bubble_progress(user_id) SELECT id FROM users WHERE id=? AND kind='user' AND disabled=0 AND NOT EXISTS(SELECT 1 FROM account_retirements WHERE source_id=?)").bind(p.uid, p.uid).run();
     const state = await db.prepare("SELECT p.pity,p.revision FROM community_bubble_progress p WHERE p.user_id=?1").bind(p.uid).first();
-    if (!state) throw new BubbleRuleError("\u8D26\u53F7\u4E0D\u53EF\u7528");
-    const cardId = String(randomIndex(CARD_CATALOG.length)), cardOwned = await db.prepare("SELECT 1 FROM collectible_cards WHERE user_id=? AND pack_id=? AND card_id=?").bind(p.uid, CARD_PACK, cardId).first(), cardDuplicate = cardOwned ? 1 : 0;
-    const chance = LIMITED_CHANCE, guaranteed = state.pity >= PITY - 1, won = guaranteed || roll() < chance, item = won ? items[pick(items.length)] : null, pity = won ? 0 : state.pity + 1, attempt = crypto.randomUUID(), level = 0;
+    if (!state) throw new BubbleRuleError("账号不可用");
+    const initialOwned = new Set(await ownedBubbles(db, p.uid)), owned = new Set(initialOwned);
+    const ownedCards = new Set((await db.prepare("SELECT card_id FROM collectible_cards WHERE user_id=? AND pack_id=?").bind(p.uid, CARD_PACK).all()).results.map((x) => x.card_id));
+    const chance = LIMITED_CHANCE, attempt = crypto.randomUUID(), level = 0, cardCounts = new Map();
+    const draws = [];
+    let pity = state.pity, totalRefund = 0, totalReward = 0;
+    for (let i = 0; i < count; i++) {
+      const guaranteed = pity >= PITY - 1, won = guaranteed || roll() < chance, item = won ? items[pick(items.length)] : null;
+      const duplicate = item && owned.has(item.id) ? 1 : 0;
+      if (item && !duplicate) owned.add(item.id);
+      if (duplicate) totalRefund += PRICE;
+      pity = won ? 0 : pity + 1;
+      const cardId = String(pick(CARD_CATALOG.length)), cardDuplicate = ownedCards.has(cardId) ? 1 : 0;
+      ownedCards.add(cardId);
+      cardCounts.set(cardId, (cardCounts.get(cardId) || 0) + 1);
+      const rewardAmount = bubblePrizeReward(won, p.ownerId === p.uid, pick, p.t);
+      totalReward += rewardAmount;
+      const sub = String(i).padStart(3, "0");
+      draws.push({ request_id: i === 0 ? p.id : p.id + ":" + sub, attempt: count === 1 ? attempt : attempt + ":" + sub, item_id: item?.id ?? null, won: won ? 1 : 0, duplicate, guaranteed: guaranteed ? 1 : 0, pity_after: pity, card_id: cardId, card_duplicate: cardDuplicate, reward_amount: rewardAmount });
+    }
+    const totalPrice = PRICE * count;
     const bank = await db.prepare("SELECT balance FROM coin52_wallets WHERE user_id=?").bind(p.ownerId).first();
-    const rewardAmount = bubblePrizeReward(won, p.ownerId === p.uid, pick, p.t);
-    if (rewardAmount > 0 && (!bank || bank.balance < rewardAmount)) throw new BubbleRuleError("\u5956\u6C60\u7AD9\u957F\u4F59\u989D\u4E0D\u8DB3\uFF0C\u6682\u65F6\u65E0\u6CD5\u53D1\u653E\u672C\u6B21D\u5E01\u5956\u52B1");
+    if (totalReward > 0 && p.ownerId !== p.uid && (!bank || bank.balance + totalPrice - totalRefund < totalReward)) throw new BubbleRuleError("奖池站长余额不足，暂时无法发放本次D币奖励");
     const current = await readCommunityCatalog(bucket);
-    if (current.source !== catalog.source) throw new BubbleRuleError("\u5956\u6C60\u521A\u521A\u66F4\u65B0\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u8BD5");
-    const gate = "EXISTS(SELECT 1 FROM community_bubble_draws WHERE attempt=?1)", duplicate = gate + " AND EXISTS(SELECT 1 FROM community_bubble_draws WHERE attempt=?1 AND duplicate=1)";
+    if (current.source !== catalog.source) throw new BubbleRuleError("奖池刚刚更新，请刷新后重试");
+    const touchedBubbles = [...new Set(draws.filter((d) => d.item_id).map((d) => d.item_id))];
+    const ownedSnapshot = JSON.stringify(touchedBubbles.map((id) => ({ item: PREFIX + id, owned: initialOwned.has(id) ? 1 : 0 })));
+    const newUnlocks = [...owned].filter((id) => !initialOwned.has(id)).map((id) => PREFIX + id);
+    const cardAgg = [...cardCounts.entries()].map(([card_id, n]) => ({ card_id, count: n }));
+    const first = draws[0], headAttempt = first.attempt, gate = "EXISTS(SELECT 1 FROM community_bubble_draws WHERE attempt=?1)";
     const sql = [db.prepare(`INSERT OR IGNORE INTO community_bubble_draws(user_id,request_id,attempt,owner_id,item_id,won,duplicate,guaranteed,pity_after,chance,finger_level,catalog_source,card_id,card_duplicate,reward_amount,created_at)
- SELECT ?1,?2,?3,?4,?5,?6,CASE WHEN ?6=1 AND EXISTS(SELECT 1 FROM user_unlocks WHERE user_id=?1 AND item=?7) THEN 1 ELSE 0 END,?8,?9,?10,?11,?12,?13,?14,?15,?16
+ SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16
  FROM coin52_wallets w JOIN coin52_wallets bank ON bank.user_id=?4 JOIN community_bubble_progress progress ON progress.user_id=?1
- WHERE w.user_id=?1 AND w.balance>=100 AND (bank.user_id=?1 OR bank.balance<=9007199254740891) AND progress.revision=?17
+ WHERE w.user_id=?1 AND w.balance>=?17 AND w.balance-?17+?18+?19<=9007199254740991
+ AND (bank.user_id=?1 OR (bank.balance+?17<=9007199254740991 AND bank.balance+?17-?18>=?19)) AND progress.revision=?20
+ AND NOT EXISTS(SELECT 1 FROM json_each(?21) s WHERE EXISTS(SELECT 1 FROM user_unlocks u WHERE u.user_id=?1 AND u.item=json_extract(s.value,'$.item'))<>json_extract(s.value,'$.owned'))
  AND EXISTS(SELECT 1 FROM users u JOIN chat_members cm ON cm.user_id=u.id AND cm.group_id=1 WHERE u.id=?1 AND u.disabled=0 AND u.kind='user')
  AND EXISTS(SELECT 1 FROM users WHERE id=?4 AND disabled=0 AND kind='user')
  AND NOT EXISTS(SELECT 1 FROM chat_bans WHERE group_id=1 AND user_id=?1)
- AND NOT EXISTS(SELECT 1 FROM account_retirements WHERE source_id IN(?1,?4))
- AND (bank.user_id=?1 OR bank.balance>=?15)`).bind(p.uid, p.id, attempt, p.ownerId, item?.id ?? null, won ? 1 : 0, item ? PREFIX + item.id : "", guaranteed ? 1 : 0, pity, chance, level, catalog.source, cardId, cardDuplicate, rewardAmount, p.t, state.revision)];
-    const money = (uid, kind, amount, suffix, condition) => {
-      sql.push(db.prepare(`INSERT INTO coin52_ledger(user_id,kind,ref,attempt,delta,balance_after,created_at) SELECT ?2,?3,?4,?5,?6,balance+?6,?7 FROM coin52_wallets WHERE user_id=?2 AND ${condition}`).bind(attempt, uid, kind, p.id, attempt + suffix, amount, p.t));
-      sql.push(db.prepare(`UPDATE coin52_wallets SET balance=balance+?3,revision=revision+1,updated_at=?4 WHERE user_id=?2 AND ${condition}`).bind(attempt, uid, amount, p.t));
-    };
-    money(p.uid, "bubble-pool-pay", -PRICE, ":pay", gate);
-    money(p.ownerId, "bubble-pool-income", PRICE, ":income", gate);
-    money(p.ownerId, "bubble-pool-refund-pay", -PRICE, ":refund-pay", duplicate);
-    money(p.uid, "bubble-pool-refund", PRICE, ":refund", duplicate);
-    if (rewardAmount) {
-      const rewardGate = gate + " AND balance>=" + rewardAmount;
-      money(p.ownerId, "bubble-pool-prize-pay", -rewardAmount, ":prize-pay", rewardGate);
-      money(p.uid, "bubble-pool-prize", rewardAmount, ":prize", gate);
+ AND NOT EXISTS(SELECT 1 FROM account_retirements WHERE source_id IN(?1,?4))`).bind(p.uid, first.request_id, headAttempt, p.ownerId, first.item_id, first.won, first.duplicate, first.guaranteed, first.pity_after, chance, level, catalog.source, first.card_id, first.card_duplicate, first.reward_amount, p.t, totalPrice, totalRefund, totalReward, state.revision, ownedSnapshot)];
+    if (draws.length > 1) {
+      sql.push(db.prepare(`INSERT INTO community_bubble_draws(user_id,request_id,attempt,owner_id,item_id,won,duplicate,guaranteed,pity_after,chance,finger_level,catalog_source,card_id,card_duplicate,reward_amount,created_at)
+  SELECT ?2,json_extract(value,'$.request_id'),json_extract(value,'$.attempt'),?3,json_extract(value,'$.item_id'),json_extract(value,'$.won'),json_extract(value,'$.duplicate'),json_extract(value,'$.guaranteed'),json_extract(value,'$.pity_after'),?4,?5,?6,json_extract(value,'$.card_id'),json_extract(value,'$.card_duplicate'),json_extract(value,'$.reward_amount'),?7
+  FROM json_each(?8) WHERE ${gate}`).bind(headAttempt, p.uid, p.ownerId, chance, level, catalog.source, p.t, JSON.stringify(draws.slice(1))));
     }
-    sql.push(db.prepare(`INSERT OR IGNORE INTO user_unlocks(user_id,item,at) SELECT user_id,?2,?3 FROM community_bubble_draws WHERE attempt=?1 AND won=1`).bind(attempt, item ? PREFIX + item.id : "", p.t));
-    sql.push(db.prepare(`INSERT INTO collectible_cards(user_id,pack_id,card_id,first_at,last_at,count) SELECT ?2,?3,card_id,?4,?4,1 FROM community_bubble_draws WHERE attempt=?1 AND card_id IS NOT NULL ON CONFLICT(user_id,pack_id,card_id) DO UPDATE SET last_at=excluded.last_at,count=collectible_cards.count+1`).bind(attempt, p.uid, CARD_PACK, p.t));
-    sql.push(db.prepare(`UPDATE community_bubble_progress SET pity=?3,draws=draws+1,revision=revision+1 WHERE user_id=?2 AND ${gate}`).bind(attempt, p.uid, pity));
+    const money = (uid, kind, amount, suffix, condition) => {
+      sql.push(db.prepare(`INSERT INTO coin52_ledger(user_id,kind,ref,attempt,delta,balance_after,created_at) SELECT ?2,?3,?4,?5,?6,balance+?6,?7 FROM coin52_wallets WHERE user_id=?2 AND ${condition}`).bind(headAttempt, uid, kind, p.id, attempt + suffix, amount, p.t));
+      sql.push(db.prepare(`UPDATE coin52_wallets SET balance=balance+?3,revision=revision+1,updated_at=?4 WHERE user_id=?2 AND ${condition}`).bind(headAttempt, uid, amount, p.t));
+    };
+    money(p.uid, "bubble-pool-pay", -totalPrice, ":pay", gate);
+    money(p.ownerId, "bubble-pool-income", totalPrice, ":income", gate);
+    if (totalRefund) {
+      money(p.ownerId, "bubble-pool-refund-pay", -totalRefund, ":refund-pay", gate);
+      money(p.uid, "bubble-pool-refund", totalRefund, ":refund", gate);
+    }
+    if (totalReward) {
+      const rewardGate = gate + " AND balance>=" + totalReward;
+      money(p.ownerId, "bubble-pool-prize-pay", -totalReward, ":prize-pay", rewardGate);
+      money(p.uid, "bubble-pool-prize", totalReward, ":prize", gate);
+    }
+    if (newUnlocks.length) sql.push(db.prepare(`INSERT OR IGNORE INTO user_unlocks(user_id,item,at) SELECT ?2,value,?3 FROM json_each(?4) WHERE ${gate}`).bind(headAttempt, p.uid, p.t, JSON.stringify(newUnlocks)));
+    sql.push(db.prepare(`INSERT INTO collectible_cards(user_id,pack_id,card_id,first_at,last_at,count) SELECT ?2,?3,json_extract(value,'$.card_id'),?4,?4,json_extract(value,'$.count') FROM json_each(?5) WHERE ${gate} ON CONFLICT(user_id,pack_id,card_id) DO UPDATE SET last_at=excluded.last_at,count=collectible_cards.count+excluded.count`).bind(headAttempt, p.uid, CARD_PACK, p.t, JSON.stringify(cardAgg)));
+    sql.push(db.prepare(`UPDATE community_bubble_progress SET pity=?3,draws=draws+?4,revision=revision+1 WHERE user_id=?2 AND ${gate}`).bind(headAttempt, p.uid, pity, count));
     await db.batch(sql);
-    const saved = await bubbleReceipt(db, p.uid, p.id);
-    if (!saved) throw new BubbleRuleError("\u4F59\u989D\u4E0D\u8DB3\u3001\u53C2\u4E0E\u8D44\u683C\u6216\u4FDD\u5E95\u8FDB\u5EA6\u53D1\u751F\u53D8\u5316\uFF0C\u8BF7\u5237\u65B0\u540E\u91CD\u8BD5\uFF1B\u672A\u6263\u6B3E");
-    return result(saved);
+    const saved = await bubbleBatchReceipts(db, p.uid, p.id);
+    if (saved.length !== count) {
+      if (saved.length) throw new BubbleRuleError("请求标识已用于其他操作");
+      throw new BubbleRuleError("余额不足、参与资格或保底进度发生变化，请刷新后重试；未扣款");
+    }
+    return batchResult(saved);
   }
   var communityBubblePool = new Hono2();
   communityBubblePool.onError((error, c) => {
@@ -23176,9 +23527,9 @@ var bubblePoolRelease = (() => {
   });
   communityBubblePool.post("/api/community-bubbles/draw", async (c) => {
     sameOrigin(c);
-    const { u } = await needMember(c, 1), b = await boundedJson(c, 1024), id = String(b.id || "");
+    const { u } = await needMember(c, 1), b = await boundedJson(c, 1024), id = String(b.id || ""), count = b.count === void 0 ? 1 : Number(b.count);
     try {
-      return c.json(await drawCommunityBubble(c.env.DB, c.env.BUCKET, { uid: u.id, id, ownerId: ownerId(c.env.ADMIN_USER_IDS), owner: isOwner(c, u), t: now() }));
+      return c.json(await drawCommunityBubble(c.env.DB, c.env.BUCKET, { uid: u.id, id, count, ownerId: ownerId(c.env.ADMIN_USER_IDS), owner: isOwner(c, u), t: now() }));
     } catch (e) {
       if (e instanceof BubbleRuleError) fail(409, e.message);
       fail(503, "\u7ED3\u7B97\u72B6\u6001\u6682\u672A\u786E\u8BA4\uFF0C\u8BF7\u91CD\u8BD5\u539F\u8BF7\u6C42\uFF0C\u4E0D\u4F1A\u91CD\u590D\u6263\u6B3E");
@@ -23225,6 +23576,17 @@ const b9DirectoryPages=new WeakMap();
 // 排序可以缓存，停用/注销必须在当前页即时排除；仅按最多24个主键检查，不重扫目录。
 async function b9VisibleNeighbors(db,page){if(!page.length)return page;const rows=(await db.prepare("SELECT id FROM users WHERE id IN (SELECT value FROM json_each(?)) AND disabled=0 AND kind='user' AND NOT EXISTS(SELECT 1 FROM account_retirements a WHERE a.source_id=users.id)").bind(JSON.stringify(page.map(x=>x.id))).all()).results,ids=new Set(rows.map(x=>x.id));return page.filter(x=>ids.has(x.id))}
 async function b9PageSnapshot(db,id,value,scope){const key=new Request('https://52dmeme.com/__b9-directory-snapshot/'+scope+'/'+id);if(value){let local=b9DirectoryPages.get(db);if(!local)b9DirectoryPages.set(db,local=new Map());local.set(id,value);while(local.size>4)local.delete(local.keys().next().value);try{if(globalThis.caches?.default)await caches.default.put(key,new Response(JSON.stringify(value),{headers:{'content-type':'application/json','cache-control':'public, max-age=600'}}))}catch{}return value}const local=b9DirectoryPages.get(db)?.get(id);if(local)return local;try{const response=await globalThis.caches?.default?.match(key);if(response)return await response.json()}catch{}return null}
+// /api/isle/sync 用的邻居摘要：只数可帮 / 可偷的岛和标记邻居里能互动的前 12 个，目录行复用 b9DirectoryRows 的 60 秒缓存。
+async function b9NeighborSummary(db,userId,me,t){
+ const marks=new Set(b9WhaleIds(me)),rows=await b9DirectoryRows(db,t),feed=b12Available(me,'feed',0);let help=0,steal=0,total=0;const marked=[];
+ for(const r of rows){if(r.user_id===userId)continue;total++;let plots=0,pens=0,helps=0;const newbie=t-r.created_at<STEAL.newbieDays*86400;
+  try{const s=JSON.parse(r.public_state);helps=helpTargets(s,t,feed).length;if(!newbie){s.plots?.forEach((_,i)=>{if(stealPlot(s,i,t,userId))plots++});s.barn?.forEach((_,i)=>{if(stealPen(s,i,t,userId))pens++})}}catch{}
+  const left=myStealLeft(me,r.user_id),hl=helpLeft(me,r.user_id),canSteal=plots+pens>0&&left.owner>0&&left.today>0&&me.en>=STEAL.energy,canHelp=helps>0&&hl.owner>0&&hl.today>0&&me.en>=HELP.energy;
+  if(canHelp)help++;if(canSteal)steal++;
+  if(marks.has(r.user_id)&&(canHelp||canSteal)&&marked.length<12)marked.push({id:r.user_id,name:r.nick||r.name||r.username,canHelp,canSteal,active:r.updated_at});
+ }
+ return {total,help,steal,marked,visits:(me.vis||[]).slice(0,20)};
+}
 async function b9Neighbors(c){
  const u=needUser(c),db=c.env.DB,t=Math.floor(Date.now()/1000),q=(c.req.query('q')||'').trim().slice(0,30),limit=Math.min(24,Math.max(1,Number(c.req.query('limit')||20))),markedOnly=c.req.path.endsWith('/marked'),raw=c.req.query('cursor')||'',stealableOnly=c.req.query('stealable')==='1';let cursor=null;
  if(c.req.query('stealable')&&!['0','1'].includes(c.req.query('stealable')))fail(400,'可偷筛选参数无效');
@@ -27026,11 +27388,15 @@ async function worldLoad(db, userId, t) {
     }
     return { rev: row.rev, op: row.op, at: row.updated_at, state: refresh(state, t) };
 }
+// /api/pet/world 与 /api/isle/sync（src/routes/isle.ts）共用同一份存档响应。
+async function worldPayload(db, userId, t) {
+    const day = worldDay(t), mday = isleDay(t);
+    const [w, coins, prices] = await Promise.all([worldLoad(db, userId, t), worldBalance(db, userId), worldMarket(db, mday)]);
+    return { rev: w.rev, state: w.state, coins, now: t, day, isleDay: mday, isleNo: isleDayNo(t), season: seasonOf(mday), weather: weatherOf(mday), prices, clockStart: b12ClockStart(), longNight: b12IsLongNight(t), nextIsleAt: b12NextIsleBoundary(t) };
+}
 petWorld.get('/api/pet/world', async (c) => {
-    const u = needUser(c), db = c.env.DB, t = Math.floor(Date.now() / 1000), day = worldDay(t);
-    const mday = isleDay(t);
-    const [w, coins, prices] = await Promise.all([worldLoad(db, u.id, t), worldBalance(db, u.id), worldMarket(db, mday)]);
-    return c.json({ rev: w.rev, state: w.state, coins, now: t, day, isleDay: mday, isleNo: isleDayNo(t), season: seasonOf(mday), weather: weatherOf(mday), prices, clockStart: b12ClockStart(), longNight: b12IsLongNight(t), nextIsleAt: b12NextIsleBoundary(t) });
+    const u = needUser(c), t = Math.floor(Date.now() / 1000);
+    return c.json(await worldPayload(c.env.DB, u.id, t));
 });
 const b12Wallet=async(db,id)=>(await db.prepare('SELECT balance,revision FROM coin52_wallets WHERE user_id=?').bind(id).first())||{balance:0,revision:-1};
 // ---------- 11-11 b15 金库主人 ----------
@@ -27846,10 +28212,12 @@ petWorld.get('/api/pet/world/guard-log', async (c) => {
     ORDER BY b.id DESC LIMIT 21`).bind(u.id, cursor).all()).results;
     return c.json({ battles: rows.slice(0, 20), nextCursor: rows.length > 20 ? String(rows[19].id) : null });
 });
-return Object.assign(petSaves.route("/", petBattle).route("/", petWorld), { valley: { syncVault: b15VaultSync, prepareClock: b12PrepareDeploymentClock, taxTick:b12TreasuryTick, animalReady, autoDue, BASE_PRICE, cropStage, QUALITY, sprinkled, weatherOf, WORLD, worldDay, applyActions, priceOf, refresh } });
+return Object.assign(petSaves.route("/", petBattle).route("/", petWorld), { isle: { worldPayload, neighborSummary: b9NeighborSummary }, valley: { syncVault: b15VaultSync, prepareClock: b12PrepareDeploymentClock, taxTick:b12TreasuryTick, animalReady, autoDue, BASE_PRICE, cropStage, QUALITY, sprinkled, weatherOf, WORLD, worldDay, applyActions, priceOf, refresh } });
 
 })();
+app.use("/api/pet/world/*", isleLegacyLimit); // Hono 的 /* 同时匹配 /api/pet/world 本身
 app.route("/", sitePetRelease);
+app.route("/", isleRoutes(sitePetRelease.isle));
 var siteAuthExtra = (() => {
 // 2026-11-04 新增两种登录方式：
 // 1) 账号密码：每个用户自己设置一个「登录名 + 密码」（identities.provider='password'，subject=小写登录名；密码存在 passwords 表，
@@ -37774,6 +38142,7 @@ app.route("/", accountMerge);
 app.route("/", account);
 app.route("/", avatarSettings);
 app.route("/", webPush);
+app.route("/", bottles);
 app.route("/", farm);
 app.route("/",walletRelease.meWallet);
 app.route("/",slimeRelease.slime);
@@ -37884,6 +38253,7 @@ var worker_entry_default = {
           {name:"chat_inactive_members",every:15,run:()=>b9ChatRetention(env,t)},
           {name:"community_skins",every:5,offset:2,run:()=>communitySkinRelease.sync(env,t)},
           { name: "huancai", run: () => runHuancaiDue(env.DB, t) },
+          { name: "bottle_rewards", every: 10, offset: 3, run: () => settleBottleRewards(env, t) },
           {name:"huancai_daily",every:5,run:()=>B19_HUANCAI_RETIRED?{retired:true}:huancaiDailyRelease.settleDailyHuancai(env.DB,t,randomInt,ensureAiBot,AI_BOT_ID)},
 			{
 				name: "sleep_reminder",
@@ -37954,6 +38324,15 @@ var worker_entry_default = {
 				run: () => runWebPush(env, t)
 			},
 			{
+				name: "chat_bots",
+				run: () => runBotDeliveries(env, t)
+			},
+			{
+				name: "chat_bot_retention",
+				every: 5,
+				run: () => pruneBotEvents(env.DB, t)
+			},
+			{
 				name:"farm_farewell",run:()=>farewellRelease.runFarmFarewell(env.DB,t)},{name: "farm_lease",
 				run: () => farewellRelease.farmClosed(Math.max(t,Math.floor(Date.now()/1000)))?Promise.resolve():settleFarmLeases(env.DB, t)
 			},
@@ -38007,6 +38386,7 @@ var worker_entry_default = {
 			await env.DB.prepare("DELETE FROM farm_guest_visits WHERE rowid IN (SELECT rowid FROM farm_guest_visits WHERE visited_at<? ORDER BY visited_at LIMIT 500)").bind(t - 7776e3).run().catch(() => console.error("farm_guest_cleanup_failed"));
 			await env.DB.prepare("DELETE FROM guess_reference_preparations WHERE packet_id IN (SELECT packet_id FROM guess_reference_preparations WHERE expires_at<? ORDER BY expires_at LIMIT 500)").bind(t).run().catch(() => console.error("guess_reference_cleanup_failed"));
 			await cleanupAccounts(env.DB, t);
+			await buildMemorial(env.DB, t).catch(() => console.error("autumn_memorial_failed"));
 			for (let batch = 0; batch < 5; batch++) {
 				const result = await settleInviteRewards(env.DB, t);
 				if (result.qualified < 200 && result.rewarded < 40) break;

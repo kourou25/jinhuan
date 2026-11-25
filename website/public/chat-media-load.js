@@ -1,18 +1,8 @@
 import {onRemoval} from '/resource-memory.js?v=472f7fbf'
 
-// Public media has its own origin; private attachments and development keep their URL.
-export function mediaUrl(value, base = location.href) {
-  if (typeof value !== 'string' || !value) return value
-  try {
-    const page = new URL(base), url = new URL(value, page)
-    if (!['52dmeme.com', 'cc.52dmeme.com'].includes(page.hostname) ||
-        !['52dmeme.com', 'cc.52dmeme.com'].includes(url.hostname) || !url.pathname.startsWith('/img/')) return value
-    const key = decodeURIComponent(url.pathname.slice(5))
-    if (!key || key.startsWith('d/') || key.includes('\\') || key.split('/').some(p => p === '..' || p === '.')) return value
-    url.protocol = 'https:'; url.host = 'img.52dmeme.com'; url.port = ''
-    return url.href
-  } catch { return value }
-}
+// 图片一律从站点自己的 /img/ 加载。原来改写到 img.52dmeme.com（Cloudflare R2 公开域名），
+// 迁到自有服务器后新上传的图不在 R2 里，会裂图。
+export function mediaUrl(value) { return value }
 
 const queues = new Set(), jobs = new WeakMap()
 let messageRequests = 0

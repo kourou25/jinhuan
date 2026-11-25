@@ -16,6 +16,8 @@ export async function fetchXContent(id:string,request:typeof fetch=fetch):Promis
   const r=await request(`https://cdn.syndication.twimg.com/tweet-result?id=${id}&token=0`,{redirect:'manual',signal:AbortSignal.timeout(8000),headers:{Accept:'application/json'}})
   if(!r.ok){await r.body?.cancel();return empty}
   const data=JSON.parse(new TextDecoder().decode(await boundedBytes(r,524288)))
+  // 墓碑：X 对未登录访问隐藏了这条（敏感内容、受保护账号、年龄限制或已删除），不绕过登录
+  if(data.__typename==='TweetTombstone')return {...empty,description:'这条帖子需要登录 X 才能查看（可能是敏感内容、受保护账号或已删除），可以打开原链接查看。',reason:'login'} as XContent
   if(data.id_str!==id||typeof data.text!=='string')return empty
   const dimension=(v:unknown)=>Number.isFinite(Number(v))&&Number(v)>0&&Number(v)<=30000?Number(v):null
   const media:SocialMedia[]=[]

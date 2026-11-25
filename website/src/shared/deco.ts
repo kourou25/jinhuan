@@ -19,7 +19,7 @@ export const DECO_SCOPES = ['all', 'chat', 'post'] as const
 // 徽章：elder 手动发，其余每天（北京时间）结算昨天的数据。名字、图标、颜色在前端
 export const BADGE_IDS = ['elder', 'newbie', 'guide', 'guess', 'luck_king', 'luck_last', 'moyu_pro', 'moyu_god', 'post_god', 'post_pro', 'sese', 'chunse', 'water', 'react', 'night', ...new Set(RANK_REWARDS.map(r=>r.series)), ...new Set(ACTIVITY_REWARDS.map(r=>r.series)), ...FARM_BADGES.map(b=>b.id)] as const
 // cssb / csst：自己写的气泡 / 称号样式（只收「属性: 值」声明）；bn：佩戴徽章拿过几次（服务端写，前端按它分等级）
-export type Deco = { community?:Partial<Record<'bubble'|'title'|'badge'|'reply',string>>; gr?:string; pt?: string; ot?: string; rt?: string; ft?: string; fn?: number; fp?:number; fxp?:number; fl?:number; cg_size?:number; cg_random?:boolean; cg_motion?:boolean; cg_fire?:boolean; showcase?:string[]; badge_mode?:string; t?: string; c?: string; c2?: string; bc?: string; f?: string; sh?: string; fill?: string; fc?: string[]; fx?: string; bb?: string; sc?: string; bd?: string; bs?: string; bn?: number; bl?:number; cssb?: string; csst?: string }
+export type Deco = { community?:Partial<Record<'bubble'|'title'|'badge'|'reply'|'frame',string>>; gr?:string; pt?: string; ot?: string; rt?: string; ft?: string; fn?: number; fp?:number; fxp?:number; fl?:number; cg_size?:number; cg_random?:boolean; cg_motion?:boolean; cg_fire?:boolean; showcase?:string[]; badge_mode?:string; t?: string; c?: string; c2?: string; bc?: string; f?: string; sh?: string; fill?: string; fc?: string[]; fx?: string; bb?: string; sc?: string; bd?: string; bs?: string; bn?: number; bl?:number; cssb?: string; csst?: string }
 const decoHex = (v: unknown) => (typeof v === 'string' && /^#[0-9a-f]{6}$/i.test(v) ? v.toLowerCase() : undefined)
 const pick = <T extends readonly string[]>(list: T, v: unknown) => ((list as readonly string[]).includes(String(v)) ? String(v) : undefined)
 // 自定义样式清洗（public/app.js 的 cleanCss 是同一套规则）：拆成一条条声明，属性白名单 + 值里只许安全字符和少数函数，
@@ -74,7 +74,7 @@ export function cleanDeco(x: unknown): Deco | null {
   }
   if(o.community&&typeof o.community==='object'&&!Array.isArray(o.community)){
     const community:NonNullable<Deco['community']>={},input=o.community as Record<string,unknown>
-    for(const key of ['bubble','title','badge','reply'] as const)if(typeof input[key]==='string'&&/^[a-z0-9][a-z0-9-]{2,47}$/.test(input[key]))community[key]=input[key] as string
+    for(const key of ['bubble','title','badge','reply','frame'] as const)if(typeof input[key]==='string'&&/^[a-z0-9][a-z0-9-]{2,47}$/.test(input[key]))community[key]=input[key] as string
     if(Object.keys(community).length)d.community=community
   }
   // bn 只在服务端写（保存装扮、每日结算时同步），这里只做范围校验

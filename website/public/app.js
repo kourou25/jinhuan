@@ -55,7 +55,7 @@ import { normalizeAnimationFile } from '/animation-loop.js?v=472f7fbf'
 import {avatarImage,refreshAvatar} from '/avatar-view.js?v=472f7fbf'
 import { stickerPreviews } from '/sticker-preview.js?v=472f7fbf'
 import { onRemoval, windowContent, wakeWindowContent, observeResourceDocument } from '/resource-memory.js?v=472f7fbf'
-import {focusChatMessage,captureChatScroll} from '/chat-scroll-anchor.js?v=472f7fbf'
+import {focusChatBottom,focusChatMessage,captureChatScroll} from '/chat-scroll-anchor.js?v=472f7fbf'
 import {refreshMessageReference} from '/message-reference.js?v=472f7fbf'
 import { socialCards } from '/social-preview.js?v=472f7fbf'
 import { socialLink,socialLinks,socialMessageText,canSocialPost,isOfficialEmbed } from '/social-links.js?v=472f7fbf'
@@ -97,6 +97,10 @@ function h(tag, attrs, ...kids) {
 const nodes = (...kids) => kids.flat(Infinity).filter((k) => k != null && k !== false)
 
 const ICON = {
+  leaf: '<svg viewBox="0 0 24 24"><path d="M20 4C11 3.7 4.5 8.5 4.500 15c0 1.700.4 3 1 4.200C9.200 19.900 20.300 18 20 4Z"/><path d="M4 21c2.500-5 6-8.500 10.500-11"/></svg>',
+  star: '<svg viewBox="0 0 24 24"><path d="m12 3.6 2.6 5.3 5.8.8-4.2 4.1 1 5.8L12 16.9l-5.2 2.7 1-5.8-4.2-4.1 5.8-.8Z"/></svg>',
+  dice: '<svg viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3.5"/><path d="M8.5 8.5h.01M15.5 8.5h.01M12 12h.01M8.5 15.5h.01M15.5 15.5h.01" stroke-width="3" stroke-linecap="round"/></svg>',
+  dislike: '<svg viewBox="0 0 24 24"><path d="M12 20.3s-7.8-4.7-7.8-10.5A4.4 4.4 0 0 1 12 7.1a4.4 4.4 0 0 1 7.8 2.7c0 5.8-7.8 10.5-7.8 10.5Z"/><path d="m12.4 7.4-1.9 4.1 2.8 1.5-1.6 3.8"/></svg>',
   randomDice: '<svg viewBox="0 0 24 24" aria-hidden="true"><image href="/assets/random-dice-20261028.png" x="0" y="0" width="24" height="24"/></svg>',
  music:'<svg viewBox="0 0 24 24"><path d="M9 18V5l12-2v13M9 8l12-2"/><ellipse cx="6" cy="18" rx="3" ry="2"/><ellipse cx="18" cy="16" rx="3" ry="2"/></svg>',
   sprout: '<svg viewBox="0 0 24 24"><path d="M12 21V11M12 13C4 14 3 8 3 5c6-1 9 3 9 8ZM12 10c0-6 4-8 9-7 0 6-3 9-9 9M6 21h12"/></svg>',
@@ -165,6 +169,8 @@ const ICON = {
   trash: '<svg viewBox="0 0 24 24"><path d="M4 7h16M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3"/></svg>',
   redpack: '<svg viewBox="0 0 24 24"><path d="M4 8 5 3l4 4h6l4-4 1 5v11c0 2-3 3-8 3s-8-1-8-3Z"/><path d="m4 14 8 5 8-5M9 10v1m6-1v1m-4 2q1 1 2 0"/></svg>',
   packetBag: '<svg viewBox="0 0 24 24"><path d="M6 4h12l-3 5c5 3 7 7 5 10-2 3-14 3-16 0-2-3 0-7 5-10ZM8 9h8M10 14v1m4-1v1m-4 3q2 2 4 0"/></svg>',
+  poop: '<svg viewBox="0 0 16 16"><path stroke="none" fill="currentColor" shape-rendering="crispEdges" d="M7 1h2v1h-2zM6 2h1v1h-1zM8 2h2v1h-2zM7 3h4v1h-4zM6 4h6v1h-6zM5 5h8v1h-8zM5 6h8v1h-8zM4 7h10v1h-10zM3 8h3v1h-3zM7 8h3v1h-3zM11 8h3v1h-3zM3 9h3v1h-3zM7 9h3v1h-3zM11 9h3v1h-3zM2 10h12v1h-12zM2 11h5v1h-5zM10 11h5v1h-5zM1 12h14v1h-14zM1 13h15v1h-15zM2 14h12v1h-12z"/></svg>',
+  bottle: '<svg viewBox="0 0 16 16"><g stroke="none" shape-rendering="crispEdges"><path fill="var(--bt-glass)" d="M11 3h1v1h-1zM10 4h3v1h-3zM6 5h6v1h-6zM5 6h2v1h-2zM9 6h3v1h-3zM4 7h2v1h-2zM10 7h2v1h-2zM3 8h2v1h-2zM9 8h3v1h-3zM2 9h2v1h-2zM8 9h3v1h-3zM2 10h3v1h-3zM7 10h3v1h-3zM2 11h8v1h-8zM3 12h5v1h-5z"/><path fill="var(--bt-paper)" d="M7 6h2v1h-2zM6 7h4v1h-4zM5 8h4v1h-4zM4 9h4v1h-4zM5 10h2v1h-2z"/><path fill="var(--bt-cork)" d="M12 0h2v1h-2zM11 1h4v1h-4zM12 2h4v1h-4zM13 3h2v1h-2z"/><path fill="var(--bt-wave)" d="M0 14h2v1h-2zM5 14h2v1h-2zM10 14h2v1h-2zM15 14h1v1h-1zM2 15h3v1h-3zM7 15h3v1h-3zM12 15h3v1h-3z"/><path fill="currentColor" d="M11 2h1v1h-1zM10 3h1v1h-1zM12 3h1v1h-1zM6 4h4v1h-4zM13 4h1v1h-1zM5 5h1v1h-1zM12 5h1v1h-1zM4 6h1v1h-1zM12 6h1v1h-1zM3 7h1v1h-1zM12 7h1v1h-1zM2 8h1v1h-1zM12 8h1v1h-1zM1 9h1v1h-1zM11 9h1v1h-1zM1 10h1v1h-1zM10 10h1v1h-1zM1 11h1v1h-1zM10 11h1v1h-1zM2 12h1v1h-1zM8 12h2v1h-2zM3 13h5v1h-5z"/></g></svg>',
   book: '<svg viewBox="0 0 24 24"><path d="M12 5C9 3 5 3 2 4v15c3-1 7-1 10 1 3-2 7-2 10-1V4c-3-1-7-1-10 1Zm0 0v15M5 8c1.5-.3 3-.1 4 .5M15 8.5c1-.6 2.5-.8 4-.5"/></svg>',
   raffle: '<svg viewBox="0 0 24 24"><path d="M3 4h18v4c-2 0-3 1-3 3s1 3 3 3v6H3v-6c2 0 3-1 3-3s-1-3-3-3V4Z"/><path d="M12 6v3m0 5v4m-2-6 2-2 2 2-2 2Z"/></svg>',
 }
@@ -236,7 +242,7 @@ const fmtN = (n) => (n >= 10000 ? (n / 10000).toFixed(1).replace(/\.0$/, '') + '
 
 // ---------- 平台表情 ----------
 // 形如 [bb:doge]，图片放在 /stickers/{pack}/{name}.{ext}
-const STICKER_EXT = { bb: 'png', bm: 'png', tieba: 'png', weibo: 'png', qq: 'gif', alu: 'png', ld: 'png', muscle: 'webp', heartgif: 'webp', nga: 'png' }
+const STICKER_EXT = { bb: 'png', bm: 'png', tieba: 'png', weibo: 'png', qq: 'gif', alu: 'png', ld: 'png', muscle: 'webp', heartgif: 'webp', touhou: 'webp', nga: 'png' }
 const STICKER_RE = /\[([a-z]+):([a-z0-9_]+)\]/g
 // 首次渲染不依赖打开表情面板；自建混合格式最多尝试三个受支持后缀。
 const sticker = (pack, name, cls = 'stk') => {
@@ -255,10 +261,10 @@ const EMO_IMG = { '❤️': 'heart', '👍': 'thumbsup', '😆': 'laughing', '�
 // 回应表情的 key：带冒号是平台表情，否则是 Unicode
 function emo(key, preview = false) {
   // 小动画由面板按可见区域自动播放，手机无需悬停。
-  if (preview && /^heartgif:heartgif_\d{3}$/.test(key)) {
-    const name=key.split(':')[1],thumb=`/stickers/heartgif/thumbs/${name}.webp`
+  if (preview && /^(?:heartgif|touhou):(?:heartgif|touhou)_\d{3}$/.test(key)) {
+    const [pack,name]=key.split(':'),thumb=`/stickers/${pack}/thumbs/${name}.webp`
     return h('img',{class:'stk emo',src:thumb,alt:`[${key}]`,title:name,loading:'lazy',decoding:'async',
-      'data-poster':thumb,'data-animation':`/stickers/heartgif/previews/${name}.webp`})
+      'data-poster':thumb,'data-animation':`/stickers/${pack}/previews/${name}.webp`})
   }
   if (key === '+1') return h('span', { class: 'emo emo-plus1' }, '+1')
   const i = key.indexOf(':')
@@ -390,7 +396,7 @@ function emojiBoard(onPick, { mine = new Set(), counts = {}, foot = null, onMedi
       grid.replaceChildren(...keys.map((k) => h('button', { type: 'button', class: 'eb-btn' + (mine.has(k) ? ' on' : ''), title: all.get(k)?.label || emoLabel(k), 'aria-label': emoLabel(k), 'data-emoji': k,
         onclick: () => { pushRecent(k); onPick(k) } }, emo(k, true), counts[k] ? h('span', { class: 'n' }, counts[k]) : null)))
       if(!tokens.length&&pg.key==='p:💗'&&onMediaPick&&S.me){
-        grid.append(h('p',{class:'eb-empty'},'右键或长按群聊图片可添加表情，最多 100 张。来源撤回后不再显示。'))
+        grid.append(h('p',{class:'eb-empty'},'右键或长按群聊图片可添加表情，最多 100 张；右键或长按已添加的表情可移除。来源撤回后不再显示。'))
         if(favorites===null&&!favoritesLoading&&!favoritesError){
           favoritesLoading=true
           api('/chat/stickers').then(d=>{favorites=d.items}).catch(e=>{favoritesError=e.message}).finally(()=>{favoritesLoading=false;if(board.isConnected)show()})
@@ -399,16 +405,30 @@ function emojiBoard(onPick, { mine = new Set(), counts = {}, foot = null, onMedi
         if(favoritesError)grid.append(h('button',{class:'eb-more',type:'button',onclick:()=>{favoritesError='';show()}},favoritesError+'，点击重试'))
         favoritePage=Math.min(favoritePage,Math.max(0,Math.ceil((favorites?.length||0)/12)-1))
         for(const item of (favorites||[]).slice(favoritePage*12,(favoritePage+1)*12)){
-          const use=h('button',{class:'eb-btn',type:'button',disabled:!!item.unavailable,'aria-label':item.unavailable?'来源不可用，可移除':item.animated?'使用收藏动图':'使用收藏图片',onclick:async()=>{
+          const use=h('button',{class:'eb-btn',type:'button',disabled:!!item.unavailable,'aria-label':item.unavailable?'来源不可用，点一下移除':item.animated?'使用收藏动图':'使用收藏图片',onclick:async()=>{
             if(use.disabled)return;use.disabled=true
             try{await onMediaPick(item)}catch(e){toast(e.message,'err')}finally{use.disabled=false}
           }},item.unavailable?'来源不可用':h('img',{src:item.url,alt:item.animated?'收藏动图':'收藏图片',loading:'lazy',decoding:'async'}))
-          const remove=h('button',{class:'eb-favorite-remove',type:'button','aria-label':'移除收藏表情',onclick:async()=>{
-            remove.disabled=true
-            try{await api(`/chat/stickers/${item.message_id}/${item.index}`,{method:'DELETE'});favorites=favorites.filter(x=>x!==item);if(board.isConnected)show()}
-            catch(e){toast(e.message,'err');remove.disabled=false}
-          }},icon('close'))
-          grid.append(h('div',{class:'eb-favorite'},use,remove))
+          // 不显示叉号：右键 / 长按（键盘 Delete）移除，先确认
+          let holdT=0,held=false,removing=false
+          const remove=async()=>{
+            if(removing)return
+            removing=true
+            try{
+              if(!(board.ownerDocument.defaultView||window).confirm('移除这个自己添加的表情？'))return
+              await api(`/chat/stickers/${item.message_id}/${item.index}`,{method:'DELETE'});favorites=favorites.filter(x=>x!==item);if(board.isConnected)show()
+            }catch(e){toast(e.message,'err')}finally{removing=false}
+          }
+          const stopHold=()=>clearTimeout(holdT)
+          const cell=h('div',{class:'eb-favorite',title:'右键或长按可移除',
+            oncontextmenu:e=>{e.preventDefault();stopHold();if(!held)remove()},
+            onpointerdown:e=>{held=false;if(e.pointerType==='mouse')return;stopHold();holdT=setTimeout(()=>{held=true;remove()},550)},
+            onpointermove:e=>{if(Math.abs(e.movementX)+Math.abs(e.movementY)>6)stopHold()},onpointerup:stopHold,onpointercancel:stopHold,onpointerleave:stopHold,
+            onkeydown:e=>{if(e.key==='Delete'){e.preventDefault();remove()}}},use)
+          // 长按触发移除后，松手那一下不当成点选
+          cell.addEventListener('click',e=>{if(held){held=false;e.preventDefault();e.stopPropagation()}},true)
+          if(item.unavailable){use.disabled=false;use.onclick=()=>remove()}
+          grid.append(cell)
         }
         if(favorites?.length>12)grid.append(h('div',{class:'eb-favorite-pages'},
           h('button',{type:'button',disabled:favoritePage===0,onclick:()=>{favoritePage--;show()}},'上一页'),
@@ -436,7 +456,7 @@ function packTabs(packs) {
     if (!tabs.has(label)) tabs.set(label, { key: 'p:' + label, label, big: true, list: [] })
     tabs.get(label).list.push(p)
   }
-  return [...tabs.values()].map((t) => ({ ...t, items: () => {
+  return [...tabs.values()].sort((a, b) => (b.key === 'p:💗') - (a.key === 'p:💗')).map((t) => ({ ...t, items: () => {
     const seen = new Set()
     // 同一张图在几个包里都有（比如 ld:bili_040 和 bm:doge）：只留 dupes.json 指定的那一个
     return t.list.flatMap((p) => p.items.map((n) => `${p.key}:${n}`)).filter((k) => !STICKER_DUPES[k] && !seen.has(k) && seen.add(k))
@@ -630,6 +650,12 @@ function avatar(url, name, size = 28) {
     ? avatarImage(h,url,name||'',size)
     : h('span', { class: 'avatar avatar-ph', style: { width: size + 'px', height: size + 'px', fontSize: Math.round(size * 0.44) + 'px', '--h': hueOf(name) } },
       [...(name || '?')][0].toUpperCase())
+}
+// 社区头像框：用户佩戴了 deco.community.frame 时，在头像外包一层，由 community-skins.js 画外圈。
+// 化名身份（匿名群、新用户视角、未登录访客）的 deco 已被服务端清空，不会显示头像框
+function framedAvatar(u, size = 28, name = u?.name || u?.username) {
+  const el = avatar(u?.avatar, name, size), cls = communityClass(u?.deco?.community?.frame, 'frame')
+  return cls ? h('span', { class: 'cskin-frame-wrap' + cls, style: { '--frame-size': size + 'px' } }, el) : el
 }
 // 没头像时按名字取一个稳定的色相，免得一排回应全是灰点
 const hueOf = (s = '') => [...s].reduce((a, ch) => (a * 31 + ch.codePointAt(0)) % 360, 7)
@@ -1109,7 +1135,7 @@ function seenTag(m) {
 function memeCard(m, { stack = false, priority = false } = {}) {
   m = syncItem(m)
   const slot = 'c' + Math.random().toString(36).slice(2, 8)
-  const status = h('span', null, seenTag(m))
+  const status = h('span', null, seenTag(m), featuredBadge(m))
   const comments = h('div', { class: 'card-comments', hidden: true })
   const bar = (x) => actionBar(x, slot, { onComment: toggleComments, commentsOpen: !comments.hidden })
   function toggleComments() {
@@ -1143,7 +1169,7 @@ function memeCard(m, { stack = false, priority = false } = {}) {
     replies,
     comments)
   onRemoval(card, watchItem(m.id, (x) => {
-    status.replaceChildren(seenTag(x))
+    status.replaceChildren(seenTag(x), featuredBadge(x))
     rpN.textContent = x.reply_count || ''
     actions.replaceChildren(bar(x))
     // 输入框正在编辑时别打断
@@ -1477,7 +1503,7 @@ function contentSeg() {
 }
 
 // 互动栏：喜欢 · 表情（前两个 + 选择器）· 评论 · 收藏
-function actionBar(m, slot, { full = false, onComment = null, commentsOpen = false } = {}) {
+function actionBar(m, slot, { full = false, onComment = null, commentsOpen = false, noFeature = false } = {}) {
   const likes = (m.ld_likes || 0) + (m.like_count || 0)
   const like = h('button', { class: 'act like' + (m.liked ? ' on' : ''), 'aria-pressed': m.liked ? 'true' : 'false',
     title: `喜欢${m.ld_likes ? `（含 linux.do 的 ${m.ld_likes} 个赞）` : ''}`,
@@ -1510,7 +1536,10 @@ function actionBar(m, slot, { full = false, onComment = null, commentsOpen = fal
   const faved = m.fav_folders?.length > 0
   const fav = h('button', { class: 'act fav' + (faved ? ' on' : ''), 'data-pop': slot + 'f', 'data-slot': slot, title: '收藏',
     onclick: (e) => doFav(m, e.currentTarget, slot) }, icon('bookmark'), h('span', null, faved ? '已收藏' : '收藏'))
-  const row = h('div', { class: 'acts' + (full ? '' : ' fit') }, like, chips, pick, h('span', { class: 'grow' }), nsfwBtn, full ? null : comment, fav)
+  // 管理员：加精 / 取消精华
+  const star = !noFeature && m.can_feature && h('button', { class: 'act icon-only feature-tg' + (m.featured ? ' on' : ''), type: 'button', 'aria-pressed': m.featured ? 'true' : 'false',
+    title: m.featured ? '取消精华' : '加为精华', 'aria-label': m.featured ? '取消精华' : '加为精华', 'data-pop': 'gff' + m.id, onclick: (e) => gfFeature(m, e.currentTarget) }, icon('star'))
+  const row = h('div', { class: 'acts' + (full ? '' : ' fit') }, like, chips, pick, h('span', { class: 'grow' }), star, nsfwBtn, full ? null : comment, fav)
   if (!full) actsRO.observe(row)
   return row
 }
@@ -2201,11 +2230,34 @@ function decoEditor(initialTrial=null) {
   const communityPicker=h('div',{class:'community-picker'}),communityState=h('p',{class:'muted sm',role:'status'},'正在读取社区装扮…')
   let communityEntries=[],communityOwned=new Set()
   const curatedBubbleSelect=h('select',{class:'input','aria-label':'精选气泡',onchange:e=>{if(e.target.value){d.bb='aurora';if(d.community?.bubble){const next={...d.community};delete next.bubble;if(Object.keys(next).length)d.community=next;else delete d.community;drawCommunity(communityEntries)}}else delete d.bb;draw()}},h('option',{value:'',selected:d.bb!=='aurora'},'沿用套装气泡'),h('option',{value:'aurora',selected:d.bb==='aurora'},'极光流转 · qwddkxs'))
-  const drawCommunity=entries=>{communityEntries=entries;communityPicker.replaceChildren(...[['bubble','气泡'],['title','称号'],['badge','徽章'],['reply','回应框']].map(([kind,label])=>{
-    const current=d.community?.[kind],available=entries.filter(x=>x.components?.[kind]&&(kind!=='bubble'||allCosmetics||communityOwned.has(x.id))),missing=current&&!available.some(x=>x.id===current)
-    const select=h('select',{class:'input',value:current||'','aria-label':'社区'+label,onchange:e=>{const next={...(d.community||{})};if(e.target.value){next[kind]=e.target.value;if(kind==='bubble'){delete d.bb;curatedBubbleSelect.value=''}if(kind==='badge'&&d.badge_mode==='none')d.badge_mode='set'}else delete next[kind];if(Object.keys(next).length)d.community=next;else delete d.community;draw()}},h('option',{value:''},'沿用原有装扮'),missing&&h('option',{value:current,selected:true,disabled:true},'该装扮不可用或尚未获得'),available.map(x=>h('option',{value:x.id,selected:current===x.id},x.name+' · '+x.author+(x.archived?' · 已下架':''))))
-    return h('label',null,h('span',null,label),select)
-  }));communityState.textContent=entries.length?'投稿气泡可在限定池获取，已获得的可在此佩戴。':'还没有社区投稿。'}
+  // 社区装扮：上面是套装卡片（一键整套佩戴），下面「单独搭配」逐项混搭。气泡需从限定池获得，其余部件免费佩戴
+  const COMMUNITY_PARTS=[['bubble','气泡'],['title','称号'],['badge','徽章'],['reply','回应框'],['frame','头像框']]
+  const canWear=(x,kind)=>!!x.components?.[kind]&&(kind!=='bubble'||allCosmetics||communityOwned.has(x.id))
+  const setCommunity=next=>{if(next.bubble){delete d.bb;curatedBubbleSelect.value=''}if(next.badge&&d.badge_mode==='none')d.badge_mode='set';if(Object.keys(next).length)d.community=next;else delete d.community;draw();drawCommunity(communityEntries)}
+  const drawCommunity=entries=>{communityEntries=entries
+    const cur=d.community||{}
+    const suites=entries.filter(x=>!x.archived||Object.values(cur).includes(x.id)).map(x=>{
+      const parts=COMMUNITY_PARTS.filter(([k])=>x.components?.[k]),wearable=parts.filter(([k])=>canWear(x,k)),worn=wearable.length>0&&wearable.every(([k])=>cur[k]===x.id)
+      const sample=h('div',{class:'cs-suite-sample','aria-hidden':'true'},
+        x.components?.frame?framedAvatar({...S.me,deco:{community:{frame:x.id}}},36):avatar(S.me?.avatar,S.me?.name||S.me?.username,36),
+        x.components?.bubble&&h('span',{class:'cs-suite-bubble'+communityClass(x.id,'bubble')},'你好呀'),
+        x.components?.badge&&h('span',{class:'cs-suite-badge'+communityClass(x.id,'badge')}),
+        x.components?.title&&h('span',{class:'cs-suite-title'+communityClass(x.id,'title')},h('span',{class:'cskin-title-name'},x.name)))
+      const chips=h('div',{class:'cs-suite-parts'},parts.map(([k,label])=>h('span',{class:'cs-chip'+(cur[k]===x.id?' on':'')+(canWear(x,k)?'':' locked'),title:canWear(x,k)?(cur[k]===x.id?'正在佩戴':'可佩戴'):'气泡需在限定气泡池获得'},(canWear(x,k)?'':'🔒 ')+label)))
+      const wear=h('button',{type:'button',class:'btn sm '+(worn?'btn-ghost':'btn-primary'),disabled:!wearable.length,onclick:()=>{
+        const next={...cur};if(worn)for(const [k] of wearable)delete next[k];else for(const [k] of wearable)next[k]=x.id;setCommunity(next)}},worn?'取下整套':wearable.length<parts.length?`佩戴可用的 ${wearable.length} 件`:'整套佩戴')
+      return h('article',{class:'cs-suite'+(worn?' worn':''),'aria-label':x.name+' · '+x.author},
+        h('header',null,h('strong',null,x.name),h('small',{class:'muted'},x.author+(x.archived?' · 已下架':''))),sample,chips,wear)
+    })
+    const singles=h('details',{class:'cs-singles',open:Object.keys(cur).length>0&&!entries.some(x=>COMMUNITY_PARTS.filter(([k])=>canWear(x,k)).every(([k])=>cur[k]===x.id))},h('summary',null,'单独搭配（每个部件选不同套装）'),
+      h('div',{class:'community-picker'},COMMUNITY_PARTS.map(([kind,label])=>{
+        const current=cur[kind],available=entries.filter(x=>canWear(x,kind)),missing=current&&!available.some(x=>x.id===current)
+        const select=h('select',{class:'input',value:current||'','aria-label':'社区'+label,onchange:e=>{const next={...(d.community||{})};if(e.target.value)next[kind]=e.target.value;else delete next[kind];setCommunity(next)}},h('option',{value:''},'沿用原有装扮'),missing&&h('option',{value:current,selected:true,disabled:true},'该装扮不可用或尚未获得'),available.map(x=>h('option',{value:x.id,selected:current===x.id},x.name+' · '+x.author+(x.archived?' · 已下架':''))))
+        return h('label',null,h('span',null,label),select)
+      })))
+    const clear=Object.keys(cur).length?h('button',{type:'button',class:'btn btn-text sm',onclick:()=>setCommunity({})},'全部取下社区装扮'):null
+    communityPicker.replaceChildren(h('div',{class:'cs-suites'},suites),singles,...(clear?[clear]:[]))
+    communityState.textContent=entries.length?'点「整套佩戴」一次换上整套；带 🔒 的气泡在限定气泡池获得。改完记得保存装扮。':'还没有社区投稿。'}
   const getCommunity=()=>Promise.all([loadCommunitySkins(true),api('/community-bubbles/owned')]).then(([entries,rights])=>{communityOwned=new Set(rights.owned||[]);drawCommunity([...entries.filter(x=>x.id!=='aurora-preset'),{id:'aurora-preset',name:'极光流转',author:'qwddkxs',components:{title:true,badge:true,reply:true}}])}).catch(()=>{communityState.textContent='读取失败，请稍后重试。';communityPicker.replaceChildren(h('button',{type:'button',class:'btn btn-ghost sm',onclick:getCommunity},'重新读取'))})
   void getCommunity()
   const categories=settingsSections({h,label:'装扮分类',sections:[
@@ -2288,7 +2340,7 @@ async function userCard(username, anchor) {
   const showcaseItems=profileShowcaseItems(u),showcaseKeys=profileShowcaseKeys(u,showcaseItems)
   const stat = (n, l) => h('div', { class: 'ucard-stat' }, h('strong', null, fmtN(n)), h('span', null, l))
   box.replaceChildren(...nodes(
-    h('div', { class: 'ucard-head' }, avatar(u.avatar, u.name || u.username, 44),
+    h('div', { class: 'ucard-head' }, framedAvatar(u, 44),
       h('div', { class: 'who' },
         h('span', { class: 'ucard-name' }, uName('strong', u, {}, u.name || u.username, 'card')),
         h('span', { class: 'muted' }, '@' + u.username,
@@ -2452,7 +2504,7 @@ function mediaVideo(im, { auto = false, onOpen = null } = {}) {
   return h('div', { class: 'vid' + (live ? ' live' : '') }, v, live && h('span', { class: 'kind-badge' }, '实况'), status)
 }
 // doc：弹出的聊天小窗里看图时传小窗的 document
-function openViewer(m, start = 0, { doc = document } = {}) {
+function openViewer(m, start = 0, { doc = document, seq = null, onClose = null } = {}) {
   // 全局只开一层：已经开着（分屏时群聊列还能点图）就把旧的那层直接换掉，不叠
   if (S.viewer) S.viewer.close(true)
   closePop()
@@ -2569,10 +2621,12 @@ function openViewer(m, start = 0, { doc = document } = {}) {
     openRaw.href = im.v || src
     const n = Math.max(imgs.length, m.image_count || 1)
     count.textContent = n > 1 ? `${i + 1} / ${n}` : ''
-    prev.hidden = next.hidden = n <= 1
+    prev.hidden = next.hidden = n <= 1 && !seq
   }
+  // seq：从侧边图廊打开时，翻到这帖的头 / 尾就接着看上一帖 / 下一帖
   const go = (d) => {
     const n = imgs.length
+    if (seq && (d > 0 ? i >= n - 1 : i <= 0) && (d > 0 ? seq.next() : seq.prev())) return
     if (n > 1) { i = (i + d + n) % n; raw = false; show() }
   }
   // now：换图时立刻拿掉（不做淡出），免得新旧两层同时在
@@ -2583,6 +2637,7 @@ function openViewer(m, start = 0, { doc = document } = {}) {
     else setTimeout(() => root.remove(), 160)
     if (!S.modal || doc !== document) doc.body.classList.remove('lock')
     if (S.viewer?.close === close) S.viewer = null
+    onClose?.()
   }
   // 单击图片保持预览，双击只负责缩放；关闭不再依赖两次点击之间的时间。
   const tapClose = (e) => {
@@ -2694,7 +2749,7 @@ function renderDetail(panel, meme) {
 
 function renderActions() {
   const nav = document.getElementById('actions')
-  document.querySelectorAll('[data-nav="series"], [data-nav="road"]').forEach((el) => { el.hidden = !S.me; el.style.display = S.me ? '' : 'none' })
+  document.querySelectorAll('[data-nav="series"], [data-nav="road"], [data-nav="bottles"], [data-nav="autumn"]').forEach((el) => { el.hidden = !S.me; el.style.display = S.me ? '' : 'none' })
   const mode = themeMode(), themeLabel = '主题：' + THEME_LABELS[mode] + '；点击切换'
   const themeBtn = h('button', { class: 'btn-icon theme-btn', title: themeLabel, 'aria-label': themeLabel, onclick: toggleTheme },
     icon(THEME_ICONS[mode]))
@@ -2715,7 +2770,7 @@ function renderActions() {
   }
   kids.push(h('button',{class:'btn-icon mobile-action',type:'button','aria-label':'更多功能','data-pop':'mobilemore',onclick:e=>mobileMore(e.currentTarget)},icon('more')))
   nav.replaceChildren(...kids)
-  document.querySelectorAll('.mobile-nav [data-nav]').forEach(a=>a.querySelector('span')?.replaceChildren(icon(({wall:'image',series:'apps',chat:'chat',road:'pen',farm:'sprout',slime:'spark',arcade:'apps',huancai:'sparkle',me:'contacts'})[a.dataset.nav]||'apps')))
+  document.querySelectorAll('.mobile-nav [data-nav]').forEach(a=>a.querySelector('span')?.replaceChildren(icon(({wall:'image',series:'apps',chat:'chat',road:'pen',bottles:'bottle',farm:'sprout',slime:'spark',arcade:'apps',huancai:'sparkle',me:'contacts'})[a.dataset.nav]||'apps')))
   document.getElementById('mobile-page-title').onclick = e => mobilePages(e.currentTarget)
   markNav()
 }
@@ -2728,7 +2783,7 @@ document.documentElement.dataset.mobileNav = localStorage.getItem(MOBILE_NAV_KEY
 function mobilePages(anchor) {
   const cur = document.querySelector('.mobile-nav [data-nav].on')?.dataset.nav
   const pages = [['wall', '图廊', 'image', '/'],
-    ['chat', '群聊', 'chat', '/chat'], ...(S.me ? [['road', '鞭打', 'pen', '/road']] : []), ['novels','小说','book','/novels'], ['pets','鱼鱼谷','sparkle','/pets'], ['me', '我的', 'contacts', '/me']]
+    ['chat', '群聊', 'chat', '/chat'], ...(S.me ? [['road', '鞭打', 'pen', '/road']] : []), ...(S.me && !document.documentElement.hasAttribute('data-newbie') ? [['bottles', '漂流瓶', 'bottle', '/bottles']] : []), ['novels','小说','book','/novels'], ['pets','鱼鱼谷','sparkle','/pets'], ...(S.me && !document.documentElement.hasAttribute('data-newbie') ? [['autumn','死如秋叶','leaf','/autumn']] : []), ['me', '我的', 'contacts', '/me']]
   openPop(anchor, h('nav', { class: 'mobile-more mobile-pages', 'aria-label': '切换页面' }, pages.map(([key, label, ic, path]) =>
     h('button', { class: 'mobile-more-item' + (cur === key ? ' on' : ''), type: 'button',
       'aria-current': cur === key ? 'page' : null, onclick: () => { closePop(); if(path.startsWith('https://'))window.open(path,'_blank','noopener');else navigate(path) } }, icon(ic), label, key === 'chat' && chatBadge()))),
@@ -2758,15 +2813,17 @@ const NOTIF = { unread: 0, items: null, at: 0, tab: 'all' }
 const skinStatusAlerts=createSkinStatusAlerts()
 let notifSequence = 0, notifWrites = 0, notifReload = false
 const NOTIF_VERB = { packet:'红包提醒', like: '喜欢了', emoji: '回应了表情', reply: '回应了', comment: '评论了', creply: '回复了你在这帖的评论', post: '发了新帖',
-  mention: '在评论里 @ 了你', chat_at: '在群聊里 @ 了你', chat_reply: '在群聊里回复了你', post_at: '在帖子里 @ 了你', join_req: '申请加入群聊', badge: '你获得了徽章' }
+  mention: '在评论里 @ 了你', chat_at: '在群聊里 @ 了你', chat_reply: '在群聊里回复了你', post_at: '在帖子里 @ 了你', join_req: '申请加入群聊', bottle_like: '喜欢了', bottle_reply: '回信了', bottle_re: '回复了你的回信', badge: '你获得了徽章', featured: '把你的帖子加为精华' }
 // 提醒分类
-const NOTIF_TABS = [['all', '全部', null], ['like', '喜欢', ['like']], ['rx', '回应', ['emoji', 'reply']], ['cmt', '评论', ['comment', 'creply']],
+const NOTIF_TABS = [['all', '全部', null], ['like', '喜欢', ['like', 'featured']], ['rx', '回应', ['emoji', 'reply']], ['cmt', '评论', ['comment', 'creply']],
   ['at', '@我', ['mention', 'chat_at', 'post_at']], ['chat', '群聊', ['chat_at', 'chat_reply', 'join_req','packet','chat_idle']], ['post', '新帖', ['post']]]
 const isChatNotif = (n) => n.kind === 'chat_at' || n.kind === 'chat_reply' || n.kind === 'packet'
 // 提醒设置：后端存，登录时随 /me 带回来
-const NOTIF_PREFS = [['packet','红包参与与开奖结果'],['like', '有人喜欢我的图'], ['emoji', '有人给我的图回应表情'], ['reply', '有人给我的图一句回应'], ['comment', '有人评论我的图'], ['creply', '有人回复我的评论'], ['post', '有人发了新帖'], ['mention', '有人在评论里 @ 我'], ['chat_at', '有人在群聊里 @ 我'], ['chat_reply', '有人在群聊里回复我'],
+const NOTIF_PREFS = [['packet','红包参与与开奖结果'],['like', '有人喜欢我的图'], ['emoji', '有人给我的图回应表情'], ['reply', '有人给我的图一句回应'], ['comment', '有人评论我的图'], ['featured', '我的帖子被加为精华'], ['creply', '有人回复我的评论'], ['post', '有人发了新帖'], ['mention', '有人在评论里 @ 我'], ['chat_at', '有人在群聊里 @ 我'], ['chat_reply', '有人在群聊里回复我'],
   ['post_at', '有人在帖子里 @ 我'], ['ai_comment', 'AI 评论、回复和提及提醒'], ['badge', '我拿到了新徽章'], ['join_req', '有人申请加入群聊（群管理才有）']]
 const notifOn = (k) => S.me?.notif_prefs?.[k] !== false
+NOTIF_PREFS.push(['bottle_like', '有人喜欢我的漂流瓶'], ['bottle_reply', '我的漂流瓶收到回信'], ['bottle_re', '漂流瓶里有人回复我'])
+NOTIF_TABS.push(['bottle', '漂流瓶', ['bottle_like', 'bottle_reply', 'bottle_re']])
 NOTIF_PREFS.unshift(['farm_conflict','农场攻防预警与结算'])
 NOTIF_PREFS.unshift(['release','系统通知提醒'])
 NOTIF_TABS.push(['farm','农场',['farm_conflict']])
@@ -2778,7 +2835,7 @@ function syncNotifBadge() {
   syncTab()
 }
 // 标签页标题上的数：只算通知（群聊有自己的角标，不往铃铛里算）
-const tabCount = () => (S.me ? NOTIF.unread : 0)
+const tabCount = () => (S.me ? NOTIF.unread + (GF?.mounted && gfPref('badge', '1') === '1' ? GF.fresh : 0) : 0)
 async function loadNotifs() {
   if (!S.me || notifWrites) return
   const sequence = ++notifSequence, uid = S.me.id
@@ -2830,7 +2887,8 @@ function openChatMsg(gid, id) {
   openGroup(gid)
 }
 function notifRow(n) {
-  const who = n.name || n.username || '有人'
+  const selfAt = !!S.me && n.user_id === S.me.id && (n.kind === 'chat_at' || n.kind === 'mention')
+  const who = selfAt ? '你' : n.name || n.username || '有人'
   if(n.kind==='skin_alert')return h('a',{class:'notif-row'+(n.unread?' unread':''),href:n.url,target:'_blank',rel:'noopener noreferrer',onclick:()=>{readNotif(n);closePop()}},h('i',{class:'notif-dot','aria-hidden':'true'}),icon('bell'),h('div',{class:'notif-main'},h('strong',null,'装扮投稿状态'),h('div',{class:'notif-val clip'},n.val),h('time',{class:'muted'},fmtTime(n.at))))
   if(n.kind==='pet_refund')return h('button',{class:'notif-row'+(n.unread?' unread':''),type:'button',onclick:()=>{if(n.unread){n.unread=false;NOTIF.unread=Math.max(0,NOTIF.unread-1);syncNotifBadge()}closePop();import('/pet-refund.js?v=472f7fbf').then((m)=>m.openRefund({onDone:()=>location.pathname==='/pets'?location.reload():null}))}},h('i',{class:'notif-dot','aria-hidden':'true'}),icon('bell'),h('div',{class:'notif-main'},h('strong',null,'鱼鱼谷 · 今日可一键回收'),h('div',{class:'notif-val muted'},n.val),h('time',{class:'muted'},'今天 24 点前有效')))
   if(n.kind==='release')return h('button',{class:'notif-row'+(n.unread?' unread':''),type:'button',onclick:()=>{readNotif(n);closePop();releaseNoticeDetail(n.val)}},h('i',{class:'notif-dot','aria-hidden':'true'}),icon('bell'),h('div',{class:'notif-main'},h('strong',null,'系统更新 · 请刷新界面'),h('div',{class:'notif-val clip'},n.val),h('time',{class:'muted'},fmtTime(n.at))))
@@ -2868,9 +2926,20 @@ function notifRow(n) {
         h('time', { class: 'muted' }, fmtTime(n.at))))
   }
   if(!Object.hasOwn(NOTIF_VERB,n.kind))return h('button',{class:'notif-row'+(n.unread?' unread':''),type:'button',onclick:()=>{readNotif(n);closePop();releaseNoticeDetail(n.val||'请刷新界面查看这条提醒。','系统提醒',false)}},icon('bell'),h('div',{class:'notif-main'},h('strong',null,'系统提醒'),h('div',{class:'notif-val clip'},n.val||'请刷新界面查看这条提醒。'),h('time',{class:'muted'},fmtTime(n.at))))
+  if (n.gid === -4) {
+    // 漂流瓶：瓶主的回信 user_id 为 0、没有名字，统一显示「瓶主」
+    const host = !n.user_id, href = '/bottles/b/' + n.meme_id
+    return h('a', { class: 'notif-row' + (n.unread ? ' unread' : ''), href, 'data-link': '', 'aria-label': n.unread ? '未读' : null, onclick: () => { readNotif(n); closePop() } },
+      h('i', { class: 'notif-dot', 'aria-hidden': 'true' }),
+      host ? icon('bottle', 'i notif-bottle') : avatar(n.avatar, who, 32),
+      h('div', { class: 'notif-main' },
+        h('div', { class: 'notif-line' }, h('strong', null, host ? '瓶主' : who), ' ', NOTIF_VERB[n.kind], n.kind === 'bottle_like' ? '你的漂流瓶' : ''),
+        n.val && h('div', { class: 'notif-val clip' }, n.val),
+        h('time', { class: 'muted' }, fmtTime(n.at))))
+  }
   const chat = isChatNotif(n)
   const href = chat ? `/chat/${n.gid}` : `/m/${n.meme_id}` + (n.kind === 'comment' || n.kind === 'creply' || n.kind === 'mention' ? '#comments' : n.kind === 'reply' ? '#replies' : '')
-  const showVal = ['reply', 'comment', 'creply', 'mention', 'post_at'].includes(n.kind) || chat
+  const showVal = ['reply', 'comment', 'creply', 'mention', 'post_at', 'featured'].includes(n.kind) || chat
   return h('a', { class: 'notif-row' + (n.unread ? ' unread' : ''), href, 'data-link': chat ? null : '', 'aria-label': n.unread ? '未读' : null,
     'data-gid': chat ? n.gid : null, 'data-mid': chat ? n.meme_id : null,
     onclick: (e) => {
@@ -2881,7 +2950,7 @@ function notifRow(n) {
     h('i', { class: 'notif-dot', title: n.unread ? '未读' : '已读', 'aria-hidden': 'true' }),
     avatar(n.avatar, who, 32),
     h('div', { class: 'notif-main' },
-      h('div', { class: 'notif-line' }, h('strong', null, who), ' ', NOTIF_VERB[n.kind] || '互动了', ' ',
+      h('div', { class: 'notif-line' }, h('strong', null, who), ' ', selfAt ? (n.kind === 'chat_at' ? '在群聊里 @ 了自己' : '在评论里 @ 了自己') : NOTIF_VERB[n.kind] || '互动了', ' ',
         n.kind === 'emoji' && n.val && [emo(n.val), ' '],
         h('span', { class: 'muted' }, chat ? '「' + (n.group_name || '群聊') + '」' : '「' + (n.title || (n.kind === 'post' ? '一帖' : n.kind === 'creply' || n.kind === 'mention' ? '这帖' : '你的帖')) + '」')),
       showVal && n.val && h('div', { class: 'notif-val clip' }, linkify(n.val)),
@@ -2966,12 +3035,12 @@ function markNav() {
   const p = location.pathname
   const cur = p === '/' || p.startsWith('/t/') || p.startsWith('/u/') ? 'wall'
     : p.startsWith('/series') || p.startsWith('/s/') ? 'series'
-      : p.startsWith('/huancai') ? 'huancai' : p.startsWith('/novels') ? 'novels' : p.startsWith('/nsfw') ? 'nsfw' : p.startsWith('/chat') || p.startsWith('/dm') ? 'chat' : p.startsWith('/road') ? 'road' : p.startsWith('/farm') ? 'farm' : p.startsWith('/pets') ? 'pets' : p.startsWith('/manor') ? 'manor' : p.startsWith('/me') ? 'me' : ''
+      : p.startsWith('/huancai') ? 'huancai' : p.startsWith('/novels') ? 'novels' : p.startsWith('/nsfw') ? 'nsfw' : p.startsWith('/chat') || p.startsWith('/dm') ? 'chat' : p.startsWith('/road') ? 'road' : p.startsWith('/bottles') ? 'bottles' : p.startsWith('/autumn') ? 'autumn' : p.startsWith('/farm') ? 'farm' : p.startsWith('/pets') ? 'pets' : p.startsWith('/manor') ? 'manor' : p.startsWith('/me') ? 'me' : ''
   if (p.startsWith('/m/')) return
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('on', a.dataset.nav === cur))
   const title=document.getElementById('mobile-page-title')
   if(title) {
-    title.textContent=p.startsWith('/dm')?'私信':({wall:'图廊',series:'图集',chat:'群聊',road:'鞭打',farm:'农场',pets:'鱼鱼谷',manor:'肥鱼庄园',novels:'小说',huancai:'欢彩',nsfw:'RZP',me:'我的'})[cur] || '尽欢'
+    title.textContent=p.startsWith('/dm')?'私信':({wall:'图廊',series:'图集',chat:'群聊',road:'鞭打',bottles:'漂流瓶',autumn:'死如秋叶',farm:'农场',pets:'鱼鱼谷',manor:'肥鱼庄园',novels:'小说',huancai:'欢彩',nsfw:'RZP',me:'我的'})[cur] || '尽欢'
     title.setAttribute('aria-label', '切换页面，当前' + title.textContent)
     title.append(chatBadge('chat-badge mobile-chat-badge'))
   }
@@ -3120,6 +3189,7 @@ function listParams(st, extra = {}) {
   const p = new URLSearchParams({ sort: st.sort || 'new', ...nsfwParam(), ...extra })
   if(st.nsfw)p.set('nsfw',st.nsfw)
   for (const k of ['q', 'tag', 'author', 'series', 'text']) if (st[k]) p.set(k, st[k])
+  if (st.featured) p.set('featured', '1')
   if (st.unseen) {
     p.set('unseen', '1')
     if (st.anchor) p.set('before', st.anchor)
@@ -3236,11 +3306,12 @@ async function renderWall(base) {
     sort: params.get('sort') || 'new',
     unseen: params.get('unseen') === '1',
     text: ['only', '0'].includes(params.get('text')) ? params.get('text') : '',
+    featured: params.get('featured') === '1',
     from: params.get('from') || '',
     focus: Number(params.get('focus')) || 0,
     page: 0, more: true, loading: false, ids: new Set(), unseenLeft: null, sections: [], seenSnap: new Set(SEEN.local),
   }
-  st.plain = !st.q && !st.tag && !st.author && !st.series && !st.text
+  st.plain = !st.q && !st.tag && !st.author && !st.series && !st.text && !st.featured
   st.byDay = st.sort !== 'hot' // 热门没有时间顺序，不分天
   st.hz = wallHz() // 横向浏览：帖子左右排，一帖一列
   S.wall = st
@@ -3325,6 +3396,7 @@ async function renderWall(base) {
   const conds = [
     ...tagChips(st),
     st.unseen && cond('只看未看', without('unseen')),
+    st.featured && cond('只看精华', without('featured')),
     st.sort === 'old' && cond('最早在前', without('sort')),
     S.content === 'only' && h('button', { class: 'cond', type: 'button', onclick: () => setContent('hide') }, '只看 NSFW', icon('close', 'i tiny')),
     st.text === 'only' && cond('只看文字帖', without('text')),
@@ -3715,6 +3787,11 @@ function daySection(st, d) {
   return sec
 }
 
+let dayMoreObserver = null
+const dayMoreIO = () => dayMoreObserver ||= new IntersectionObserver((es) => es.forEach((e) => {
+  if (!e.target.isConnected) return dayMoreObserver.unobserve(e.target)
+  if (e.isIntersecting) { dayMoreObserver.unobserve(e.target); e.target._auto?.() }
+}), { rootMargin: '800px 800px' })
 async function loadDayChunk(st, sec, { first = false, focus = 0 } = {}) {
   if (sec.busy || S.wall !== st) return false
   const retrying = !!sec.failed
@@ -3773,10 +3850,11 @@ async function loadDayChunk(st, sec, { first = false, focus = 0 } = {}) {
     }
     sec.cols.addMany(newCards)
     const left = Math.max(0, sec.n - sec.offset)
-    sec.more.replaceChildren(data.more && left > 0
-      ? h('button', { class: 'day-more-btn', type: 'button', onclick: () => loadDayChunk(st, sec) },
-        `这天还有 ${left} 张`, h('span', { class: 'muted' }, ` · 再看 ${Math.min(DAY_STEP, left)} 张`), icon('chevD', 'i tiny'))
-      : '')
+    const moreBtn = data.more && left > 0 && h('button', { class: 'day-more-btn', type: 'button', onclick: () => loadDayChunk(st, sec) },
+      `这天还有 ${left} 张`, h('span', { class: 'muted' }, ` · 再看 ${Math.min(DAY_STEP, left)} 张`), icon('chevD', 'i tiny'))
+    sec.more.replaceChildren(moreBtn || '')
+    // 滚到按钮附近就自动加载下一批（按钮仍可手动点；折叠的日期、出错重试时不自动）
+    if (moreBtn) dayMoreIO().observe(Object.assign(moreBtn, { _auto: () => { if (S.wall === st && !sec.busy && !sec.failed && !sec.collapsed && moreBtn.isConnected) loadDayChunk(st, sec) } }))
     return true
   } catch (e) {
     if (S.wall !== st) return false
@@ -3807,7 +3885,8 @@ function wallSettings(st, anchor) {
     h('div', { class: 'pop-head' }, h('strong', null, '筛选与浏览'),
       h('button', { class: 'btn-icon ghost sm ws-close', 'aria-label': '关闭', onclick: closePop }, icon('close'))),
     row('排序', segs([['new', '最新'], ['hot', '热门'], ['old', '最早']], st.sort, (v) => { closePop(); st.setParam('sort', v === 'new' ? '' : v) }, '排序')),
-    row('范围', check(st.unseen, '只看没看过的', (on) => { closePop(); st.setParam('unseen', on ? '1' : '') })),
+    row('范围', check(st.unseen, '只看没看过的', (on) => { closePop(); st.setParam('unseen', on ? '1' : '') }),
+      check(st.featured, '只看精华', (on) => { closePop(); st.setParam('featured', on ? '1' : '') })),
     row('发图人', h('button',{class:'btn btn-ghost sm',type:'button',onclick:e=>authorPicker(st,e.currentTarget)},st.author ? `已选 ${authorNames(st.author).length} 位 · 更改` : '搜索并选择')),
     row('标签',h('button',{class:'btn btn-ghost sm',type:'button',onclick:e=>browseTagPicker(st,e.currentTarget)},st.tag || '多选标签')),
     row('内容显示', contentSeg()),
@@ -4320,6 +4399,14 @@ async function renderMe() {
     entry('账号安全','登录方式、绑定账号与安全设置','lock',{href:'/me/account'}),
     entry('52B 集卡包','查看已获得的角色卡片与卡包进度','sparkle',{onclick:e=>owner52CardsDialog(e.currentTarget)}),
     entry('生成邀请码','主站激活邀请码、邀请记录与奖励','users',{href:'/me/invites'}),
+    !document.documentElement.hasAttribute('data-newbie')&&entry('寄给我的想念',S.me.miss_gifts?`有 ${S.me.miss_gifts} 份新的礼物等你看`:'你不在的时候，朋友们送来的礼物','heart',{href:'/autumn/mine'}),
+    !document.documentElement.hasAttribute('data-newbie')&&entry('好久不见','设置很久没来时，是否出现在「好久不见」','leaf',{onclick:async()=>{
+      try{
+        const {opt_out}=await api('/autumn/home')
+        if(!await window.siteConfirm(opt_out?'你现在不会出现在「好久不见」。要恢复默认展示吗？':'关闭后，即使很久没来，你也不会出现在「好久不见」，别人也不能给你送礼物。确认关闭？'))return
+        await api('/autumn/miss/opt-out',{method:'PUT',body:{on:!opt_out}});toast(opt_out?'已恢复默认':'以后不会展示你','ok')
+      }catch(e){toast(e.message,'err')}
+    }}),
     entry('个人设置','资料、外观、AI 小伙伴与消息偏好','gear',{onclick:()=>meSettings()}))
   const administration=h('div',{class:'me-service-list'},
     (u.is_admin||u.owner)&&entry('生成邀请码','站长和管理员生成、复制、撤销主站邀请码','users',{href:'/me/invites'}),
@@ -4343,7 +4430,7 @@ async function renderMe() {
     {id:'admin',label:'管理工具',keywords:'AI 接入 模型 参数 公告 成员 用户 权限 限制 邀请码 生成',available:()=>!!(u.can_manage_ai||u.is_admin||u.owner),nodes:[administration]},
   ]})
   main.replaceChildren(h('div',{class:'me-page me-hub'},
-    h('section',{class:'me-head'},avatar(u.avatar,u.username,60),
+    h('section',{class:'me-head'},framedAvatar(u,60,u.username),
       h('div',{class:'me-who'},h('h1',null,u.name||u.username),h('span',{class:'muted'},`@${u.username}${u.created_at ? ` · ${fmtDay(u.created_at)}加入尽欢` : ''}`),u.bio&&h('span',{class:'me-bio'},u.bio),
         S.limits?.length?h('span',{class:'me-limits'},'你当前被限制：',...S.limits.map(l=>h('span',{class:'badge danger'},`${LIMIT_KINDS.find(k=>k[0]===l.kind)?.[1]||l.kind} ${untilText(l.until)}${l.reason?`（${l.reason}）`:''}`))):null),
       h('div',{class:'me-quick'},h('button',{class:'btn btn-ghost sm',type:'button',onclick:()=>meSettings('profile')},icon('gear','i tiny'),'编辑资料'),h('button',{class:'btn btn-ghost sm',type:'button',onclick:()=>meSettings('deco')},icon('sparkle','i tiny'),'我的装扮'),h('button',{class:'btn btn-ghost sm',type:'button',onclick:e=>instantCardDialog(e.currentTarget)},icon('raffle','i tiny'),'抽卡'))),wallet,categories.element))
@@ -6306,13 +6393,68 @@ const IM_NAMES = ['张伟', '王芳', '李静', '刘洋', '陈晨', '杨帆', '�
 const imFake = (seed) => IM_NAMES[((Number(seed) || 0) * 2654435761 >>> 0) % IM_NAMES.length]
 const imWho = (m) => (m.source_url ? imFake(m.id) : m.author_name)
 const imColor = (s) => IM_COLORS[[...s].reduce((a, c) => (a * 31 + c.codePointAt(0)) % 997, 3) % IM_COLORS.length]
-// 群头像统一用站标；伪装飞书时还是飞书那种「彩色方块 + 群名前两个字」，每个会话不一样
-function groupAvatar(name, size = 40) {
+// 群头像：群管理员上传的图（avatar），没有就用站标；伪装飞书时还是飞书那种「彩色方块 + 群名前两个字」，每个会话不一样
+function groupAvatar(name, size = 40, avatar = null) {
   if (S.skin === 'feishu') {
     const t = [...name.replace(/[\s·#【】\[\]（）()]/g, '')].slice(0, 2).join('')
     return h('span', { class: 'im-gav', style: { width: size + 'px', height: size + 'px', background: imColor(name), fontSize: Math.round(size * 0.34) + 'px' } }, t)
   }
-  return h('span', { class: 'im-gav logo', style: { width: size + 'px', height: size + 'px' } }, h('img', { src: '/group-logo.svg', alt: '', width: size, height: size }))
+  const custom = typeof avatar === 'string' && avatar.startsWith('/img/a/')
+  const img = h('img', { src: custom ? avatar : '/group-logo.svg', alt: '', width: size, height: size, loading: 'lazy' })
+  if (custom) img.onerror = () => { img.onerror = null; img.src = '/group-logo.svg'; img.parentElement?.classList.remove('custom') }
+  return h('span', { class: 'im-gav logo' + (custom ? ' custom' : ''), style: { width: size + 'px', height: size + 'px' } }, img)
+}
+// 按群对象取头像：群列表里的 avatar 最新，优先用
+const groupAvatarOf = (g, size) => { const el = groupAvatar(g.name, size, findGroup(g.id)?.avatar ?? g.avatar ?? null); el.dataset.gav = g.id; el.dataset.size = size; return el }
+// 换头像后立即刷新页面上（含聊天小窗）这个群的所有头像
+const refreshGroupAvatars = (g) => new Set([document, ...[...CHAT.panes].map((p) => p.el?.ownerDocument).filter(Boolean)]).forEach((doc) =>
+  doc.querySelectorAll(`[data-gav="${g.id}"]`).forEach((el) => el.replaceWith(groupAvatarOf(g, Number(el.dataset.size) || 40))))
+// 群管理 → 群资料：更换群头像（只有群管理员看得到）。静态图在本地居中裁成 256×256，GIF 原样上传
+function groupAvatarField(g, onChange) {
+  const preview = h('span', { class: 'gp-avatar' }, groupAvatarOf(g, 56))
+  const status = h('span', { class: 'muted gp-avatar-status', role: 'status' })
+  const input = h('input', { type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', hidden: true })
+  const pick = h('button', { class: 'btn btn-ghost sm', type: 'button', onclick: () => input.click() }, '更换群头像')
+  const reset = h('button', { class: 'btn btn-text sm', type: 'button', hidden: !(findGroup(g.id)?.avatar ?? g.avatar) }, '恢复默认')
+  const busy = (on) => { pick.disabled = reset.disabled = on }
+  const apply = (avatar) => {
+    const cur = findGroup(g.id); if (cur) cur.avatar = avatar
+    g.avatar = avatar
+    refreshGroupAvatars(g)
+    reset.hidden = !avatar
+    onChange?.(); loadGroups()
+  }
+  const square = async (file) => {
+    if (file.type === 'image/gif') return file
+    const url = URL.createObjectURL(file)
+    try {
+      const img = await new Promise((ok, no) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => no(Error('图片读取失败，换一张试试')); i.src = url })
+      const side = Math.min(img.naturalWidth, img.naturalHeight), out = Math.min(256, side)
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = out
+      canvas.getContext('2d').drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, out, out)
+      const blob = await new Promise((ok) => canvas.toBlob(ok, 'image/webp', 0.9))
+      if (!blob) throw Error('图片处理失败，请重试')
+      return new File([blob], blob.type === 'image/webp' ? 'group.webp' : 'group.png', { type: blob.type })
+    } finally { URL.revokeObjectURL(url) }
+  }
+  input.onchange = async () => {
+    const file = input.files?.[0]; input.value = ''
+    if (!file) return
+    if (file.size > 5 * 1024 * 1024) { status.textContent = '图片不能超过 5MB'; return }
+    busy(true); status.textContent = '正在上传…'
+    try {
+      const body = new FormData(); body.set('file', await square(file)); body.set('for', 'avatar'); body.set('nonce', crypto.randomUUID())
+      const receipt = await api('/uploads', { method: 'POST', body })
+      const r = await api(`/chat/groups/${g.id}/avatar`, { method: 'PUT', body: { key: receipt.key } })
+      apply(r.avatar); status.textContent = '群头像已更新'
+    } catch (e) { status.textContent = e.message } finally { busy(false) }
+  }
+  reset.onclick = async () => {
+    busy(true); status.textContent = ''
+    try { await api(`/chat/groups/${g.id}/avatar`, { method: 'PUT', body: { key: null } }); apply(null); status.textContent = '已恢复默认头像' }
+    catch (e) { status.textContent = e.message } finally { busy(false) }
+  }
+  return field('群头像', h('div', { class: 'gp-inline gp-avatar-row' }, preview, pick, reset, input, status), '建议正方形图片，5MB 以内；所有群成员都能看到')
 }
 function convTime(ts) {
   if (!ts) return ''
@@ -8205,6 +8347,8 @@ function groupMembers(gid) {
   MEMBERS.set(gid, entry)
   return entry.p
 }
+// 可以 @ 自己；匿名群（chat/1）除外：那里大家看到的是化名，@ 自己会把真实用户名发出去
+const canAtSelf = (g) => !!S.me && g?.id !== 1
 function mentionPicker(ta, g, recent = () => []) {
   const box = h('div', { class: 'cm-mention', role: 'listbox', hidden: true })
   let opts = []
@@ -8257,8 +8401,13 @@ function mentionPicker(ta, g, recent = () => []) {
       const unique = new Map()
       if(g&&hit({username:'欢欢',name:'欢欢 · AI助手'}))unique.set('欢欢',{username:'欢欢',name:'欢欢 · AI助手',avatar:'/ai-avatar.svg'})
       for (const u of [...members, ...users]) if (u.username && u.username !== S.me?.username && hit(u) && !unique.has(u.username)) unique.set(u.username, u)
+      // 自己排在最后：没输入名字时不占别人的位置，输入自己的名字就能选到
+      if (canAtSelf(g) && hit(S.me)) unique.set(S.me.username, { username: S.me.username, name: (S.me.name || S.me.username) + '（我）', avatar: S.me.avatar })
       const list = [...unique.values()].sort((a, b) => Number(b.username.toLowerCase().startsWith(q)) - Number(a.username.toLowerCase().startsWith(q)))
+      const self = canAtSelf(g) && list.find((u) => u.username === S.me.username)
       opts = list.slice(0, 8)
+      // 只输入 @ 时候选通常超过 8 个：留一个位置给自己
+      if (self && !opts.includes(self)) opts = [...opts.slice(0, 7), self]
       sel = Math.max(0, opts.findIndex((u) => u.username === selected))
       draw(memberPending || searchPending ? '正在找人…' : failed ? '加载失败，点此重试' : '没有匹配的用户', failed && !memberPending && !searchPending)
     }
@@ -8337,6 +8486,7 @@ function packetAffectsBagBadge(message) {
 // 一个群的消息区 + 输入框：站内群聊页、飞书伪装、LINUX DO 聊天抽屉共用，外观由各自的 CSS 决定
 function chatPane(g, { onHead, targetDocument = document } = {}) {
   const st = { first: 0, last: 0, more: true, busy: false, olderFailed: false, since: 0, items: [], unreadAt: null, sentRead: 0, stick: true, done: false }
+  let historySince = 0, historyFloor = 0
   const positionKey = `${S.me?.id || 0}:${g.id}`
   let positionTimer = 0
   let aiPanel, aiLoading, guessPanel, guessLoading, huancaiPanel, huancaiLoading, gamePanel, gameLoading, vipPanel, vipLoading, sideMode='', bagTimer=0, bagLast=0, bagBusy=false, bagQueued=false
@@ -8387,7 +8537,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       scroller.scrollTo({ top: mark.offsetTop - 40, behavior: REDUCED.matches ? 'auto' : 'smooth' })
       pill.hidden = true
       st.newN = 0
-    } else toBottom(true)
+    } else requestBottom()
   } })
   const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80
   const exactBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 3
@@ -8405,6 +8555,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   }
   const queuePosition = () => { clearTimeout(positionTimer); positionTimer = setTimeout(savePosition, 400) }
   const pauseFollow = () => {
+    st.bottomRequested = false
     // 用户在首屏两帧定位期间开始上滑，后续校准不能把视口拉回保存位置。
     if (!st.done) { st.userScrollIntent = true; return }
     if (st.followPaused) return
@@ -8448,7 +8599,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   // 只有「页面看得见、没失焦、没开历史层、贴着底部」时来新消息才跟着滚；否则只记数，右下角给「回到底部」
   const downN = h('i', { class: 'cm-down-n', hidden: true })
   const downBtn = h('button', { class: 'cm-down', type: 'button', hidden: true, title: '回到底部', 'aria-label': '回到底部',
-    onclick: () => { closeHist(); toBottom(true) } }, icon('chevD', 'i tiny'), h('span', null, '回到底部'), downN)
+    onclick: requestBottom }, icon('chevD', 'i tiny'), h('span', null, '回到底部'), downN)
   stage.append(downBtn)
   function drawDown() {
     const n = st.newIds.length
@@ -8458,10 +8609,23 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     downN.textContent = n > 99 ? '99+' : n
     downBtn.setAttribute('aria-label', n ? `回到底部，${n} 条新消息` : '回到底部')
   }
-  const toBottom = (smooth) => {
-    // 跳转窗口里（往下还有没加载的）：先回到最新
+  function requestBottom() {
+    if (st.destroyed) return
+    closeHist()
+    // 翻页完成后再跳到最新，避免正在加载时丢掉点击。
+    if (st.busy) { st.bottomRequested = true; return }
     if (st.after) return backToLatest()
-    scroller.scrollTo({ top: scroller.scrollHeight, behavior: smooth && !REDUCED.matches ? 'smooth' : 'auto' })
+    toBottom()
+  }
+  function finishChatPage() {
+    st.busy = false
+    if (!st.bottomRequested || st.destroyed) return
+    st.bottomRequested = false
+    queueMicrotask(requestBottom)
+  }
+  const toBottom = () => {
+    if (st.after) return requestBottom()
+    focusChatBottom(scroller)
     pill.hidden = true
     st.newN = 0
     st.newIds = []
@@ -8671,6 +8835,8 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   const drawLifetime=new AbortController()
   let drawQueue=Promise.resolve()
   const add = (items, where, advance = true, fresh = null) => {
+    // 只保留本次入群以后的消息（移植自 kourou25/jinhuan#7）
+    items = items.filter(m => m.created_at >= historySince && m.id >= historyFloor)
     if (where === 'live' && advance && items.length) st.last = Math.max(st.last, ...items.map(m => m.id))
     items = items.filter((m) => !rows.has(m.id))
     if (!items.length) return
@@ -8793,7 +8959,14 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       const d = await api(`/chat/groups/${g.id}/messages` + (st.first ? `?before=${st.first}` : around ? `?around=${around}` : ''))
       if (st.destroyed) return
       if (!scroller.isConnected && st.first) return
+      if (!initial && membershipChanged(d.group)) {
+        st.busy = false
+        await reopenForMembership(d.group)
+        return
+      }
       if (initial) {
+        historySince = d.group.history_since
+        historyFloor = d.group.history_floor || 0
         st.restoring = true
         st.stick = false
         st.followPaused = true
@@ -8820,7 +8993,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
             ? Math.min(0, resume.offset / resume.height) * target.offsetHeight : resume.offset
           scroller.scrollTop = target.offsetTop - offset
         } else if (!st.forceLatest && mark) scroller.scrollTop = Math.max(0, mark.offsetTop - 40)
-        else if (!st.after) toBottom(false) }
+        else if (!st.after) toBottom() }
         place()
         // 离屏占位首轮测量可能修正上方行高；在恢复阶段完成一次校准，之后不抢用户滚动。
         await new Promise(resolve => requestAnimationFrame(resolve))
@@ -8846,9 +9019,22 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       st.olderFailed = true
       topSpin.replaceChildren(h('button', { class: 'btn-text', onclick: () => older(true) }, e.message + ' · 重试'))
     } finally {
-      st.busy = false
+      finishChatPage()
     }
     if (loaded && st.more && scroller.scrollTop < 300 && scroller.isConnected && scroller.clientHeight) requestAnimationFrame(() => older())
+  }
+
+  const membershipChanged = (group) => historySince !== group.history_since || historyFloor !== (group.history_floor || 0)
+  async function reopenForMembership(group) {
+    if (st.busy) return
+    historySince = group.history_since
+    historyFloor = group.history_floor || 0
+    closeHist()
+    closePop()
+    searchEl?.remove()
+    searchEl = null
+    if (st.reply) setReply(null, false)
+    await backToLatest()
   }
 
   async function poll() {
@@ -8862,6 +9048,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       for (let batch = 0; batch < 5 && scroller.isConnected && st.done; batch++) {
       const d = await loadChatPoll(`/chat/groups/${g.id}/messages?after=${st.last}&since=${st.since}&include_total=0`)
       if (st.destroyed || !scroller.isConnected || revision !== listRevision) { more = false; return }
+      if (membershipChanged(d.group)) { more = false; await reopenForMembership(d.group); return }
       more = !!d.more && d.items.length > 0
       st.since = d.now
       guessPanel?.signal(d.items)
@@ -8898,7 +9085,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         d.items.forEach((m) => m.mine && inflight.find((j) => !j.done && !j.tray && j.body === (m.body || '') && Number(j.reply?.id||0) === Number(m.reply_to?.id||0) && !(m.media?.length || m.image))?.settle(m))
         add(d.items, 'live', true, d.changed.map((m) => m.id))
         trimLive(stick)
-        if (stick && !st.followPaused) toBottom(false)
+        if (stick && !st.followPaused) toBottom()
         else {
           st.stick = false // 图片晚加载也别把人拽到底
           // 往上翻着看的时候来了新消息：一样出按钮（以前只在离开时才出）
@@ -9053,7 +9240,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       add(d.items, 'bottom')
       topSpin.replaceChildren(st.more ? h('div', { class: 'spinner' }) : h('div', { class: 'cm-begin' }, `这是「${g.name}」你入群后可见的最早消息`))
       drawLatest()
-    } catch (e) { toast(e.message, 'err') } finally { st.busy = false }
+    } catch (e) { toast(e.message, 'err') } finally { finishChatPage() }
   }
   // 跳转窗口里往下翻：接着要后面的
   async function newer() {
@@ -9069,7 +9256,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       trimHistory('newer')
       drawLatest()
       recount()
-    } catch {} finally { st.busy = false }
+    } catch {} finally { finishChatPage() }
   }
   async function backToLatest() {
     if (st.busy || st.destroyed) return
@@ -9077,8 +9264,8 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     st.more = true
     resetList()
     drawLatest()
-    st.busy = false
     st.done = false
+    st.userScrollIntent = false
     st.forceLatest = true
     await older()
   }
@@ -9088,18 +9275,18 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if(st.destroyed)return
     if(st.busy){drawLatest();return}
     await backToLatest()
-    if(st.done&&!st.destroyed)toBottom(false)
+    if(st.done&&!st.destroyed)toBottom()
   }
-  function keepHistoricalReply(message) {
+  function keepHistoricalReply(message, text = '回复已发送') {
     if (st.destroyed) return
     if (!st.after) {
       add([message], 'live', false)
       if (!histEl) { st.newIds.push(message.id); recount() }
       else drawDown()
     } else drawLatest()
-    toast('回复已发送', 'ok')
+    toast(text, 'ok')
   }
-  const latestBtn = h('button', { class: 'cm-pill cm-latest', type: 'button', hidden: true, onclick: () => backToLatest() }, '回到最新消息 ↓')
+  const latestBtn = h('button', { class: 'cm-pill cm-latest', type: 'button', hidden: true, onclick: requestBottom }, '回到最新消息 ↓')
   const drawLatest = () => {
     latestBtn.hidden = !st.after
     const unread = (findGroup(g.id) || g).unread || 0
@@ -9195,8 +9382,14 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     drawDown()
     queuePosition()
   }, { passive: true })
-  // 图片晚加载会把内容往下顶：原本贴着底部就继续贴着
-  scroller.addEventListener('load', () => { if (scroller.clientHeight && st.done && !st.restoring && st.stick && !st.followPaused && nearBottom()) scroller.scrollTop = scroller.scrollHeight }, true)
+  // 图片或离屏行的尺寸变化时，继续贴底。用户上滑阅读时保留其位置。
+  const bottomResize = new doc.defaultView.ResizeObserver(() => {
+    if (!st.destroyed && scroller.isConnected && scroller.clientHeight && st.done && !st.restoring && st.stick && !st.followPaused && !histEl && !st.after && !exactBottom()) {
+      focusChatBottom(scroller)
+    }
+  })
+  bottomResize.observe(list)
+  onRemoval(list, () => bottomResize.disconnect())
   // 输入框
   const reply = h('div', { class: 'cm-reply', hidden: true })
   const setReply = (m, focus = true) => {
@@ -9281,7 +9474,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         const follow = st.stick && !st.followPaused && nearBottom()
         if(keepReplyPosition)keepHistoricalReply(message)
         else if(fromHistory){fromHistory=false;await latestAfterSend()}
-        else {add([message], 'live', false);if (follow && !st.followPaused) toBottom(false);else drawDown()}
+        else {add([message], 'live', false);if (follow && !st.followPaused) toBottom();else drawDown()}
       } catch (e) { toast(`「${f.name}」没发出去：${e.message}`, 'err') }
       void tip
     }
@@ -9294,10 +9487,12 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     const body = only || ta.value.trim()
     if (!body && !att.items.length) return
     if (!requireLogin('聊天')) return
-    const fromHistory = !!histEl || !!st.after || !!(st.reply && !nearBottom())
-    const keepReplyPosition = !!st.reply && fromHistory
+    // only 只来自「+1 复读」：和回复一样是对眼前这条消息的操作
+    const repeat = !!only
+    const fromHistory = !!histEl || !!st.after || !!((st.reply || repeat) && !nearBottom())
+    const keepReplyPosition = (!!st.reply || repeat) && fromHistory
     const followSend = st.stick && !st.followPaused && nearBottom() && !histEl && !st.after
-    // 回复旧消息时保留历史视图，其余发送继续沿用原来的跳转行为。
+    // 回复或复读旧消息时都保留历史视图，不跳到最新；其余发送继续沿用原来的跳转行为。
     if (!keepReplyPosition) closeHist()
     const job = { body, reply: st.reply, tray: !only && att.items.length ? att : null, done: false, tries: 0 }
     const fake = { id: 0, user: { id: S.me.id, username: S.me.username, name: S.me.name, avatar: S.me.avatar, is_admin: S.me.is_admin, fancy: S.me.fancy },
@@ -9325,7 +9520,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (job.tray) swapTray()
     if (!only) { ta.value = ''; grow() }
     setReply(null)
-    if (followSend && !st.followPaused) toBottom(false)
+    if (followSend && !st.followPaused) toBottom()
     else drawDown()
     const go = async () => {
       if (job.done || job.busy) return
@@ -9338,12 +9533,12 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         const { message } = await api(`/chat/groups/${g.id}/messages`, { method: 'POST', body: { body, reply_to: job.reply?.id || 0, media, retry: job.tries++ > 0 || undefined } })
         if (!job.done) job.settle(message)
         const stick = followSend && st.stick && !st.followPaused && nearBottom()
-        if(keepReplyPosition)keepHistoricalReply(message)
+        if(keepReplyPosition)keepHistoricalReply(message,repeat?'已复读':'回复已发送')
         else if(fromHistory)await latestAfterSend()
-        else {add([message], 'live', false);if (stick && !st.followPaused) toBottom(false);else drawDown()}
+        else {add([message], 'live', false);if (stick && !st.followPaused) toBottom();else drawDown()}
       } catch (e) {
         if (job.done) return
-        if (keepReplyPosition && histEl) toast('回复未发送，请回到当前聊天重试', 'err')
+        if (keepReplyPosition && histEl) toast((repeat ? '复读' : '回复') + '未发送，请回到当前聊天重试', 'err')
         state.classList.add('err')
         state.replaceChildren('没发出去：' + e.message + ' ',
           h('button', { class: 'btn-text', type: 'button', onclick: go }, '重试'),
@@ -9405,7 +9600,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       if(st.destroyed)return
       const follow=st.stick&&!st.followPaused&&nearBottom()&&!histEl
       if(histEl||st.after){closeHist();await latestAfterSend()}
-      else {add([message],'live',false);if(follow)toBottom(false);else drawDown()}
+      else {add([message],'live',false);if(follow)toBottom();else drawDown()}
     }})
   }
   const compose = S.me
@@ -9432,7 +9627,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
           const follow = st.stick && !st.followPaused && nearBottom() && !histEl, fromHistory=!!histEl||!!st.after
           closeHist()
           if(fromHistory)void latestAfterSend()
-          else {add([message], 'live', false);if (follow && !st.followPaused) toBottom(false);else drawDown()}
+          else {add([message], 'live', false);if (follow && !st.followPaused) toBottom();else drawDown()}
         } }), { class: 'cm-ibtn cm-redpack-btn' }),
         tb('raffle', '抽卡', (e) => instantCardDialog(e.currentTarget)),
         
@@ -9474,7 +9669,8 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     }
     const input = h('input', { class: 'input', type: 'search', placeholder: '搜索消息内容，@用户名 只看某人', 'aria-label': '搜索聊天记录' })
     const onlyImg = h('input', { type: 'checkbox' })
-    const out = h('div', { class: 'cms-list' }, h('p', { class: 'muted cms-empty' }, '输入关键词搜索这个群的聊天记录'))
+    const searchHint = '只能搜索你本次入群后的消息'
+    const out = h('div', { class: 'cms-list' }, h('p', { class: 'muted cms-empty' }, searchHint))
     const close = () => { searchEl?.remove(); searchEl = null; (win.innerWidth <= 760 ? compose.querySelector('.cm-mobile-more') : ta)?.focus({ preventScroll: true }) }
     let t = 0
     let seq = 0
@@ -9482,7 +9678,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       const raw = input.value.trim()
       const user = (raw.match(/(?:^|\s)@(\S+)/) || [])[1] || ''
       const q = raw.replace(/(?:^|\s)@\S+/, '').trim()
-      if (!q && !user && !onlyImg.checked) { out.replaceChildren(h('p', { class: 'muted cms-empty' }, '输入关键词搜索这个群的聊天记录')); return }
+      if (!q && !user && !onlyImg.checked) { out.replaceChildren(h('p', { class: 'muted cms-empty' }, searchHint)); return }
       const my = ++seq
       if (!before) out.replaceChildren(h('div', { class: 'spinner' }))
       try {
@@ -9512,7 +9708,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     input.focus()
     if (q0) { input.value = q0; run() }
   }
-  function destroy() { drawLifetime.abort(); savePosition(); st.destroyed = true; bubbleMotion.destroy(); histMotion?.destroy(); histMotion = null; aiPanel?.destroy(); guessPanel?.destroy(); huancaiPanel?.destroy(); gamePanel?.destroy(); vipPanel?.destroy(); st.done = false; CHAT.panes.delete(api_); clearTimeout(positionTimer); clearTimeout(awayT); clearTimeout(st.catchupT); st.stopOwnPoll?.(); clearInterval(st.readT); clearInterval(bagTimer); doc.removeEventListener('visibilitychange', onVis); doc.defaultView?.removeEventListener('pagehide', savePosition); win?.removeEventListener('blur', onBlur); win?.removeEventListener('focus', onFocus); doc.defaultView?.removeEventListener('title-raffle-update', refreshTitleRaffles); offNotice(); offUnread() }
+  function destroy() { drawLifetime.abort(); savePosition(); st.destroyed = true; bottomResize.disconnect(); bubbleMotion.destroy(); histMotion?.destroy(); histMotion = null; aiPanel?.destroy(); guessPanel?.destroy(); huancaiPanel?.destroy(); gamePanel?.destroy(); vipPanel?.destroy(); st.done = false; CHAT.panes.delete(api_); clearTimeout(positionTimer); clearTimeout(awayT); clearTimeout(st.catchupT); st.stopOwnPoll?.(); clearInterval(st.readT); clearInterval(bagTimer); doc.removeEventListener('visibilitychange', onVis); doc.defaultView?.removeEventListener('pagehide', savePosition); win?.removeEventListener('blur', onBlur); win?.removeEventListener('focus', onFocus); doc.defaultView?.removeEventListener('title-raffle-update', refreshTitleRaffles); offNotice(); offUnread() }
 
   // 群公告：顶上一条，点 × 收起（记住这一版），右上角留个小「公告」随时再打开；公告改了会重新弹出来
   const noticeEl = h('div', { class: 'cm-notice-wrap' })
@@ -9642,7 +9838,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     const cell = e.target.closest('.cm-img[data-mask], [data-blur-all] .cm-img[data-mi]')
     if (cell && !e.shiftKey) { e.preventDefault(); const media = (m.media?.length ? m.media.filter(it => it.k !== 'f') : m.image ? [{ u: m.image }] : []); const i = Number(cell.dataset.mi); const it = media[i]; if (it) chatMediaMenu(it, e, () => v.pane.gallery(m, i), () => chatMenu(m, v.pane, e), () => chatCopy(m)); return }
     // 右键（长按）头像 = @TA，消息菜单照样出
-    if (e.target.closest('.cm-face') && S.me && !m.mine) { e.preventDefault(); v.pane.atUser(m.user.username) }
+    if (e.target.closest('.cm-face') && S.me && (!m.mine || canAtSelf(g))) { e.preventDefault(); v.pane.atUser(m.mine ? S.me.username : m.user.username) }
     if (e.shiftKey || !S.me) return
     if (m.deleted || msg.classList.contains('pending')) return
     e.preventDefault()
@@ -9889,7 +10085,7 @@ function chatMsg(m, { cont, pane, pending } = {}) {
     m.deleted ? h('span', null, '入群提醒已撤回') : [
       h('span', { class: 'cm-welcome-star', 'aria-hidden': 'true' }, '✦'),
       h('button', { class: 'cm-welcome-face', type: 'button', 'data-pop': 'u' + m.user.username, title: '查看 ' + who,
-        onclick: (e) => userCard(m.user.username, e.currentTarget) }, avatar(m.user.avatar, who, 36)),
+        onclick: (e) => userCard(m.user.username, e.currentTarget) }, framedAvatar(m.user, 36, who)),
       h('span', { class: 'cm-welcome-copy' }, h('span', { class: 'cm-welcome-hello' }, '欢迎新伙伴！'),
         h('span', null, h('button', { type: 'button', class: 'cm-welcome-name', 'data-pop': 'u' + m.user.username,
           onclick: (e) => userCard(m.user.username, e.currentTarget) }, who), ' 加入了群聊')),
@@ -9900,15 +10096,16 @@ function chatMsg(m, { cont, pane, pending } = {}) {
   const card = (e) => userCard(m.user.username, e.currentTarget)
   const at = (e) => { if (!canAt) return card(e); e.preventDefault(); pane.atUser(m.user.username) }
   // 右键 / 长按头像 @TA 在 chatPane 的委托里做（主列表、历史层一样）
-  const protected52=isOwner52Suit(personalOf(m.user,'chat')?.id);const shieldColor=['green','blue','purple','black'][Math.abs(Number(m.id||0))%4];const face = h('button', { class: 'cm-face'+(protected52?' di52-protected-face':''), type: 'button', title: canAt ? `${who} · 右键或长按 @TA` : who, 'data-pop': 'u' + m.user.username, 'data-di52-protected': protected52?'true':null, 'data-di52-shield': protected52?shieldColor:null, onclick: card }, avatar(m.user.avatar, who, 36), protected52&&h('span',{class:'di52-shield','aria-hidden':'true'}))
+  const protected52=isOwner52Suit(personalOf(m.user,'chat')?.id);const shieldColor=['green','blue','purple','black'][Math.abs(Number(m.id||0))%4];const face = h('button', { class: 'cm-face'+(protected52?' di52-protected-face':''), type: 'button', title: canAt ? `${who} · 右键或长按 @TA` : m.mine && pane?.atUser && canAtSelf(pane.group) ? `${who} · 右键或长按 @自己` : who, 'data-pop': 'u' + m.user.username, 'data-di52-protected': protected52?'true':null, 'data-di52-shield': protected52?shieldColor:null, onclick: card }, framedAvatar(m.user, 36, who), protected52&&h('span',{class:'di52-shield','aria-hidden':'true'}))
+  const botMessage = m.system_kind === 'chat_bot'
   const body = []
   let ref = null
   if (m.deleted) body.push(h('div', { class: 'cm-gone' }, `${m.mine ? '你' : who} 撤回了一条消息`))
   else {
     if (m.reply_to) ref = chatReference(m.reply_to, pane)
     // 正文里贴了图片直链：显示成图；整条只有这个链接时就不再画文字气泡
-    const excerpt=!m.redpack && parseNovelExcerpt(m.body||'')
-    const lnk = !excerpt && m.body ? bodyImgUrl(m.body) : null
+    const excerpt=!botMessage && !m.redpack && parseNovelExcerpt(m.body||'')
+    const lnk = !botMessage && !excerpt && m.body ? bodyImgUrl(m.body) : null
     const edited = m.edited_at && h('span', { class: 'cm-edited', title: '编辑于 ' + new Date(m.edited_at * 1000).toLocaleString('zh-CN', { hour12: false }) }, '（已编辑）')
     if (m.road_id) body.push(h('a', { class: 'cm-road', href: `/road?item=${m.road_id}`, 'data-link': '' }, `已转到鞭打 #${m.road_id}`))
     if (m.redpack) body.push(h('button', { type: 'button', class: 'cm-redpack' + (m.redpack.solved ? ' is-open' : ''), 'aria-label': '打开红包',
@@ -9920,11 +10117,12 @@ function chatMsg(m, { cont, pane, pending } = {}) {
       h('span', { class: 'cm-redpack-foot' }, m.redpack.game==='free_guess'?'进入猜词专区':m.redpack.snapshot?.claimed ? '已领取' : ({exhausted:'被抢光啦',expired:'已过期',cancelled:'已取消',registered:'等待开奖',drawing:'正在开奖',not_won:'未中奖',payment_pending:'等待发放',simulation:'模拟奖励',draft:'尚未开放',unconfirmed:'结果待核对'})[m.redpack.snapshot?.state] || (m.redpack.draw?.kind==='lottery'?'参与 / 查看抽奖':m.redpack.provider && m.redpack.provider!=='native' || m.redpack.solved ? '查看红包' : '戳我拆开'), h('span', null, (m.redpack.provider==='coin52'||m.redpack.payment_provider==='coin52')?dcoinIcon(h):m.redpack.game==='free_guess'?'猜词游戏':m.redpack.game==='ldc'||m.redpack.provider && m.redpack.provider!=='native'?'LDC 红包':m.redpack.ldc_count!=null?`${m.redpack.ldc_count} 份奖励 · ${m.redpack.opened} 人拆封`:`${m.redpack.opened} 人拆过`))))
     const displayBody=excerpt?m.body:m.redpack?m.body:socialMessageText(m.body||'')
     if(excerpt)body.push(h('div',{class:'cm-text cm-novel-outer'},novelExcerptCard(excerpt,h),edited))
-    if (!excerpt && (!m.redpack || m.redpack.shared) && displayBody && !lnk?.only) body.push(h('div', stkOnly(displayBody) ? { class:'cm-text stk-only' } : bubbleView(m.user, 'cm-text','chat',false,m.id),
+    if (botMessage) body.push(h('div', { class: 'cm-text cm-bot-text' }, m.body))
+    else if (!excerpt && (!m.redpack || m.redpack.shared) && displayBody && !lnk?.only) body.push(h('div', stkOnly(displayBody) ? { class:'cm-text stk-only' } : bubbleView(m.user, 'cm-text','chat',false,m.id),
       (raffleOf(m.user)||personalOf(m.user,'chat')) ? h('span', { class:'ds-copy rt-copy' }, richBody(displayBody, { md:'lite' }), edited) : [richBody(displayBody, { md: 'lite' }), edited]))
     if (lnk) body.push(linkImg(lnk.url, lnk.only && edited))
     if (m.media_expired) body.push(h('div', { class:'cm-gone', role:'note' }, '附件已超过七天，无法查看'))
-    if (!pending && !excerpt) body.push(...socialCards(m,{h,api,onRemoval,onOpenMedia:openSocialMedia,renderVideo:im=>mediaVideo(im),onPost:(anchor,index)=>m.meme_id?navigate('/m/'+m.meme_id):chatToPost(m,pane,anchor,'social-post-'+m.id,index)}))
+    if (!botMessage && !pending && !excerpt) body.push(...socialCards(m,{h,api,onRemoval,onOpenMedia:openSocialMedia,renderVideo:im=>mediaVideo(im),onPost:(anchor,index)=>m.meme_id?navigate('/m/'+m.meme_id):chatToPost(m,pane,anchor,'social-post-'+m.id,index)}))
     const all = m.redpack && !m.redpack.shared ? [] : m.media?.length ? m.media : m.image ? [{ u: m.image, w: m.width, h: m.height }] : []
     const files = all.filter((x) => x.k === 'f')
     const media = all.filter((x) => x.k !== 'f')
@@ -10055,13 +10253,14 @@ function chatMsg(m, { cont, pane, pending } = {}) {
     if (m.reply_count > 0 && m.id > 0) body.push(h('button', { class: 'cm-replies', type: 'button', 'data-pop': 'rpl' + m.id, 'aria-haspopup': 'true',
       onclick: (e) => chatReplies(e.currentTarget, m, pane) }, icon('reply', 'i tiny'), `${m.reply_count} 条回复`))
   }
-  const atMe = S.me && !m.mine && !m.deleted && m.body && new RegExp('@' + S.me.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w.-])', 'i').test(stripQuotes(m.body))
+  const atMe = S.me && !m.deleted && m.body && new RegExp('@' + S.me.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w.-])', 'i').test(stripQuotes(m.body))
   return h('div', { class: 'cm-msg' + (cont ? ' cont' : '') + (m.mine ? ' mine' : '') + (m.deleted ? ' gone' : '') + (ref ? ' has-ref' : '') + (atMe || ref?.classList.contains('me') ? ' at-me' : ''),
     'data-msg': m.id, id: 'msg-' + m.id },
   h('div', { class: 'cm-side' }, cont ? h('time', null, clock(m.created_at)) : face),
   h('div', { class: 'cm-main' },
     !cont && h('div', { class: 'cm-head' },
       compactIdentity(m.user, 'chat', uName('button', m.user, { class: 'cm-name', type: 'button', title: canAt ? `@${m.user.username}` : who, 'data-pop': 'u' + m.user.username, onclick: at }, who, 'chat')[0]),
+      botMessage && h('span', { class: 'role-tag' }, '机器人'),
       h('time', { title: new Date(m.created_at * 1000).toLocaleString('zh-CN', { hour12: false }) }, clock(m.created_at)),
       m.floor && h('span', { class: 'cm-floor' }, m.floor + '楼')),
     ref && h('div', { class: 'cm-ref-row' }, ref),
@@ -10402,6 +10601,397 @@ async function chatReact(m, emoji, pane) {
 }
 
 // ---------- 站内群聊页 /chat ----------
+// ---------- 群聊侧边图廊分栏（2026-11-24 站长需求） ----------
+// 电脑：群聊右侧一栏，可折叠成细条；手机：右边缘一个小把手，点开或左滑拉出抽屉，不占聊天区。
+// 只在页面可见时每 60 秒问一次 /gallery-feed/new（主键范围计数，开销很小）；列表本身只在打开、切筛选、点「N 条新帖」时拉。
+var GF = { view: 'unread', tag: '', items: [], more: false, counts: null, tags: [], latest: 0, fresh: 0, at: 0, key: '', loading: null, timer: 0, mounted: 0, onChange: new Set() }
+const gfPref = (k, d) => { try { const v = localStorage.getItem('gf:' + k); return v == null ? d : v } catch { return d } }
+const gfSetPref = (k, v) => { try { localStorage.setItem('gf:' + k, v) } catch {} }
+const gfNsfw = () => gfPref('nsfw', '0') === '1'
+const GF_SPANS = [['all', '不限时间'], ['today', '今天'], ['week', '一周内'], ['month', '一月内']]
+const gfQuery = (extra = {}) => new URLSearchParams({ ...(gfNsfw() ? { nsfw: '1' } : {}), ...extra }).toString()
+const gfEmit = () => { GF.onChange.forEach((fn) => fn()); syncTab() }
+async function gfLoad({ more = false } = {}) {
+  const key = GF.view + '|' + GF.tag + '|' + gfNsfw() + '|' + gfPref('randRead', '0') + gfPref('randSpan', 'all') + '|' + (more ? '' : GF.seq = (GF.seq || 0) + (GF.view === 'random' ? 1 : 0))
+  if (GF.loading && GF.key === key && !more) return GF.loading
+  if (more && GF.loading) return GF.loading
+  GF.key = key
+  const offset = more ? GF.items.length : 0
+  const p = api('/gallery-feed?' + gfQuery({ view: GF.view, offset, ...(GF.tag ? { tag: GF.tag } : {}), ...(GF.view === 'random' && gfPref('randRead', '0') === '1' ? { read: '1' } : {}), ...(GF.view === 'random' && gfPref('randSpan', 'all') !== 'all' ? { span: gfPref('randSpan', 'all') } : {}) })).then((d) => {
+    if (GF.key !== key) return
+    const list = d.items.map((m) => syncItem(m))
+    GF.items = more ? [...GF.items, ...list.filter((m) => !GF.items.some((x) => x.id === m.id))] : list
+    GF.more = d.more
+    if (d.counts) { GF.counts = d.counts; GF.latest = Math.max(GF.latest, d.counts.latest || 0); GF.tags = d.tags || []; GF.fresh = 0 }
+    GF.at = Date.now()
+  }).catch((e) => toast(e.message, 'err')).finally(() => { if (GF.loading === p) GF.loading = null; gfEmit() })
+  GF.loading = p
+  gfEmit()
+  return p
+}
+async function gfCheckNew() {
+  if (!S.me || document.hidden || !GF.mounted || !GF.latest) return
+  try {
+    const d = await api('/gallery-feed/new?' + gfQuery({ since: GF.latest }))
+    if (d.count !== GF.fresh) { GF.fresh = d.count; gfEmit() }
+  } catch {}
+}
+function gfOnVisible() { if (!document.hidden && Date.now() - GF.at > 60000) gfCheckNew() }
+function gfStartPolling() {
+  if (GF.timer) return
+  GF.timer = setInterval(gfCheckNew, 60000)
+  document.addEventListener('visibilitychange', gfOnVisible)
+}
+function gfStopPolling() { clearInterval(GF.timer); GF.timer = 0; document.removeEventListener('visibilitychange', gfOnVisible) }
+// 已阅：先改本地（未读视图里直接移走），失败回滚
+async function gfMarkRead(ids, { undo = false } = {}) {
+  ids = ids.filter((id) => id > 0)
+  if (!ids.length) return
+  const before = { items: GF.items, counts: GF.counts && { ...GF.counts } }
+  const changed = GF.items.filter((m) => ids.includes(m.id) && !!m.feed_read === undo).length
+  GF.items = GF.items.map((m) => ids.includes(m.id) ? { ...m, feed_read: !undo } : m)
+  if (GF.view === 'unread' && !undo) GF.items = GF.items.filter((m) => !ids.includes(m.id))
+  if (GF.counts) GF.counts.unread = Math.max(0, GF.counts.unread + (undo ? ids.length : -changed))
+  gfEmit()
+  try { await api('/gallery-feed/read', { method: 'POST', body: { ids, undo } }) }
+  catch (e) { Object.assign(GF, before); gfEmit(); toast(e.message, 'err') }
+}
+async function gfFeature(m, anchor) {
+  m = ITEMS.get(m.id) || m
+  if (m.featured) {
+    if (!confirm('取消这帖的精华？')) return
+    return act(m, (x) => ({ ...x, featured: 0, featured_note: null }), () => api(`/memes/${m.id}/feature`, { method: 'POST', body: { on: false } }))
+  }
+  const input = h('input', { class: 'input sm', maxlength: 60, placeholder: '加精理由（可不填，会告诉作者）' })
+  const form = h('form', { class: 'gf-feature-form' }, h('strong', null, '加为精华'), input,
+    h('div', { class: 'row' }, h('button', { class: 'btn btn-primary sm', type: 'submit' }, '确定加精'), h('button', { class: 'btn btn-ghost sm', type: 'button', onclick: closePop }, '算了')))
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault(); closePop()
+    const item = await act(m, (x) => ({ ...x, featured: Math.floor(Date.now() / 1000), featured_note: input.value.trim() || null }), () => api(`/memes/${m.id}/feature`, { method: 'POST', body: { on: true, note: input.value } }))
+    if (item) toast('已加为精华，作者会收到通知', 'ok')
+  })
+  openPop(anchor, form, { key: 'gff' + m.id, align: 'right' })
+  setTimeout(() => input.focus(), 30)
+}
+function featuredBadge(m) { return m.featured ? h('span', { class: 'badge featured-badge', title: m.featured_note ? '精华 · ' + m.featured_note : '精华帖' }, icon('star', 'i tiny'), '精华') : null }
+// 从侧边栏打开：查看器里翻到头会接着看侧边栏的上一帖 / 下一帖，看过的自动已阅
+function gfOpen(m, start = 0, seqList = null) {
+  // 打开时记下侧边栏当时的顺序：看过的会被标已阅、从未读列表移走，不能再按当前列表找下一帖
+  const arr = seqList || GF.items.filter((x) => x.kind !== 'text' && (x.image || x.images?.length))
+  const step = (d) => {
+    const i = arr.findIndex((x) => x.id === m.id), to = arr[i + d]
+    if (i < 0 || !to) return false
+    gfOpen(ITEMS.get(to.id) || to, d > 0 ? 0 : Math.max(0, (to.images?.length || 1) - 1), arr)
+    return true
+  }
+  if (m.kind === 'text' || !(m.image || m.images?.length)) navigate(memeHref(m))
+  else {
+    GF.holdAuto?.(true)
+    openViewer(ITEMS.get(m.id) || m, start, { seq: { prev: () => step(-1), next: () => step(1) }, onClose: () => setTimeout(() => { if (!S.viewer) GF.holdAuto?.(false) }, 50) })
+  }
+  // 侧边栏的「已阅」只认「已阅」按钮：点开看、滚动经过都不算（和图廊的「看过」不同）
+}
+// 热度：赞（含 linux.do）+ 表情 + 一句回应 + 评论×2
+const gfHeat = (x) => (x.like_count || 0) + (x.ld_likes || 0) + (x.reactions || []).reduce((a, r) => a + (r.count || 0), 0) + (x.reply_count || 0) + (x.comment_count || 0) * 2
+function heartBurst(el) {
+  const b = h('span', { class: 'gf-heart', 'aria-hidden': 'true' }, icon('heart'))
+  el.append(b); setTimeout(() => b.remove(), 700)
+}
+let gfUndo = null
+const gfQueueUndo = (kind, id) => {
+  clearTimeout(gfUndo?.t)
+  gfUndo = { kind, ids: [...(gfUndo?.kind === kind ? gfUndo.ids : []), id], t: setTimeout(() => { gfUndo = null; gfEmit() }, 6000) }
+}
+function gfDismiss(card, m) {
+  card.classList.add('leaving')
+  gfQueueUndo('read', m.id)
+  setTimeout(() => gfMarkRead([m.id]), REDUCED.matches ? 0 : 200)
+}
+// 不喜欢：所有视图里移走，计数跟着改；失败回滚
+async function gfSetHidden(ids, hide) {
+  const before = { items: GF.items, counts: GF.counts && { ...GF.counts } }
+  const gone = GF.items.filter((m) => ids.includes(m.id))
+  GF.items = GF.items.filter((m) => !ids.includes(m.id))
+  if (GF.counts) {
+    GF.counts.hidden = Math.max(0, (GF.counts.hidden || 0) + (hide ? ids.length : -ids.length))
+    if (hide) GF.counts.unread = Math.max(0, GF.counts.unread - gone.filter((m) => !m.feed_read).length)
+  }
+  gfEmit()
+  try { const r = await api('/gallery-feed/hide', { method: 'POST', body: { ids, undo: !hide } }); if (GF.counts) GF.counts.hidden = r.hidden_total; gfEmit() }
+  catch (e) { Object.assign(GF, before); gfEmit(); toast(e.message, 'err') }
+}
+function gfHide(card, m) {
+  card.classList.add('leaving')
+  gfQueueUndo('hide', m.id)
+  setTimeout(() => gfSetHidden([m.id], true), REDUCED.matches ? 0 : 200)
+}
+function gfUnhide(card, m) {
+  card.classList.add('leaving')
+  setTimeout(() => gfSetHidden([m.id], false).then(() => toast('已恢复，这帖会重新出现在侧边栏', 'ok')), REDUCED.matches ? 0 : 200)
+}
+function gfCard(m) {
+  m = syncItem(m)
+  const cur = () => ITEMS.get(m.id) || m
+  const slot = 'gf' + m.id
+  const comments = h('div', { class: 'gf-comments', hidden: true })
+  const toggleComments = () => {
+    if (!comments.firstChild) comments.append(commentsSection(cur(), { compact: true }))
+    comments.hidden = !comments.hidden
+    acts.replaceChildren(bar(cur()))
+    if (!comments.hidden) comments.querySelector('textarea')?.focus({ preventScroll: true })
+  }
+  const bar = (x) => actionBar(x, slot, { onComment: toggleComments, commentsOpen: !comments.hidden, noFeature: true })
+  const acts = h('div', { class: 'gf-acts' }, bar(m))
+  // 作者栏：作者 · 时间 · 精华角标 · 加精按钮（管理员）……右边是「已阅」「不喜欢」（我不喜欢的视图里换成「恢复」）
+  const head = (x) => h('div', { class: 'gf-head' },
+    x.author_hidden ? h('span', { class: 'who-name muted' }, '群友') : [avatar(x.author_avatar, x.author_name, 22), h('span', { class: 'who-name' }, x.author_nick || x.author_name || '佚名')],
+    h('time', { class: 'muted', title: new Date(x.created_at * 1000).toLocaleString('zh-CN', { hour12: false }) }, fmtTime(x.created_at)),
+    featuredBadge(x),
+    x.can_feature && h('button', { class: 'gf-icon-btn gf-star' + (x.featured ? ' on' : ''), type: 'button', 'aria-pressed': String(!!x.featured), title: x.featured ? '取消精华' : '加为精华',
+      'aria-label': x.featured ? '取消精华' : '加为精华', 'data-pop': 'gff' + m.id, onclick: (e) => gfFeature(m, e.currentTarget) }, icon('star')),
+    h('span', { class: 'grow' }),
+    m.feed_hidden
+      ? h('button', { class: 'btn btn-ghost sm gf-read', type: 'button', title: '恢复：重新在侧边栏出现', onclick: () => gfUnhide(card, m) }, icon('eye', 'i tiny'), '恢复')
+      : [!x.feed_read && h('button', { class: 'btn btn-ghost sm gf-read', type: 'button', title: '已阅：不再出现在未读里', onclick: () => gfDismiss(card, m) }, icon('check', 'i tiny'), '已阅'),
+        h('button', { class: 'gf-icon-btn gf-forward', type: 'button', title: '转发到群聊', 'aria-label': '转发到群聊', 'data-pop': 'fwd' + m.id, onclick: (e) => forwardMeme(cur(), e.currentTarget) }, icon('send')),
+        h('button', { class: 'gf-icon-btn gf-dislike', type: 'button', title: '不喜欢：这帖不再出现（可在「我不喜欢的」里恢复）', 'aria-label': '不喜欢，不再出现', onclick: () => gfHide(card, m) }, icon('dislike'))])
+  const headBox = h('div', null, head(m))
+  const imgs = m.images?.length ? m.images : m.image ? [{ u: m.image, t: m.thumb }] : []
+  const cover = imgs[0]
+  // 模糊的图（NSFW 等）：点一下揭开、再点一下盖回；长按或右击弹出「放大查看」。不模糊的图点一下直接看大图。
+  const blurred = wantBlur(m)
+  let pressT = 0, pressed = false, touching = false
+  const mediaMenu = () => openPop(media, h('div', { class: 'gf-menu', role: 'menu' },
+    h('button', { type: 'button', role: 'menuitem', onclick: () => { closePop(); gfOpen(cur()) } }, icon('zoom', 'i tiny'), '放大查看'),
+    blurred && h('button', { type: 'button', role: 'menuitem', onclick: () => { closePop(); media.classList.toggle('blur') } }, icon(media.classList.contains('blur') ? 'eye' : 'eyeOff', 'i tiny'), media.classList.contains('blur') ? '取消模糊' : '恢复模糊'),
+    blurred && !UNBLUR.has(m.id) && h('button', { type: 'button', role: 'menuitem', onclick: () => { closePop(); setUnblur(cur(), true); media.classList.remove('blur') } }, icon('unlock', 'i tiny'), '这帖以后不模糊')),
+  { key: 'gfm' + m.id })
+  const cw = cover?.w > 0 && cover?.h > 0 ? cover.w : m.width, ch = cover?.w > 0 && cover?.h > 0 ? cover.h : m.height
+  const isLong = cw > 0 && ch / cw > 2.2 // 长图：高宽比超过 2.2
+  const media = cover && h('button', { class: 'gf-media' + (blurred ? ' blur' : '') + (isLong ? ' long' : ''), type: 'button',
+    'aria-label': (blurred ? '点一下取消或恢复模糊，长按或右击放大查看' : '看大图（双击喜欢，长按或右击更多）') + (m.title ? '：' + m.title : ''),
+    onclick: () => {
+      if (pressed) { pressed = false; return }
+      clearTimeout(media._t)
+      media._t = setTimeout(() => blurred ? media.classList.toggle('blur') : gfOpen(cur()), 260)
+    },
+    ondblclick: (e) => { e.preventDefault(); clearTimeout(media._t); if (!cur().liked) toggleLike(cur()); heartBurst(e.currentTarget) },
+    oncontextmenu: (e) => { e.preventDefault(); clearTimeout(pressT); if (touching) pressed = true; if (POP?.key !== 'gfm' + m.id) mediaMenu() },
+    onpointerdown: (e) => { pressed = false; touching = e.pointerType !== 'mouse'; if (!touching) return; clearTimeout(pressT); pressT = setTimeout(() => { pressed = true; navigator.vibrate?.(15); if (POP?.key !== 'gfm' + m.id) mediaMenu() }, 500) },
+    onpointerup: () => clearTimeout(pressT), onpointercancel: () => clearTimeout(pressT), onpointerleave: () => clearTimeout(pressT) },
+  memeImg(cover.t || m.thumb || cover.u, { loading: 'lazy', ...(cover.w > 0 && cover.h > 0 ? { width: cover.w, height: cover.h } : m.width > 0 && m.height > 0 ? { width: m.width, height: m.height } : {}) }),
+  isLong && h('span', { class: 'gf-long' }, '长图'),
+  imgs.length > 1 || m.image_count > 1 ? h('span', { class: 'gf-count' }, icon('image', 'i tiny'), m.image_count || imgs.length) : null,
+  isRisky(m) && h('span', { class: 'gf-nsfw' }, 'NSFW'))
+  const text = (m.title || m.text) && h('a', { class: 'gf-text', href: memeHref(m), 'data-link': '' },
+    m.title ? h('strong', null, m.title) : null, m.title && m.text ? ' ' : null, m.text ? h('span', null, m.text.slice(0, 80)) : null)
+  // 互动栏（点赞 / 表情 / 评论 / 标签）默认收在图右边的箭头里，不挤占看图；热度越高箭头越醒目
+  let open = gfPref('acts', '0') === '1'
+  const extra = h('div', { class: 'gf-extra', hidden: !open },
+    m.tags?.length > 0 && h('div', { class: 'gf-tags' }, m.tags.slice(0, 4).map((t) => h('button', { type: 'button', onclick: () => { GF.tag = t; gfLoad() } }, '#' + t))),
+    acts, comments)
+  const more = h('button', { class: 'gf-more-btn', type: 'button', onclick: () => {
+    open = !open
+    extra.hidden = !open
+    drawMore(cur())
+  } })
+  const drawMore = (x) => {
+    const n = gfHeat(x), lv = n >= 10 ? ' hot' : n >= 3 ? ' warm' : ''
+    more.className = 'gf-more-btn' + lv + (open ? ' open' : '') + (x.liked ? ' liked' : '')
+    more.setAttribute('aria-expanded', String(open))
+    more.title = (open ? '收起互动' : '展开互动：点赞、表情、评论') + (n ? `（热度 ${n}）` : '')
+    more.setAttribute('aria-label', more.title)
+    more.replaceChildren(...[lv === ' hot' && h('span', { class: 'gf-flame', 'aria-hidden': 'true' }, '🔥'), icon(open ? 'chevU' : 'chevD'), n > 0 && h('span', { class: 'gf-heat' }, fmtN(n))].filter(Boolean))
+  }
+  drawMore(m)
+  const mediaRow = h('div', { class: 'gf-mediarow' + (media ? '' : ' solo') }, media, more)
+  const card = h('article', { class: 'gf-card' + (m.feed_read ? ' read' : ''), 'data-id': m.id }, headBox, text, mediaRow, extra)
+  onRemoval(card, watchItem(m.id, (x) => { acts.replaceChildren(bar(x)); drawMore(x); headBox.replaceChildren(head({ ...x, author_hidden: m.author_hidden, feed_read: cur().feed_read })) }))
+  return card
+}
+function chatGalleryDock(workspace) {
+  GF.mounted++
+  gfStartPolling()
+  const mobile = matchMedia('(max-width: 760px)')
+  let collapsed = gfPref('collapsed', '0') === '1', drawer = false
+  const size = () => gfPref('size', 'm')
+  const panel = h('aside', { class: 'gf-panel', 'aria-label': '图廊分栏' })
+  const rail = h('button', { class: 'gf-rail', type: 'button', title: '展开图廊分栏', 'aria-label': '展开图廊分栏', onclick: () => setCollapsed(false) })
+  const handle = h('button', { class: 'gf-handle', type: 'button', 'aria-label': '打开图廊', onclick: () => setDrawer(true) })
+  const scrim = h('div', { class: 'gf-scrim', onclick: () => setDrawer(false) })
+  const list = h('div', { class: 'gf-list', tabindex: 0, 'aria-label': '近期帖子' })
+  const tabs = h('div', { class: 'gf-tabs', role: 'tablist' })
+  const tagRow = h('div', { class: 'gf-tagrow' })
+  const freshBtn = h('button', { class: 'gf-fresh', type: 'button', hidden: true, onclick: () => { list.scrollTop = 0; gfLoad() } })
+  const undoBar = h('div', { class: 'gf-undo', hidden: true })
+  const optsBtn = h('button', { class: 'btn-icon ghost sm', type: 'button', title: '显示设置', 'aria-label': '显示设置', 'data-pop': 'gfopts', onclick: (e) => openPop(e.currentTarget, optsPanel(), { key: 'gfopts', align: 'right' }) }, icon('gear'))
+  const closeBtn = h('button', { class: 'btn-icon ghost sm gf-collapse', type: 'button', onclick: () => mobile.matches ? setDrawer(false) : setCollapsed(true) })
+  const hiddenLink = h('button', { class: 'btn-text sm', type: 'button', title: '我标记为不喜欢的帖子，可以恢复', onclick: () => { GF.view = GF.view === 'hidden' ? 'unread' : 'hidden'; list.scrollTop = 0; gfLoad() } })
+  const viewBar = h('div', { class: 'gf-viewbar', hidden: true })
+  // 批量已阅：今天发的 / 7 天前发的 / 近 14 天全部
+  const markAll = async (scope) => {
+    closePop()
+    try { const r = await api('/gallery-feed/read?' + gfQuery(), { method: 'POST', body: { all: true, scope } }); toast(r.marked ? `已阅 ${r.marked} 帖` : '没有要标记的帖子', 'ok'); gfLoad() } catch (e) { toast(e.message, 'err') }
+  }
+  const allRead = h('button', { class: 'btn-text sm', type: 'button', 'data-pop': 'gfall', 'aria-haspopup': 'menu', onclick: (e) => openPop(e.currentTarget, h('div', { class: 'gf-menu', role: 'menu' },
+    h('div', { class: 'pop-head' }, h('strong', null, '批量已阅')),
+    [['today', '今天发的全部已阅'], ['older7', '7 天前的全部已阅'], ['all', '近 14 天全部已阅']].map(([v, t]) => h('button', { type: 'button', role: 'menuitem', onclick: () => markAll(v) }, t))),
+  { key: 'gfall', align: 'right', up: true }) }, '批量已阅', icon('chevU', 'i tiny'))
+  panel.append(
+    h('div', { class: 'gf-top' }, icon('image'), h('strong', null, '图廊'), freshBtn, h('span', { class: 'grow' }), optsBtn, closeBtn),
+    tabs, tagRow, viewBar, undoBar, list,
+    h('div', { class: 'gf-foot' }, h('a', { href: '/', 'data-link': '' }, '去图廊'), hiddenLink, h('span', { class: 'grow' }), allRead))
+  function optsPanel() {
+    const row = (label, kids) => h('div', { class: 'gf-opt' }, h('span', null, label), h('div', { class: 'gf-seg' }, kids))
+    const seg = (key, val, text, now) => h('button', { type: 'button', class: now === val ? 'on' : '', 'aria-pressed': String(now === val), onclick: () => { gfSetPref(key, val); closePop(); apply(key) } }, text)
+    return h('div', { class: 'gf-opts' },
+      row('图片大小', [['s', '小'], ['m', '中'], ['l', '大']].map(([v, t]) => seg('size', v, t, size()))),
+      row('显示方式', [['full', '完整'], ['crop', '裁剪铺满']].map(([v, t]) => seg('fit', v, t, gfPref('fit', 'full')))),
+      row('长图', [['full', '完整缩放'], ['top', '只看顶部']].map(([v, t]) => seg('long', v, t, gfPref('long', 'full')))),
+      row('NSFW', [['0', '不显示'], ['1', '显示']].map(([v, t]) => seg('nsfw', v, t, gfNsfw() ? '1' : '0'))),
+      row('滚动播放', [['1', '开'], ['0', '关']].map(([v, t]) => seg('auto', v, t, gfPref('auto', '1')))),
+      row('互动栏', [['0', '收起'], ['1', '展开']].map(([v, t]) => seg('acts', v, t, gfPref('acts', '0')))),
+      row('随机范围', [['0', '只取未读'], ['1', '包含已阅']].map(([v, t]) => seg('randRead', v, t, gfPref('randRead', '0')))),
+      row('随机时间', GF_SPANS.map(([v, t]) => seg('randSpan', v, t, gfPref('randSpan', 'all')))),
+      row('数字角标', [['1', '显示'], ['0', '不显示']].map(([v, t]) => seg('badge', v, t, gfPref('badge', '1')))))
+  }
+  function apply(key) {
+    panel.dataset.size = size()
+    panel.dataset.fit = gfPref('fit', 'full')
+    panel.dataset.long = gfPref('long', 'full')
+    if (key === 'nsfw') { GF.latest = 0; GF.fresh = 0; gfLoad() }
+    if (key === 'auto') syncAuto()
+    if (key === 'acts') { lastKey = ''; list.replaceChildren(); draw() }
+    if ((key === 'randRead' || key === 'randSpan') && GF.view === 'random') gfLoad()
+    if (key === 'badge') { draw(); syncTab() }
+  }
+  function setCollapsed(v) {
+    collapsed = v; gfSetPref('collapsed', v ? '1' : '0')
+    queueMicrotask(draw)
+    workspace.classList.toggle('gf-open', !v); workspace.classList.toggle('gf-closed', v)
+    closeBtn.replaceChildren(icon(mobile.matches ? 'close' : 'chevR'))
+    closeBtn.title = mobile.matches ? '关闭图廊' : '收起图廊分栏'
+    closeBtn.setAttribute('aria-label', closeBtn.title)
+    syncAuto()
+  }
+  function setDrawer(v) {
+    drawer = v
+    queueMicrotask(draw)
+    workspace.classList.toggle('gf-drawer', v)
+    if (v && (GF.fresh || Date.now() - GF.at > 60000)) gfLoad()
+    if (v) setTimeout(() => list.focus({ preventScroll: true }), 50)
+    syncAuto()
+  }
+  // 滚动播放：复用一句回应条的 autoScroll（悬停 / 触摸 / 聚焦时暂停，到底回到顶部）
+  autoScroll(list)
+  let held = false, holdT = 0
+  const syncAuto = () => list._auto(!held && gfPref('auto', '1') === '1' && !REDUCED.matches && (mobile.matches ? drawer : !collapsed))
+  GF.holdAuto = (on) => { clearTimeout(holdT); if (on) { held = true; syncAuto() } else holdT = setTimeout(() => { held = false; syncAuto() }, 2500) }
+  list.addEventListener('scroll', () => { if (GF.more && !GF.loading && list.scrollTop + list.clientHeight > list.scrollHeight - 400) gfLoad({ more: true }) }, { passive: true })
+  const posKey = () => 'pos:' + GF.view + ':' + GF.tag
+  let restoring = GF.view !== 'random', posT = 0
+  const savePos = () => {
+    if (restoring || GF.view === 'random' || !GF.items.length) return
+    const top = list.scrollTop, card = [...list.querySelectorAll('.gf-card:not(.leaving)')].find((el) => el.offsetTop + el.offsetHeight > top + 4)
+    if (card) gfSetPref(posKey(), card.dataset.id + ':' + Math.round(top - card.offsetTop))
+  }
+  list.addEventListener('scroll', () => { clearTimeout(posT); posT = setTimeout(savePos, 400) }, { passive: true })
+  // 列表画完后尝试定位：找不到上次那张就多加载几页（最多 100 帖），还找不到就从头开始
+  const restorePos = () => {
+    if (!restoring || GF.loading) return
+    const [id, off] = String(gfPref(posKey(), '') || '').split(':').map(Number)
+    if (!id) { restoring = false; return }
+    const card = list.querySelector(`.gf-card[data-id="${id}"]`)
+    if (card) { list.scrollTop = card.offsetTop + (off || 0); restoring = false; return }
+    if (GF.more && GF.items.length < 100) gfLoad({ more: true })
+    else restoring = false
+  }
+  // 手机：从把手左滑拉出，抽屉里右滑收起
+  let sx = null
+  const swipeStart = (e) => { sx = e.touches.length === 1 ? { x: e.touches[0].clientX, y: e.touches[0].clientY } : null }
+  const swipeEnd = (open) => (e) => {
+    if (!sx) return
+    const dx = e.changedTouches[0].clientX - sx.x, dy = e.changedTouches[0].clientY - sx.y
+    sx = null
+    if (Math.abs(dx) > 50 && Math.abs(dx) > Math.abs(dy) * 1.5) { if (open && dx < 0) setDrawer(true); if (!open && dx > 0) setDrawer(false) }
+  }
+  handle.addEventListener('touchstart', swipeStart, { passive: true }); handle.addEventListener('touchend', swipeEnd(true))
+  panel.addEventListener('touchstart', swipeStart, { passive: true }); panel.addEventListener('touchend', swipeEnd(false))
+  const onKey = (e) => { if (e.key === 'Escape' && drawer && !S.viewer && !POP) setDrawer(false) }
+  document.addEventListener('keydown', onKey)
+  const onMq = () => { setCollapsed(collapsed); if (!mobile.matches) setDrawer(false) }
+  mobile.addEventListener('change', onMq)
+  let lastKey = '', drawnView = ''
+  function draw() {
+    const c = GF.counts, n = GF.fresh
+    freshBtn.hidden = !n
+    freshBtn.textContent = (n > 99 ? '99+' : n) + ' 条新帖'
+    const badge = n || (c?.unread ?? 0)
+    // 数字角标可在设置里关掉；有新帖时不管角标开不开，收起的按钮都转炫彩边框、文字变艺术字弹跳
+    const pill = badge && gfPref('badge', '1') === '1' ? h('i', { class: 'chat-badge' + (n ? ' gf-pulse' : '') }, badge > 99 ? '99+' : badge) : null
+    const word = () => h('span', { class: 'gf-rail-label' }, [...'图廊'].map((ch, i) => h('b', { style: { '--i': i } }, ch)))
+    // 「有新内容」= 上次打开侧栏之后又发了帖子（记在本机 gf:seen），或侧栏开着期间轮询到的新帖。
+    // 打开侧栏（电脑展开 / 手机拉出抽屉）看到列表后才清掉；每次进群聊重新加载不会把它归零。
+    const latest = c?.latest || 0, seen = Number(gfPref('seen', '0')) || 0
+    const visible = mobile.matches ? drawer : !collapsed
+    if (visible && latest && !GF.loading && latest > seen) gfSetPref('seen', String(latest))
+    const fresh = !visible && (n > 0 || latest > seen)
+    rail.classList.toggle('gf-new', fresh); handle.classList.toggle('gf-new', fresh)
+    rail.title = fresh ? '图廊有新帖，点开查看' : '展开图廊分栏'
+    handle.setAttribute('aria-label', fresh ? '打开图廊，有新帖' : '打开图廊')
+    rail.replaceChildren(...[icon('image'), word(), pill].filter(Boolean))
+    handle.replaceChildren(...[icon('image'), word(), pill && pill.cloneNode(true)].filter(Boolean))
+    tabs.replaceChildren(...[['unread', '未读', c?.unread], ['all', '全部'], ['featured', '精华', 0, 'star'], ['random', '随机', 0, 'dice']].map(([v, t, k, ic]) => h('button', { type: 'button', role: 'tab', class: GF.view === v ? 'on' : '', 'aria-selected': String(GF.view === v),
+      title: v === 'random' ? '随机一批；再点一次换一批' : null,
+      onclick: () => { if (GF.view === v && v !== 'random') return; savePos(); GF.view = v; list.scrollTop = 0; restoring = v !== 'random'; gfLoad() } }, ic ? icon(ic, 'i tiny') : null, t, k ? h('span', { class: 'n' }, k > 99 ? '99+' : k) : null)))
+    hiddenLink.replaceChildren(icon('dislike', 'i tiny'), '不喜欢的', c?.hidden ? ' ' + c.hidden : '')
+    hiddenLink.classList.toggle('on', GF.view === 'hidden')
+    viewBar.hidden = GF.view !== 'random' && GF.view !== 'hidden'
+    if (GF.view === 'random') viewBar.replaceChildren(h('span', null, icon('dice', 'i tiny'), ' 随机 · ' + (GF_SPANS.find(([v]) => v === gfPref('randSpan', 'all'))?.[1] || '不限时间') + ' · ' + (gfPref('randRead', '0') === '1' ? '含已阅' : '只取未读'), GF.tag ? ' · #' + GF.tag : ''),
+      h('button', { class: 'btn btn-ghost sm', type: 'button', disabled: !!GF.loading, onclick: () => { list.scrollTop = 0; gfLoad() } }, '换一批'))
+    else if (GF.view === 'hidden') viewBar.replaceChildren(h('span', null, icon('dislike', 'i tiny'), ` 我不喜欢的 ${c?.hidden ?? ''} 帖`),
+      h('button', { class: 'btn btn-ghost sm', type: 'button', onclick: () => { GF.view = 'unread'; list.scrollTop = 0; gfLoad() } }, '返回'))
+    const tags = [...new Set([GF.tag, ...GF.tags.map((t) => t.tag)].filter(Boolean))]
+    tagRow.hidden = !tags.length
+    tagRow.replaceChildren(...(tags.length ? [h('button', { type: 'button', class: GF.tag ? '' : 'on', onclick: () => { if (!GF.tag) return; GF.tag = ''; gfLoad() } }, '全部'),
+      ...tags.map((t) => h('button', { type: 'button', class: GF.tag === t ? 'on' : '', onclick: () => { GF.tag = GF.tag === t ? '' : t; list.scrollTop = 0; gfLoad() } }, '#' + t))] : []))
+    undoBar.hidden = !gfUndo
+    if (gfUndo) undoBar.replaceChildren(h('span', null, `${gfUndo.kind === 'hide' ? '不再显示' : '已阅'} ${gfUndo.ids.length} 帖`), h('button', { class: 'btn-text sm', type: 'button',
+      onclick: () => { const { ids, kind } = gfUndo; clearTimeout(gfUndo.t); gfUndo = null; (kind === 'hide' ? gfSetHidden(ids, false) : gfMarkRead(ids, { undo: true })).then(() => gfLoad()) } }, '撤销'))
+    const key = GF.items.map((m) => m.id + (m.feed_read ? 'r' : '')).join(',') + '|' + GF.view + '|' + GF.key + '|' + (GF.loading && !GF.items.length ? 1 : 0)
+    if (key === lastKey) return
+    lastKey = key
+    const sameView = drawnView === GF.view + '|' + GF.tag
+    drawnView = GF.view + '|' + GF.tag
+    const oldTop = list.scrollTop, oldCards = [...list.querySelectorAll('.gf-card')]
+    const anchorIdx = oldCards.findIndex((el) => el.offsetTop + el.offsetHeight > oldTop + 4)
+    const anchors = anchorIdx < 0 ? [] : oldCards.slice(anchorIdx).map((el) => [Number(el.dataset.id), el.offsetTop - oldTop])
+    const keep = new Map(oldCards.map((el) => [Number(el.dataset.id), el]))
+    const cards = GF.items.map((m) => { const el = keep.get(m.id); return el && el.classList.contains('read') === !!m.feed_read && !el.classList.contains('leaving') ? el : gfCard(m) })
+    const empty = !GF.items.length && (GF.loading ? h('div', { class: 'spinner' }) : h('div', { class: 'gf-empty muted' },
+      GF.view === 'unread' ? '近 14 天的帖子都看过了' : GF.view === 'featured' ? '还没有精华帖' : GF.view === 'random' ? '没有可随机的帖子了，可以在设置里把随机范围改成「包含已阅」'
+        : GF.view === 'hidden' ? '还没有标记不喜欢的帖子' : '近 14 天没有新帖'))
+    list.replaceChildren(...cards, ...[empty || (GF.more && h('div', { class: 'gf-more muted' }, '继续往下翻加载更多'))].filter(Boolean))
+    if (restoring) requestAnimationFrame(restorePos)
+    else if (sameView && oldTop > 0) {
+      // 原来顶部那张（被移走就找它下面最近的一张）对齐回原来的位置
+      const hit = anchors.map(([id, off]) => [list.querySelector(`.gf-card[data-id="${id}"]:not(.leaving)`), off]).find(([el]) => el)
+      list.scrollTop = hit ? hit[0].offsetTop - hit[1] : oldTop
+    }
+  }
+  GF.onChange.add(draw)
+  apply()
+  workspace.append(panel, rail, handle, scrim)
+  setCollapsed(collapsed)
+  if (!GF.items.length || Date.now() - GF.at > 120000) gfLoad(); else { gfCheckNew(); draw(); requestAnimationFrame(restorePos) }
+  onPageLeave(() => {
+    GF.onChange.delete(draw); GF.mounted = Math.max(0, GF.mounted - 1); GF.holdAuto = null
+    if (!GF.mounted) gfStopPolling()
+    document.removeEventListener('keydown', onKey); mobile.removeEventListener('change', onMq)
+    workspace.classList.remove('gf-drawer')
+    syncTab()
+  })
+}
 async function renderChat(gid, {dmPath='', mountDm} = {}) {
   document.body.classList.add('chat-mode')
   onPageLeave(() => document.body.classList.remove('chat-mode', 'chat-open'))
@@ -10483,6 +11073,7 @@ async function renderChat(gid, {dmPath='', mountDm} = {}) {
     } })
   page.append(sideResize, body)
   main.replaceChildren(h('div',{class:'chat-workspace'},page))
+  chatGalleryDock(main.firstChild)
   setCollapsed(collapsed)
   sideApply(sideSaved)
   const sideFit = () => sideApply(sideSaved)
@@ -10598,7 +11189,7 @@ function groupRow(g, on, onclick) {
   const sub = g.gone ? (g.gone.internal ? '内部群 · 可申请' : g.gone.kind === 'left' ? '你已退出' : '暂时关闭') + (g.gone.req === 0 ? ' · 已申请' : '')
     : g.latest ? `${g.latest.by || ''}：${g.latest.text}` : g.is_default ? '所有登录的佬友都在这里' : '还没有消息'
   return h('button', { class: 'chat-gr' + (on ? ' on' : '') + (g.gone ? ' gone' : ''), type: 'button', onclick },
-    groupAvatar(g.name, 40),
+    groupAvatarOf(g, 40),
     h('span', { class: 'chat-gr-main' },
       h('span', { class: 'chat-gr-top' },
         h('span', { class: 'chat-gr-label' }, h('strong', null, g.name),
@@ -10621,7 +11212,7 @@ function memberCount(g, fmt, cls = 'muted') {
 function chatHead(g, { back, pane } = {}) {
   return h('header', { class: 'chat-head' },
     back && h('button', { class: 'btn-icon ghost chat-back', 'aria-label': '返回', onclick: back }, icon('chevL')),
-    groupAvatar(g.name, 34),
+    groupAvatarOf(g, 34),
     h('span', { class: 'chat-head-title' },
       h('span', { class: 'chat-head-name' }, h('strong', { title:g.name }, g.name),
         memberCount(g, (x) => Number.isFinite(x.online) ? `${x.online} 人在线` : '', 'chat-inline-online')),
@@ -10722,7 +11313,7 @@ function b33ApplyToggle(g) {
   return h('div', { class: 'gp-sec' }, h('h4', { class: 'gp-h' }, '入群申请通道'), h('label', { class: 'deco-pref-toggle' }, input, h('span', null, '开放申请'), state),
     h('p', { class: 'muted sm' }, '打开：所有人都能在群聊列表看到这个群并申请，申请由你审批。关闭：只有群里的人能看到，只能你拉人进来。退群或被移出的人看不到这个群。'))
 }
-async function groupPanel(g, { outside, section } = {}) {
+async function groupPanel(g, { outside, section, memberSort = 'online' } = {}) {
   const panel = openModalShell('group-panel group-settings-panel')
   S.modal.kind = 'group'
   const viewToken = Symbol('group-settings')
@@ -10730,13 +11321,58 @@ async function groupPanel(g, { outside, section } = {}) {
   const current = () => S.modal?.groupView === viewToken && S.modal?.kind === 'group'
   const close = () => closeModal(false)
   panel.replaceChildren(h('div', { class: 'modal-loading' }, h('div', { class: 'spinner' })))
-  let d
-  const load = async () => { d = await api(`/chat/groups/${g.id}/members`); MEMBERS.delete(g.id) }
-  try { await load() } catch (e) { toast(e.message, 'err'); return close() }
+  const admin = S.me?.chat_admin ?? CHAT.canManage
+  let d, mq = '', memberPage = 0, memberRequest = 0, memberSearchTimer
+  let membersLoading = false, membersError = ''
+  const load = (page) => {
+    const params = admin ? '?' + new URLSearchParams({ view: 'manage', sort: memberSort, q: mq.trim(), page: String(page) }) : ''
+    return api(`/chat/groups/${g.id}/members${params}`)
+  }
+  try { d = await load(0) } catch (e) { if (current()) { toast(e.message, 'err'); close() } return }
   if (!current()) return
-  const admin = CHAT.canManage
+  MEMBERS.delete(g.id)
   const filesSection = groupFiles(g)
-  const changed = async () => { await load(); if (current()) draw(); loadGroups() }
+  const botSection = h('div')
+  let botPanel
+  async function openBots() {
+    if (!admin || botPanel || !current()) return
+    try {
+      const { groupChatBots } = await import('/group-chat-bots.js?v=472f7fbf')
+      if (!current() || botPanel) return
+      botPanel = groupChatBots({ h, api, groupId: g.id, onChange: () => MEMBERS.delete(g.id) })
+      botSection.replaceChildren(botPanel.element)
+      await botPanel.open()
+    } catch (error) {
+      botSection.replaceChildren(h('p', { class: 'gp-note muted' }, error.message),
+        h('button', { class: 'btn btn-ghost sm', type: 'button', onclick: openBots }, '重试'))
+    }
+  }
+  const refreshMembers = async (page = memberPage) => {
+    if (!current()) return
+    clearTimeout(memberSearchTimer)
+    const request = ++memberRequest
+    membersLoading = true
+    membersError = ''
+    drawList()
+    try {
+      let next = await load(page)
+      if (request !== memberRequest || !current()) return
+      if (page > 0 && !next.members.length) {
+        page = 0
+        next = await load(page)
+        if (request !== memberRequest || !current()) return
+      }
+      d = next
+      memberPage = page
+      drawMemberSummary()
+      listBox.scrollTop = 0
+    } catch (e) {
+      if (request === memberRequest && current()) membersError = e.message
+    } finally {
+      if (request === memberRequest && current()) { membersLoading = false; drawList() }
+    }
+  }
+  const changed = async () => { MEMBERS.delete(g.id); await refreshMembers(); loadGroups() }
   const leave = async () => {
     if (!await window.siteConfirm(`退出「${d.group.name}」？${d.group.is_default ? '默认群退了之后，管理员可以再把你拉回来。' : ''}`)) return
     try {
@@ -10775,11 +11411,11 @@ async function groupPanel(g, { outside, section } = {}) {
         await api(`/chat/groups/${g.id}/join-req/${u.id}`, { method: 'POST', body: { ok } })
         toast(ok ? `${u.username} 已加入群聊` : '已拒绝', 'ok')
         outs = {}
-        await load(); await loadOut(); loadGroups()
+        await changed(); await loadOut()
       } catch (e) { toast(e.message, 'err') } finally { button.disabled = false }
     } }, label)
     const row = u => h('div', { class: 'gp-row' + (u.req === 0 ? ' req' : '') },
-        h('button', { class: 'gp-face', type: 'button', 'data-pop': 'u' + u.username, onclick: (e) => userCard(u.username, e.currentTarget) }, avatar(u.avatar, u.name || u.username, 32)),
+        h('button', { class: 'gp-face', type: 'button', 'data-pop': 'u' + u.username, onclick: (e) => userCard(u.username, e.currentTarget) }, framedAvatar(u, 32)),
         h('span', { class: 'gp-who' }, h('strong', null, u.name || u.username),
           h('span', { class: 'muted' }, '@' + u.username, u.kind === 'new' ? ` · ${fmtTime(u.created_at)}注册` : u.gone_at ? ` · ${fmtTime(u.gone_at)}` : ''),
           u.req === 0 && h('span', { class: 'gp-req' }, `${u.kind === 'new' ? '首次申请' : '申请重新加入'} · ${fmtTime(u.req_at)}`)),
@@ -10826,14 +11462,25 @@ async function groupPanel(g, { outside, section } = {}) {
       changed()
     } catch (e) { toast(e.message, 'err') }
   }
-  // 成员分三组：群主（建群的人；默认群没有建群人，算站长）/ 管理（管理员、群管）/ 成员；组内保持接口给的顺序（在线的在前）
+  // 成员按权限分组，组内保持接口给出的顺序。
   const TIERS = ['群主', '管理', '成员']
   const tier = (u) => (u.creator || u.owner ? 0 : u.is_admin || u.role === 'gadmin' ? 1 : 2)
-  // 搜索框和列表只建一次：搜的时候只重画列表，输入框不丢焦点
-  let mq = ''
   const listBox = h('div', { class: 'gp-list gp-members' })
+  const memberPages = h('div', { class: 'gp-member-pages', hidden: true })
   const msearch = h('input', { class: 'input sm gp-msearch', type: 'search', placeholder: '搜昵称 / 用户名', 'aria-label': '搜索群成员',
-    oninput: (e) => { mq = e.target.value; drawList() } })
+    oninput: (e) => {
+      mq = e.target.value
+      if (!admin) { drawList(); return }
+      clearTimeout(memberSearchTimer)
+      memberRequest++
+      membersLoading = true
+      drawList()
+      memberSearchTimer = setTimeout(() => refreshMembers(0), 220)
+    } })
+  const msort = admin && h('select', { class: 'input sm gp-msort', 'aria-label': '群成员排序',
+    onchange: (e) => { memberSort = e.target.value; refreshMembers(0) } },
+    h('option', { value: 'online', selected: memberSort === 'online' }, '在线优先'),
+    h('option', { value: 'inactive', selected: memberSort === 'inactive' }, '最久未发言优先'))
   const memberRow = (u) => {
     const [seen, on] = seenText(u.last_seen, d.now)
     const who = u.name || u.username
@@ -10850,10 +11497,12 @@ async function groupPanel(g, { outside, section } = {}) {
         canKick(u) && item('移出群聊', 'trash', () => kick(u), 'danger')), { key, align: 'right' }) }, icon('more'))
     return h('div', { class: 'gp-row gp-mem', title: u.bio || null },
       h('button', { class: 'gp-face', type: 'button', 'aria-label': `${who} 的资料`, 'data-pop': 'u' + u.username, onclick: (e) => userCard(u.username, e.currentTarget) },
-        avatar(u.avatar, who, 36), h('i', { class: 'gp-dot' + (on ? ' on' : ''), title: seen || '没有记录' })),
+        framedAvatar(u, 36, who), h('i', { class: 'gp-dot' + (on ? ' on' : ''), title: seen || '没有记录' })),
       h('span', { class: 'gp-who' },
         h('span', { class: 'gp-name' }, uName('strong', u, {}, who, 'chat')),
-        h('span', { class: 'muted gp-sub' }, '@' + u.username, ' · TL', u.trust_level, u.joined_at ? ` · ${fmtDay(u.joined_at)}进群` : '')),
+        h('span', { class: 'muted gp-sub' }, '@' + u.username, ' · TL', u.trust_level, u.joined_at ? ` · ${fmtDay(u.joined_at)}进群` : ''),
+        admin && h('span', { class: 'muted gp-speech' }, '最后发言：', u.last_spoke_at == null ? '无发言记录'
+          : h('time', { datetime: new Date(u.last_spoke_at * 1000).toISOString() }, fmtAt(u.last_spoke_at)))),
       h('span', { class: 'gp-tags' }, tier(u) === 0 && h('span', { class: 'role-tag admin' }, '群主'), roleTag(u)),
       h('span', { class: 'gp-seen' + (on ? ' on' : '') }, seen || '—'),
       acts.length > 0 && h('span', { class: 'gp-acts' }, acts),
@@ -10861,7 +11510,18 @@ async function groupPanel(g, { outside, section } = {}) {
   }
   const drawList = () => {
     const k = mq.trim().toLowerCase()
-    const hit = k ? d.members.filter((u) => [u.name, u.username, u.bio].some((s) => s && String(s).toLowerCase().includes(k))) : d.members
+    listBox.setAttribute('aria-busy', String(membersLoading))
+    memberPages.hidden = membersLoading || !(membersError || memberPage || d.more)
+    if (membersLoading || membersError) {
+      listBox.replaceChildren(h('p', { class: 'muted gp-empty', role: 'status' }, membersLoading ? '正在读取成员…' : membersError))
+      memberPages.replaceChildren(...nodes(membersError && h('button', { class: 'btn btn-ghost sm', type: 'button', onclick: () => refreshMembers(0) }, '重试')))
+      return
+    }
+    memberPages.replaceChildren(
+      h('button', { class: 'btn btn-ghost sm', type: 'button', disabled: !memberPage, onclick: () => refreshMembers(memberPage - 1) }, '上一页'),
+      h('span', { class: 'muted sm' }, `第 ${memberPage + 1} 页`),
+      h('button', { class: 'btn btn-ghost sm', type: 'button', disabled: !d.more, onclick: () => refreshMembers(memberPage + 1) }, '下一页'))
+    const hit = !admin && k ? d.members.filter((u) => [u.name, u.username, u.bio].some((s) => s && String(s).toLowerCase().includes(k))) : d.members
     const out = []
     TIERS.forEach((label, t) => {
       const us = hit.filter((u) => tier(u) === t)
@@ -10871,13 +11531,16 @@ async function groupPanel(g, { outside, section } = {}) {
   }
   let ready=false
   const title=h('h2'),count=h('span',{class:'muted'}),partial=h('p',{class:'gp-note muted'}),outsideBox=h('div')
-  const draw = () => {
-    const online=d.members.filter(u=>seenText(u.last_seen,d.now)[1]).length
-    drawList()
+  const drawMemberSummary = () => {
+    const online=d.online ?? d.members.filter(u=>seenText(u.last_seen,d.now)[1]).length
     title.replaceChildren(d.group.name,h('span',{class:'muted'},` · ${d.total} 人 · ${online} 人在线`))
     count.textContent=` ${d.total} 人 · ${online} 在线`
-    partial.hidden=d.total<=d.members.length
+    partial.hidden=admin||d.total<=d.members.length
     partial.textContent=`只显示前 ${d.members.length} 位（在线的排前面）`
+  }
+  const draw = () => {
+    drawMemberSummary()
+    drawList()
     outsideBox.replaceChildren(...nodes(outSec()))
     if(ready)return
     ready=true
@@ -10888,6 +11551,7 @@ async function groupPanel(g, { outside, section } = {}) {
       try{await api(`/chat/groups/${g.id}`,{method:'PATCH',body:{name:name.value}});d.group.name=name.value.trim();toast('已改名','ok');if(current())draw();loadGroups()}
       catch(err){toast(err.message,'err')}finally{button.disabled=false}
     }},'保存群名')))
+    const avatarSec=admin&&groupAvatarField(g,()=>{if(current())draw()})
     const add=admin&&field('拉人进群',h('div',{class:'gp-inline'},picker.el,h('button',{class:'btn btn-primary sm',type:'button',onclick:async e=>{
       const names=picker.value();if(!names.length)return toast('先搜索并选几个人')
       const button=e.currentTarget;button.disabled=true
@@ -10907,9 +11571,10 @@ async function groupPanel(g, { outside, section } = {}) {
         if(!await window.siteConfirm(`解散「${d.group.name}」？聊天记录和图片会一起删除，不能恢复。`))return
         try{await api(`/chat/groups/${g.id}`,{method:'DELETE'});toast('群已解散');close();await loadGroups();afterGroupGone(g.id)}catch(e){toast(e.message,'err')}
       }},'解散这个群'))
-    const categories=settingsSections({h,label:'群设置分类',sections:[
-      {id:'members',label:'群成员',keywords:'人员 搜索 昵称 用户名 拉人 限制 移出',nodes:[add,h('div',{class:'gp-mhead'},h('h4',{class:'gp-h'},'成员',count),msearch),listBox,partial]},
-      {id:'info',label:'群资料',keywords:'群名 改名 公告 群规 引用 申请 开放 通道',nodes:[...(findGroup(g.id)?.owner_ctl?[b33ApplyToggle(g)]:[]),rename,noticeSec()]},
+    const categories=settingsSections({h,label:'群设置分类',onSelect:id=>{if(id==='bots')openBots()},sections:[
+      {id:'members',label:'群成员',keywords:'人员 搜索 昵称 用户名 拉人 限制 移出 发言 活跃',nodes:[add,h('div',{class:'gp-mhead'},h('h4',{class:'gp-h'},'成员',count),msort,msearch),listBox,admin&&memberPages,partial]},
+      {id:'info',label:'群资料',keywords:'群名 改名 群头像 头像 公告 群规 引用 申请 开放 通道',nodes:[...(findGroup(g.id)?.owner_ctl?[b33ApplyToggle(g)]:[]),rename,avatarSec,noticeSec()]},
+      {id:'bots',label:'群机器人',keywords:'机器人 推送 回调 指令',available:()=>admin,nodes:[botSection]},
       {id:'requests',label:'移出与申请',keywords:'审批 同意 拒绝 退出 移出 拉回 申请',available:()=>admin,nodes:[outsideBox]},
       {id:'resources',label:'水群榜',keywords:'水群 早起 夜聊 排名 榜单',nodes:[h('button',{class:'btn sm',type:'button',onclick:()=>chatRankPanel(g)},'水群榜 · 消息 / 早起 / 夜聊')]},
       {id:'preferences',label:'我的偏好',keywords:'免打扰 红包 提醒 离开 滚动 气泡 动画 装扮 隐藏 媒体 图片 视频 缩小',nodes:[
@@ -11351,7 +12016,7 @@ function dockDraw(open) {
     : h('strong', { class: 'cd-title' }, g.name)
   if (pick.tagName === 'SELECT') pick.value = String(g.id)
   DOCK.el.replaceChildren(h('div', { class: 'cd-panel' },
-    h('header', { class: 'cd-head' }, groupAvatar(g.name, 24), pick, memberCount(g, (x) => `${x.members} 人`, 'muted cd-n'), h('span', { class: 'grow' }),
+    h('header', { class: 'cd-head' }, groupAvatarOf(g, 24), pick, memberCount(g, (x) => `${x.members} 人`, 'muted cd-n'), h('span', { class: 'grow' }),
       ib('search', '搜索聊天记录', () => pane.search()),
       canPip() && ib('pin', '置顶浮窗：切到别的网页 / 软件也一直看得到', () => chatPopout(g, { pip: true })),
       ib('popout', '弹出小窗', () => chatPopout(g)),
@@ -11396,7 +12061,7 @@ function imOpenGroup(c) {
   IM.chat.replaceChildren(
     h('header', { class: 'im-chat-head' },
       h('button', { class: 'im-ibtn im-back', 'aria-label': '返回', onclick: () => IM.root.classList.remove('chat-open') }, icon('chevL')),
-      groupAvatar(g.name, 32),
+      groupAvatarOf(g, 32),
       h('span', { class: 'im-chat-title' }, h('strong', null, g.name), memberCount(g, (x) => `${x.members} 位成员`, 'im-chat-n')),
       h('span', { class: 'grow' }),
       h('button', { class: 'im-ibtn', title: '搜索聊天记录', onclick: () => pane.search() }, icon('search')),
@@ -12170,6 +12835,15 @@ async function renderNovelRoute(){
     await mountNovels(main,{user:S.me,api,onLeave:onPageLeave,navigate,openChat:openNovelChat})
   }catch(e){if(!left)main.replaceChildren(emptyState('书房暂时无法打开',e.message,h('button',{class:'btn',onclick:renderNovelRoute},'重试')))}
 }
+async function renderAutumnRoute(){
+  if(!S.me||document.documentElement.hasAttribute('data-newbie')){main.replaceChildren(emptyState('这里什么都没有','页面不存在',goHomeBtn('回首页')));return}
+  let left=false;onPageLeave(()=>{left=true});main.replaceChildren(loadingBox())
+  try{
+    if(!document.getElementById('autumn-styles'))document.head.append(h('link',{id:'autumn-styles',rel:'stylesheet',href:'/autumn.css?v=472f7fbf'}))
+    const {mountAutumn}=await import('/autumn.js?v=472f7fbf');if(left)return
+    await mountAutumn(main,{user:S.me,api,h,icon,onLeave:onPageLeave,navigate,toast,richText,avatar,fmtTime,confirm:window.siteConfirm})
+  }catch(e){if(!left)main.replaceChildren(emptyState('死如秋叶暂时打不开',e.message,h('button',{class:'btn',onclick:renderAutumnRoute},'重试')))}
+}
 function renderNsfw(){
   main.replaceChildren(emptyState('RZP 暂停开放','已有内容已保留。',h('button',{class:'btn',onclick:()=>navigate('/')},'返回图廊')))
 }
@@ -12184,6 +12858,18 @@ async function renderPetsRoute(){
     const {mountPets}=await import('/pets.js?v=472f7fbf');if(left)return
     await mountPets(main,{user:S.me,api,h,onLeave:onPageLeave,navigate,toast})
   }catch(e){if(!left)main.replaceChildren(emptyState('鱼鱼谷暂时打不开',e.message,h('button',{class:'btn',onclick:renderPetsRoute},'重试')))}
+}
+async function renderBottles(){
+  const isPop=!!S.popNav
+  let left=false;onPageLeave(()=>{left=true})
+  if(!S.me)return main.replaceChildren(emptyState('漂流瓶','登录后可以捞瓶子、扔瓶子。',h('a',{class:'btn btn-primary sm',href:loginHref()},'登录')))
+  if(document.documentElement.hasAttribute('data-newbie'))return main.replaceChildren(emptyState('漂流瓶','注册满 30 天后开放。',goHomeBtn()))
+  main.replaceChildren(loadingBox())
+  try{
+    if(!document.getElementById('bottle-styles'))document.head.append(h('link',{id:'bottle-styles',rel:'stylesheet',href:'/bottles.css?v=472f7fbf'}))
+    const {mountBottles}=await import('/bottles.js?v=472f7fbf');if(left)return
+    await mountBottles(main,{user:S.me,api,h,icon,avatar,toast,navigate,askChoice,onLeave:onPageLeave,isPop})
+  }catch(e){if(!left)main.replaceChildren(emptyState(e.status===404?'这个瓶子已经漂远了':'漂流瓶暂时打不开',e.status===404?'':e.message,h('a',{class:'btn btn-ghost sm',href:'/bottles','data-link':''},'回到漂流瓶')))}
 }
 async function renderManorRoute(){let left=false;onPageLeave(()=>{left=true});main.replaceChildren(loadingBox());try{const {showManorFarewell}=await import('/manor-farewell.js?v=472f7fbf');if(left)return;await showManorFarewell(main,{h,api,user:S.me,navigate})}catch(e){if(!left)main.replaceChildren(emptyState('肥鱼庄园已下线',e.message,h('button',{class:'btn',onclick:renderManorRoute},'重试')))}}
 function renderMusicRoute(){main.replaceChildren(emptyState('音乐模块已下线','感谢使用。',h('button',{class:'btn',onclick:()=>navigate('/')},'返回图廊')))}
@@ -12203,6 +12889,8 @@ const ROUTES = [
   [/^\/(puzzles|tools)$/, () => navigate('/', { replace: true })],
   [/^\/me$/, () => renderMe()],
   [/^\/road$/, () => renderRoad()],
+  [/^\/bottles(?:\/(?:new|mine|admin|b\/\d+))?$/, () => renderBottles()],
+  [/^\/autumn(?:\/.*)?$/, () => renderAutumnRoute()],
   [/^\/farm$/, () => renderFarmRoute()],
   [/^\/dm(?:\/(?:\d+|new\/-?\d+))?$/, () => renderDmRoute()],
   [/^\/chat(?:\/(\d+))?$/, (m) => renderChat(Number(m[1]) || 0)],
@@ -12222,12 +12910,12 @@ function route() {
   if(/^\/(?:slime|arcade(?:\/(?:mole|rift))?)$/.test(location.pathname)){location.replace(location.pathname);return}
   document.dispatchEvent(new Event('bubbleeffectreset'))
   dockSync()
-  if (((location.pathname.startsWith('/dm') && S.skin !== 'feishu') || (location.pathname==='/farm'||location.pathname==='/huancai')) && S.skin) {
+  if (((location.pathname.startsWith('/dm') && S.skin !== 'feishu') || (location.pathname==='/farm'||location.pathname==='/huancai'||location.pathname.startsWith('/bottles'))) && S.skin) {
     sessionStorage.setItem('dmReturnSkin',S.skin)
     setSkin('')
     return
   }
-  if (!location.pathname.startsWith('/dm') && location.pathname!=='/farm' && location.pathname!=='/huancai' && !S.skin) {
+  if (!location.pathname.startsWith('/dm') && location.pathname!=='/farm' && location.pathname!=='/huancai' && !location.pathname.startsWith('/bottles') && !S.skin) {
     const previousSkin=sessionStorage.getItem('dmReturnSkin')
     if (previousSkin) { sessionStorage.removeItem('dmReturnSkin'); setSkin(previousSkin); return }
   }
@@ -12303,6 +12991,8 @@ function pageTitle(path, search) {
   if (path.startsWith('/dm')) return '私信'
   if (path.startsWith('/me')) return '我的'
   if (path.startsWith('/road')) return '鞭打模块'
+  if (path.startsWith('/bottles')) return '漂流瓶'
+  if (path.startsWith('/autumn')) return '死如秋叶'
   if (path.startsWith('/farm')) return '欢欢农场'
   if (path.startsWith('/u/')) return '@' + dec(path.slice(3))
   if (path.startsWith('/t/')) return '#' + dec(path.slice(3))
@@ -12639,6 +13329,10 @@ async function memberAdmin(q0 = '') {
   const close = () => closeModal(false)
   const q = h('input', { class: 'input', type: 'search', placeholder: '搜用户名 / 名字，留空看最近活跃', value: q0, 'aria-label': '搜索成员' })
   const only = h('input', { type: 'checkbox' })
+  const groupSelect = h('select', { class: 'input sm ma-group-select', hidden: true, 'aria-label': '查看群成员活跃度', onchange: (e) => {
+    const group = findGroup(Number(e.target.value))
+    if (group) groupPanel(group, { section: 'members', memberSort: 'inactive' })
+  } }, h('option', { value: '', disabled: true, selected: true }, '群成员活跃度'))
   const list = h('div', { class: 'ma-list' }, h('div', { class: 'spinner' }))
   let seq = 0
   const load = async () => {
@@ -12681,7 +13375,7 @@ async function memberAdmin(q0 = '') {
       box.replaceChildren(...nodes(
         h('div', { class: 'ma-top' },
           h('button', { class: 'gp-face', type: 'button', 'aria-label': `${u.name || u.username} 的资料`, 'data-pop': 'u' + u.username, onclick: (e) => userCard(u.username, e.currentTarget) },
-            avatar(u.avatar, u.name || u.username, 36), h('i', { class: 'gp-dot' + (on ? ' on' : '') })),
+            framedAvatar(u, 36), h('i', { class: 'gp-dot' + (on ? ' on' : '') })),
           h('span', { class: 'gp-who' },
             h('strong', { class: nameCls(u) }, u.name || u.username),
             h('span', { class: 'muted' }, `@${u.username} · TL${u.trust_level} · ${u.posts} 帖 · ${u.comments} 评论`),
@@ -12754,10 +13448,15 @@ async function memberAdmin(q0 = '') {
   panel.replaceChildren(
     h('header', { class: 'compose-head' }, h('h2', null, '成员管理'), h('button', { class: 'btn-icon', 'aria-label': '关闭', onclick: close }, icon('close'))),
     h('div', { class: 'ma-body' },
-      h('div', { class: 'ma-search' }, q, h('label', { class: 'cms-img' }, only, '只看被限制的')),
+      h('div', { class: 'ma-search' }, q, h('label', { class: 'cms-img' }, only, '只看被限制的'), groupSelect),
       h('p', { class: 'muted ma-note' }, '禁言只管群聊发消息；禁回应包括表情、喜欢和一句回应。到期自动解除，管理员不受限制。站长可以给人设「管理员」（全站管理）或「群管」（只管群聊）。'),
       list))
   load()
+  loadGroups({ background: true }).then((groups) => {
+    if (!groupSelect.isConnected || S.modal?.kind !== 'members' || !groups.length) return
+    groupSelect.append(...groups.map((group) => h('option', { value: group.id }, group.name)))
+    groupSelect.hidden = false
+  })
   focusEditorOnOpen(q, panel)
 }
 
@@ -13304,11 +14003,14 @@ async function bootApplication() {
     const me = await api('/me',{signal:AbortSignal.timeout(12000)})
     if(me.main_activation_required){location.replace('/activate');return}
     S.me = me.user
+    // 注册不满 30 天：只显示图廊、群聊、鱼鱼谷（服务端同样限制）
+    document.documentElement.toggleAttribute('data-newbie', !!me.newbie)
     if (S.me) {
       restorePendingSeen()
       if (SEEN.queue.size) flushSeen().catch(() => {})
     }
     S.officialTitles = me.official_titles || []
+    if (S.me?.miss_gifts && !me.newbie) setTimeout(() => toast(`你不在的时候，收到了 ${S.me.miss_gifts} 份想念，在「我的 · 账号与服务」里看`, 'ok'), 1500)
     S.guessRewards = me.guess_rewards || []
     S.luckRewards = me.luck_rewards || []
     S.rankRewards = me.rank_rewards || []
