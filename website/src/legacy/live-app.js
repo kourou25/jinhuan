@@ -77,6 +77,7 @@ import { huancai } from '../routes/huancai'
 import { isleLegacyLimit, isleRoutes } from '../routes/isle'
 import { instantCards } from '../routes/instant-cards'
 import { chatBots } from '../routes/chat-bots'
+import { chatGroupPin } from '../routes/chat-group-pin'
 import { circleTagMiddleware, seesCircle } from '../services/circle-tag'
 import { bottles } from '../routes/bottles'
 import { settleRewards as settleBottleRewards } from '../services/bottle-money'
@@ -12328,7 +12329,7 @@ app.get("/api/chat/groups", async (c) => {
      ORDER BY g.is_default DESC, b.created_at DESC`).bind(u.id).all();
 	const pend = isChatAdmin(u) ? await c.env.DB.prepare(`SELECT group_id AS gid, COUNT(*) AS n FROM chat_join_reqs r WHERE status = 0 ${isOwner(c, u) ? "" : "AND COALESCE((SELECT trust_level FROM users WHERE id = r.user_id),0) < 4 AND r.group_id NOT IN (SELECT group_id FROM chat_group_policy)"} GROUP BY group_id`).all() : null;
 	const pm = new Map((pend?.results ?? []).map((x) => [x.gid, x.n]));
-	const { results } = await c.env.DB.prepare(`SELECT g.id, g.name, g.avatar, g.is_default, g.created_at, cm.last_read, cm.muted, g.notice, g.notice_at, (SELECT open_apply FROM chat_group_policy p WHERE p.group_id=g.id) AS internal_open,
+	const { results } = await c.env.DB.prepare(`SELECT g.id, g.name, g.avatar, g.is_default, g.created_at, cm.last_read, cm.muted, cm.pinned, g.notice, g.notice_at, (SELECT open_apply FROM chat_group_policy p WHERE p.group_id=g.id) AS internal_open,
        g.member_count-(SELECT COUNT(*) FROM chat_members bm JOIN users bu ON bu.id=bm.user_id WHERE bm.group_id=g.id AND bu.kind='bot') AS members,
        (SELECT COUNT(*) FROM chat_members om JOIN users ou ON ou.id = om.user_id WHERE om.group_id = g.id AND ou.kind='user' AND ou.last_seen > ?3) AS online,
        (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m WHERE m.group_id = g.id AND m.id > MAX(cm.last_read,${CHAT_HISTORY_FLOOR}-1) AND m.created_at>=cm.joined_at AND m.deleted = 0 AND m.user_id != ?1 LIMIT 100)) AS unread,
@@ -12339,7 +12340,7 @@ app.get("/api/chat/groups", async (c) => {
      FROM chat_members cm JOIN chat_groups g ON g.id = cm.group_id
      LEFT JOIN chat_messages l ON l.id = (SELECT MAX(id) FROM chat_messages WHERE group_id = g.id) AND l.created_at>=cm.joined_at AND l.id>=${CHAT_HISTORY_FLOOR}
      LEFT JOIN users lu ON lu.id = l.user_id
-     WHERE cm.user_id = ?1 ORDER BY g.is_default DESC, COALESCE(l.created_at, g.created_at) DESC`).bind(u.id, `%@${likeEsc(u.username)}%`, now() - 300).all();
+     WHERE cm.user_id = ?1 ORDER BY cm.pinned DESC, g.is_default DESC, COALESCE(l.created_at, g.created_at) DESC`).bind(u.id, `%@${likeEsc(u.username)}%`, now() - 300).all();
 	const dmUnread = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM (
     SELECT m.id FROM dm_threads t JOIN dm_messages m INDEXED BY idx_dm_messages_thread
       ON m.thread_id=t.id AND m.id>t.read_low
@@ -12377,6 +12378,7 @@ app.get("/api/chat/groups", async (c) => {
 			unread: g.unread,
 			at_me: g.at_me,
 			muted: !!g.muted,
+			pinned: !!g.pinned,
 			last_read: g.last_read,
 			notice: g.notice || null,
 			notice_at: g.notice_at || null,
@@ -14268,6 +14270,7 @@ app.route("/", aiAdmin);
 app.route("/", aiChat);
 app.route("/", nativeLdc);
 app.route("/", chatBots);
+app.route("/", chatGroupPin);
 app.route("/", fishFunding);
 app.route("/", dm);
 var chatRetentionRoutes = (() => {

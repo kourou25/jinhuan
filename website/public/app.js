@@ -7378,6 +7378,7 @@ const onChat = (fn) => { CHAT.subs.add(fn); return () => CHAT.subs.delete(fn) }
 const groupUnread = () => CHAT.groups.reduce((a, g) => a + (g.muted ? (g.at_me || 0) : (g.unread || 0)), 0)
 const chatUnread = () => groupUnread() + CHAT.dmUnread
 const findGroup = (id) => CHAT.groups.find((g) => g.id === id)
+const pinnedGroup = () => CHAT.groups.find((g) => g.pinned)
 const findGone = (id) => (CHAT.gone || []).find((g) => g.id === id)
 // 只保存消息编号与视口偏移，不缓存聊天正文；同一浏览器按账号、群隔离。
 const CHAT_POS = {
@@ -11161,7 +11162,7 @@ async function renderChat(gid, {dmPath='', mountDm} = {}) {
   // 只有一个群：不要群列表这一层，直接进
   const solo = CHAT.groups.length + (CHAT.gone?.length || 0) === 1 && !CHAT.canManage
   // 单群仍保留会话分类，私信入口不能被 solo 布局隐藏。
-  const g = findGroup(gid) || (!gid && innerWidth > 760 ? CHAT.groups[0] : null)
+  const g = findGroup(gid) || (!gid && !new URLSearchParams(location.search).has('list') ? pinnedGroup() || (innerWidth > 760 ? CHAT.groups[0] : null) : null)
   drawSide()
   const gx = !g && (findGone(gid) || (!gid && !CHAT.groups.length && CHAT.gone?.[0]))
   if (gx) {
@@ -11177,7 +11178,7 @@ async function renderChat(gid, {dmPath='', mountDm} = {}) {
   document.body.classList.add('chat-open')
   const pane = chatPane(g)
   onPageLeave(pane.destroy)
-  body.replaceChildren(chatHead(g, { back: () => navigate('/chat'), pane }), pane.el)
+  body.replaceChildren(chatHead(g, { back: () => navigate('/chat?list=1'), pane }), pane.el)
   // 猜词分屏打开时保留双栏所需宽度；关闭后恢复用户保存的群列表宽度。
   const sideGuessObserver = new MutationObserver(sideFit)
   sideGuessObserver.observe(pane.el, { attributes: true, attributeFilter: ['class'] })
@@ -11193,6 +11194,7 @@ function groupRow(g, on, onclick) {
     h('span', { class: 'chat-gr-main' },
       h('span', { class: 'chat-gr-top' },
         h('span', { class: 'chat-gr-label' }, h('strong', null, g.name),
+          g.pinned && h('span', { title: '已置顶', 'aria-label': '已置顶' }, icon('pin', 'i tiny muted')),
           !g.gone && Number.isFinite(g.online) && h('span', { class: 'chat-inline-online' }, `${g.online} 人在线`)),
         h('time', null, convTime(g.latest?.at))),
       h('span', { class: 'chat-gr-sub' }, h('span', null, sub),
@@ -11565,6 +11567,16 @@ async function groupPanel(g, { outside, section, memberSort = 'online' } = {}) {
       catch(err){input.checked=!muted;toast(err.message,'err')}
       finally{input.disabled=false;mutedState.textContent=input.checked?'已开启':'已关闭'}
     }})
+    const pinnedState=h('span',{class:'deco-pref-state'},findGroup(g.id)?.pinned?'已置顶':'未置顶')
+    const pinnedInput=h('input',{type:'checkbox','aria-label':'置顶此群',checked:!!findGroup(g.id)?.pinned,onchange:async e=>{
+      const input=e.currentTarget,pinned=input.checked;input.disabled=true;pinnedState.textContent='保存中…'
+      try{
+        await api(`/chat/groups/${g.id}/pin`,{method:'PUT',body:{pinned}})
+        await loadGroups()
+        toast(pinned?'已置顶，打开群聊时默认进入此群':'已取消置顶','ok')
+      }catch(err){input.checked=!pinned;toast(err.message,'err')}
+      finally{input.disabled=false;pinnedState.textContent=input.checked?'已置顶':'未置顶'}
+    }})
     const danger=h('div',{class:'gp-danger'},h('p',{class:'muted sm'},'退出只影响自己；解散会删除整个群，仅站点管理员可操作非默认群。'),
       h('button',{class:'btn-text danger',type:'button',onclick:leave},'退出群聊'),
       S.me.is_admin&&!d.group.is_default&&h('button',{class:'btn-text danger',type:'button',onclick:async()=>{
@@ -11577,7 +11589,9 @@ async function groupPanel(g, { outside, section, memberSort = 'online' } = {}) {
       {id:'bots',label:'群机器人',keywords:'机器人 推送 回调 指令',available:()=>admin,nodes:[botSection]},
       {id:'requests',label:'移出与申请',keywords:'审批 同意 拒绝 退出 移出 拉回 申请',available:()=>admin,nodes:[outsideBox]},
       {id:'resources',label:'水群榜',keywords:'水群 早起 夜聊 排名 榜单',nodes:[h('button',{class:'btn sm',type:'button',onclick:()=>chatRankPanel(g)},'水群榜 · 消息 / 早起 / 夜聊')]},
-      {id:'preferences',label:'我的偏好',keywords:'免打扰 红包 提醒 离开 滚动 气泡 动画 装扮 隐藏 媒体 图片 视频 缩小',nodes:[
+      {id:'preferences',label:'我的偏好',keywords:'置顶 默认 进入 免打扰 红包 提醒 离开 滚动 气泡 动画 装扮 隐藏 媒体 图片 视频 缩小',nodes:[
+        h('label',{class:'deco-pref-toggle'},pinnedInput,h('span',null,'置顶此群'),pinnedState),
+        h('p',{class:'muted sm'},'每个账号可置顶一个群，跨设备同步。置顶群排在最前，打开群聊时默认进入。'),
         h('label',{class:'deco-pref-toggle'},mutedInput,h('span',null,'消息免打扰'),mutedState),
         h('p',{class:'muted sm'},'只影响当前账号在本群的提醒，跨设备同步；开启后只有 @ 我的消息计数和提醒。'),packetBagReminderSettings(g.id),
         h('h4',null,'本浏览器的阅读与装扮显示'),h('p',{class:'muted sm'},'下列设置立即生效，仅保存在本浏览器。阅读设置用于全部群聊，装扮屏蔽也用于帖子。'),awaySettings(),chatAutoSettings(),chatMediaScaleSettings({uid:S.me?.id,h,onRemoval}),decoHideSettings()]},
@@ -11979,6 +11993,7 @@ function splitHandle(on) {
   splitApply(dockPrefs().splitW)
 }
 function dockDraw(open) {
+  if (open && !DOCK.pane && pinnedGroup()) saveDock({gid:pinnedGroup().id})
   DOCK.open = !!open
   saveDock({ open: DOCK.open })
   DOCK.el.classList.toggle('open', DOCK.open)
@@ -12659,7 +12674,7 @@ function ldSide() {
 }
 
 // 右下角聊天抽屉：先是频道列表，点进去是群聊（和站内群聊同一套）
-function ldChat(gid) {
+function ldChat(gid, listOnly = false) {
   if (gid === undefined) return ldChatClose()
   if (!requireLogin()) return
   if (!LD.chatEl) {
@@ -12670,14 +12685,14 @@ function ldChat(gid) {
   LD.chatPane = null
   LD.chat = true
   LD.chatEl.hidden = false
-  const g = gid ? findGroup(gid) : CHAT.groups.length === 1 ? CHAT.groups[0] : null
+  const g = gid ? findGroup(gid) : listOnly ? null : pinnedGroup() || (CHAT.groups.length === 1 ? CHAT.groups[0] : null)
   const head = (title, back, extra) => h('header', { class: 'ld-chat-head' },
     back && h('button', { class: 'ld-ib', type: 'button', 'aria-label': '返回', onclick: back }, icon('chevL')),
     h('strong', null, title), h('span', { class: 'grow' }), extra,
     h('button', { class: 'ld-ib', type: 'button', 'aria-label': '关闭', onclick: ldChatClose }, icon('close')))
   const gx = !g && gid && findGone(gid)
   if (gx) {
-    LD.chatEl.replaceChildren(head(goneAsGroup(gx).name, () => ldChat(null)), goneView(gx))
+    LD.chatEl.replaceChildren(head(goneAsGroup(gx).name, () => ldChat(null, true)), goneView(gx))
     return
   }
   if (!g) {
@@ -12689,7 +12704,7 @@ function ldChat(gid) {
   }
   const pane = chatPane(g)
   LD.chatPane = pane
-  LD.chatEl.replaceChildren(head('# ' + g.name, CHAT.groups.length > 1 ? () => ldChat(null) : null,
+  LD.chatEl.replaceChildren(head('# ' + g.name, CHAT.groups.length > 1 ? () => ldChat(null, true) : null,
     [h('button', { class: 'ld-ib', type: 'button', title: '搜索聊天记录', onclick: () => pane.search() }, icon('search')), h('button', { class: 'ld-ib', type: 'button', title: '成员', onclick: () => groupPanel(g) }, icon('users'))]), pane.el)
   pane.focus()
 }

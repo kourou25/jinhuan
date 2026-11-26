@@ -126,8 +126,10 @@ CREATE TABLE chat_members (
   user_id   INTEGER NOT NULL,
   joined_at INTEGER NOT NULL,
   last_read INTEGER NOT NULL DEFAULT 0, muted INTEGER NOT NULL DEFAULT 0, last_read_at INTEGER NOT NULL DEFAULT 0, away_from INTEGER NOT NULL DEFAULT 0,       -- 读到的最后一条消息 id
+  pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
   PRIMARY KEY (group_id, user_id)
 );
+CREATE UNIQUE INDEX idx_chat_members_pinned_user ON chat_members(user_id) WHERE pinned=1;
 
 CREATE TABLE chat_messages (
   id         INTEGER PRIMARY KEY AUTOINCREMENT,
