@@ -2,96 +2,18 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="referrer" content="no-referrer">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>社区更新 · 尽欢</title>
-  <meta name="description" content="尽欢已开源。这里记录社区提出的需求和已经上线的改动。">
-  <link rel="icon" href="/favicon.svg?v=3" type="image/svg+xml">
-  <link rel="icon" href="/favicon-32.png?v=3" type="image/png" sizes="32x32">
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v=3" sizes="180x180">
-  <meta name="theme-color" content="#F7F6F0" media="(prefers-color-scheme: light)">
-  <meta name="theme-color" content="#14261F" media="(prefers-color-scheme: dark)">
   <script>
-    (function () {
-      var t = 'system'
-      try { t = localStorage.getItem('theme') || 'system' } catch (e) {}
-      if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-      document.documentElement.dataset.theme = t
-    })()
+    const query = new URLSearchParams(location.search)
+    const next = new URLSearchParams({ tab: 'updates' })
+    for (const key of ['kind', 'issue']) {
+      if (query.has(key)) next.set(key, query.get(key))
+    }
+    location.replace('/road?' + next + location.hash)
   </script>
-  <link rel="stylesheet" href="/style.css?v=c67733c9">
-  <link rel="stylesheet" href="/community-updates.css?v=20261122">
 </head>
-<body class="cu-body">
-  <header class="topbar">
-    <div class="topbar-inner">
-      <a class="logo" href="/" aria-label="尽欢 首页">
-        <span class="logo-mark" aria-hidden="true"></span>
-        <span class="logo-text" aria-hidden="true"></span>
-      </a>
-      <nav class="mainnav" aria-label="主导航">
-        <a href="/">图廊</a>
-        <a href="/chat">群聊</a>
-        <a href="/road">鞭打</a>
-        <a href="/community-updates.html" class="on" aria-current="page">社区更新</a>
-        <a href="/novels">小说</a>
-        <a href="/music">音乐</a>
-        <a href="/valley">鱼鱼谷</a>
-      </nav>
-    </div>
-  </header>
-
-  <main class="page cu">
-    <section class="cu-hero">
-      <p class="cu-eyebrow"><span class="cu-dot" aria-hidden="true"></span>尽欢已开源 · MIT</p>
-      <h1>社区更新</h1>
-      <p class="cu-lead">大家提的需求、投稿的改动，合并之后都会记在这里。想要什么功能，直接去提。</p>
-      <div class="cu-cta">
-        <a class="btn btn-primary" href="https://github.com/kourou25/jinhuan/issues/new/choose" target="_blank" rel="noopener">提需求</a>
-        <a class="btn btn-ghost" href="https://github.com/kourou25/jinhuan/blob/main/contributions/README.md" target="_blank" rel="noopener">投稿一条更新</a>
-        <a class="btn btn-ghost" href="https://github.com/kourou25/jinhuan" target="_blank" rel="noopener">
-          <svg class="cu-gh" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8a8 8 0 0 0 5.47 7.59c.4.07.55-.17.55-.38v-1.33c-2.23.48-2.7-1.07-2.7-1.07-.36-.92-.89-1.17-.89-1.17-.73-.5.06-.49.06-.49.8.06 1.23.83 1.23.83.72 1.22 1.87.87 2.33.67.07-.52.28-.87.5-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82a7.6 7.6 0 0 1 4 0c1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.28.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48v2.2c0 .21.15.46.55.38A8 8 0 0 0 16 8c0-4.42-3.58-8-8-8Z"/></svg>
-          GitHub 仓库
-        </a>
-      </div>
-      <dl class="cu-stats" id="stats" hidden>
-        <div><dt>已记录</dt><dd id="stat-count">0</dd></div>
-        <div><dt>参与者</dt><dd id="stat-people">0</dd></div>
-        <div><dt>最近更新</dt><dd id="stat-latest">—</dd></div>
-      </dl>
-    </section>
-
-    <div class="cu-layout">
-      <section class="cu-feed" aria-labelledby="feed-title">
-        <div class="cu-feed-head">
-          <h2 id="feed-title">更新记录</h2>
-          <div class="segs small" id="filters" role="tablist" aria-label="按分类筛选" hidden></div>
-        </div>
-        <p class="cu-stale" id="stale" role="status" hidden>GitHub 暂时连不上，下面是最近一次读到的内容。</p>
-        <ol class="cu-timeline" id="updates" aria-busy="true">
-          <li class="cu-skel" aria-hidden="true"><span></span><span></span><span></span></li>
-          <li class="cu-skel" aria-hidden="true"><span></span><span></span><span></span></li>
-          <li class="cu-skel" aria-hidden="true"><span></span><span></span><span></span></li>
-        </ol>
-      </section>
-
-      <aside class="cu-side" aria-labelledby="how-title">
-        <div class="cu-card">
-          <h2 id="how-title">怎么参与</h2>
-          <ol class="cu-steps">
-            <li><b>提需求</b><span>在 GitHub Issues 里描述想要的功能或遇到的问题。</span></li>
-            <li><b>写一条更新</b><span>只改 <code>contributions/site-updates.json</code>，在末尾加一条，关联对应的需求编号。</span></li>
-            <li><b>自动上线</b><span>格式检查通过后自动合并，几分钟内同步到这个页面。</span></li>
-          </ol>
-          <a class="cu-more" href="https://github.com/kourou25/jinhuan/blob/main/contributions/README.md" target="_blank" rel="noopener">查看投稿格式 →</a>
-        </div>
-        <div class="cu-card cu-card-soft">
-          <h2>改代码</h2>
-          <p>功能源码走正常的 Pull Request。主站、鱼鱼谷和装扮都在同一个仓库里，按目录说明本地跑起来就能改。</p>
-        </div>
-      </aside>
-    </div>
-  </main>
-  <script type="module" src="/community-updates.js?v=20261122"></script>
+<body>
+  <p>社区更新已移到社区共建。<a href="/road?tab=updates">查看社区更新</a></p>
 </body>
 </html>

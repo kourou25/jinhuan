@@ -38,7 +38,8 @@ window.siteAlert = (text) => { void ask(text, 'alert') }
 import {parseNovelExcerpt,novelExcerptCard} from '/novel-excerpt.js?v=472f7fbf'
 import {shiguangNameplate,shiguangSticker,animateShiguangMessage} from '/shiguang-host.js?v=472f7fbf'
 import {createSkinStatusAlerts} from '/skin-status-alerts.js?v=472f7fbf'
-import {communityClass,communityName,loadCommunitySkins} from '/community-skins.js?v=472f7fbf'
+import {communityClass,communityName,communityEntries,loadCommunitySkins} from '/community-skins.js?v=20261126'
+import {COMMUNITY_REPO,communityHref,feedbackWork,issueNumber,publicIssueFields,createFeedbackGithub} from '/community-feedback.js?v=20261126'
 import {mountWallet} from '/me-wallet.js?v=472f7fbf';
 import '/farm-transition.js?v=472f7fbf';
 import {attachChatMediaScale,chatMediaScaleSettings} from '/chat-media-scale.js?v=472f7fbf';
@@ -65,7 +66,7 @@ import {mediaUrl,deferChatImage,beginChatMessageFetch} from '/chat-media-load.js
 import {OWNER52_ID,OWNER52_TITLE,OWNER52B_ID,OWNER52B_TITLE,owner52Identity,owner52Badge} from '/owner52.js?v=472f7fbf'
 const PERSONAL_TITLES = { ...LEGACY_PERSONAL_TITLES, ...PERSONAL_V2_TITLES, [OWNER52_ID]:OWNER52_TITLE, [OWNER52B_ID]:OWNER52B_TITLE }
 const isOwner52Suit=id=>id===OWNER52_ID||id===OWNER52B_ID
-const S = { me: null, emojis: [], minPostTL: 1, bgKey: null, modal: null, wall: null, meSt: null, folders: null, viewer: null }
+const S = { me: null, communityHubSync: false, emojis: [], minPostTL: 1, bgKey: null, modal: null, wall: null, meSt: null, folders: null, viewer: null }
 const main = document.getElementById('main')
 
 // ---------- 基础工具 ----------
@@ -194,6 +195,10 @@ async function api(path, opts = {}) {
     const err = new Error(data.error || `请求失败（${res.status}）`)
     err.status = res.status
     err.code = data.code
+    if (typeof data.github_sync_status === 'string') {
+      err.github_sync_status = data.github_sync_status
+      err.github_issue = data.github_issue
+    }
     if(path==='/uploads')err.ray=res.headers.get('cf-ray')||''
     throw err
   }
@@ -2085,7 +2090,7 @@ function decoHideSettings() {
     box('fancy', '不看别人的炫彩昵称'), box('badge', '不看别人的徽章'), box('css', '不看别人的自定义样式'))
 }
 // 装扮编辑：称号文字 + 颜色 / 字体 / 形状 / 填充 / 动效，炫彩名配色，气泡，生效范围；边改边预览
-function decoEditor(initialTrial=null) {
+function decoEditor(initialTrial=null, initialCategory) {
   const allCosmetics=S.me.cosmetic_access==='all'
   const d = { sh: 'pill', fill: 'solid', fx: 'none', sc: 'all', bs: 'all', c: '#ffffff', c2: '#16a34a', bc: '#16a34a', ...(S.me.deco || {}) }
   const preview = h('div', { class: 'deco-preview' })
@@ -2260,7 +2265,7 @@ function decoEditor(initialTrial=null) {
     communityState.textContent=entries.length?'点「整套佩戴」一次换上整套；带 🔒 的气泡在限定气泡池获得。改完记得保存装扮。':'还没有社区投稿。'}
   const getCommunity=()=>Promise.all([loadCommunitySkins(true),api('/community-bubbles/owned')]).then(([entries,rights])=>{communityOwned=new Set(rights.owned||[]);drawCommunity([...entries.filter(x=>x.id!=='aurora-preset'),{id:'aurora-preset',name:'极光流转',author:'qwddkxs',components:{title:true,badge:true,reply:true}}])}).catch(()=>{communityState.textContent='读取失败，请稍后重试。';communityPicker.replaceChildren(h('button',{type:'button',class:'btn btn-ghost sm',onclick:getCommunity},'重新读取'))})
   void getCommunity()
-  const categories=settingsSections({h,label:'装扮分类',sections:[
+  const categories=settingsSections({h,label:'装扮分类',initial:initialCategory,sections:[
     {id:'outfits',label:'我的套装',keywords:'已拥有 收藏 普通 SSR 官方 邀请 佩戴 摘下',nodes:[
       field(allCosmetics?'全部可用套装':'已拥有的套装',ownedBox,allCosmetics?'站长可自由使用当前启用的套装，不增加获奖记录。选择后点击保存。':'中奖只增加收藏，不自动换装。选择后点击保存；重复获得的等级永久保留。'),displayControl,gunControl,
       (allCosmetics||S.me.official_titles?.length>0)&&field('官方称号',officialOptions,'称号、徽章、气泡与回应框一起佩戴'),
@@ -2749,7 +2754,7 @@ function renderDetail(panel, meme) {
 
 function renderActions() {
   const nav = document.getElementById('actions')
-  document.querySelectorAll('[data-nav="series"], [data-nav="road"], [data-nav="bottles"], [data-nav="autumn"]').forEach((el) => { el.hidden = !S.me; el.style.display = S.me ? '' : 'none' })
+  document.querySelectorAll('[data-nav="series"], [data-nav="bottles"], [data-nav="autumn"]').forEach((el) => { el.hidden = !S.me; el.style.display = S.me ? '' : 'none' })
   const mode = themeMode(), themeLabel = '主题：' + THEME_LABELS[mode] + '；点击切换'
   const themeBtn = h('button', { class: 'btn-icon theme-btn', title: themeLabel, 'aria-label': themeLabel, onclick: toggleTheme },
     icon(THEME_ICONS[mode]))
@@ -2783,7 +2788,7 @@ document.documentElement.dataset.mobileNav = localStorage.getItem(MOBILE_NAV_KEY
 function mobilePages(anchor) {
   const cur = document.querySelector('.mobile-nav [data-nav].on')?.dataset.nav
   const pages = [['wall', '图廊', 'image', '/'],
-    ['chat', '群聊', 'chat', '/chat'], ...(S.me ? [['road', '鞭打', 'pen', '/road']] : []), ...(S.me && !document.documentElement.hasAttribute('data-newbie') ? [['bottles', '漂流瓶', 'bottle', '/bottles']] : []), ['novels','小说','book','/novels'], ['pets','鱼鱼谷','sparkle','/pets'], ...(S.me && !document.documentElement.hasAttribute('data-newbie') ? [['autumn','死如秋叶','leaf','/autumn']] : []), ['me', '我的', 'contacts', '/me']]
+    ['chat', '群聊', 'chat', '/chat'], ...(!document.documentElement.hasAttribute('data-newbie') ? [['road', '社区共建', 'pen', '/road']] : []), ...(S.me && !document.documentElement.hasAttribute('data-newbie') ? [['bottles', '漂流瓶', 'bottle', '/bottles']] : []), ['novels','小说','book','/novels'], ['pets','鱼鱼谷','sparkle','/pets'], ...(S.me && !document.documentElement.hasAttribute('data-newbie') ? [['autumn','死如秋叶','leaf','/autumn']] : []), ['me', '我的', 'contacts', '/me']]
   openPop(anchor, h('nav', { class: 'mobile-more mobile-pages', 'aria-label': '切换页面' }, pages.map(([key, label, ic, path]) =>
     h('button', { class: 'mobile-more-item' + (cur === key ? ' on' : ''), type: 'button',
       'aria-current': cur === key ? 'page' : null, onclick: () => { closePop(); if(path.startsWith('https://'))window.open(path,'_blank','noopener');else navigate(path) } }, icon(ic), label, key === 'chat' && chatBadge()))),
@@ -3038,9 +3043,11 @@ function markNav() {
       : p.startsWith('/huancai') ? 'huancai' : p.startsWith('/novels') ? 'novels' : p.startsWith('/nsfw') ? 'nsfw' : p.startsWith('/chat') || p.startsWith('/dm') ? 'chat' : p.startsWith('/road') ? 'road' : p.startsWith('/bottles') ? 'bottles' : p.startsWith('/autumn') ? 'autumn' : p.startsWith('/farm') ? 'farm' : p.startsWith('/pets') ? 'pets' : p.startsWith('/manor') ? 'manor' : p.startsWith('/me') ? 'me' : ''
   if (p.startsWith('/m/')) return
   document.querySelectorAll('[data-nav]').forEach((a) => a.classList.toggle('on', a.dataset.nav === cur))
+  const login = document.querySelector('#actions .btn-login')
+  if (login) login.href = loginHref()
   const title=document.getElementById('mobile-page-title')
   if(title) {
-    title.textContent=p.startsWith('/dm')?'私信':({wall:'图廊',series:'图集',chat:'群聊',road:'鞭打',bottles:'漂流瓶',autumn:'死如秋叶',farm:'农场',pets:'鱼鱼谷',manor:'肥鱼庄园',novels:'小说',huancai:'欢彩',nsfw:'RZP',me:'我的'})[cur] || '尽欢'
+    title.textContent=p.startsWith('/dm')?'私信':({wall:'图廊',series:'图集',chat:'群聊',road:'社区共建',bottles:'漂流瓶',autumn:'死如秋叶',farm:'农场',pets:'鱼鱼谷',manor:'肥鱼庄园',novels:'小说',huancai:'欢彩',nsfw:'RZP',me:'我的'})[cur] || '尽欢'
     title.setAttribute('aria-label', '切换页面，当前' + title.textContent)
     title.append(chatBadge('chat-badge mobile-chat-badge'))
   }
@@ -4055,7 +4062,64 @@ async function renderSeries() {
   }
 }
 
-// ---------- 鞭打模块（原成长路线）：需求 / Bug / 改进意见，大家投票，管理员标状态；可以带图片 / 视频 / 文件 ----------
+// ---------- 社区共建与鞭打反馈 ----------
+const COMMUNITY_TABS = [['feedback', '鞭打反馈'], ['skins', '装扮工坊'], ['updates', '更新记录']]
+const roadGithub = createFeedbackGithub(api)
+function communityTab(p) {
+  const tab = p.get('tab')
+  if (COMMUNITY_TABS.some(([key]) => key === tab)) return tab
+  // 旧的反馈、群聊深链和登录回跳没有 tab 参数。
+  if (['item', 'kind', 'status', 'sort', 'compose'].some((key) => p.has(key))) return 'feedback'
+  return S.me ? 'feedback' : 'updates'
+}
+function renderCommunityHub() {
+  if (document.documentElement.hasAttribute('data-newbie')) {
+    main.replaceChildren(emptyState('社区共建', '注册满 30 天后开放。', goHomeBtn()))
+    return
+  }
+  const p = new URLSearchParams(location.search)
+  const tab = communityTab(p)
+  const links = h('div', { class: 'community-hub-actions' },
+    h('a', { class: 'btn btn-ghost sm', href: COMMUNITY_REPO + '/blob/main/contributions/README.md', target: '_blank', rel: 'noopener' }, '投稿指引'),
+    h('a', { class: 'btn btn-ghost sm', href: COMMUNITY_REPO, target: '_blank', rel: 'noopener' }, '开发者入口'))
+  const nav = h('nav', { class: 'community-hub-tabs', 'aria-label': '社区共建' }, COMMUNITY_TABS.map(([key, label]) =>
+    h('a', { class: 'seg' + (key === tab ? ' on' : ''), href: communityHref(key), 'data-link': '', 'aria-current': key === tab ? 'page' : null }, label)))
+  const panel = h('div', { class: 'community-hub-panel' })
+  main.replaceChildren(h('div', { class: 'community-hub' },
+    pageHead('社区共建', null, links), nav, panel))
+  if (tab === 'feedback') { renderRoad(panel, p); return }
+  async function showPanel() {
+    panel.replaceChildren(loadingBox())
+    try {
+      const { renderCommunityPanel } = await import('/community-hub.js?v=20261126')
+      if (!panel.isConnected) return
+      await renderCommunityPanel(panel, {
+        tab, skin: p.get('skin'), kind: p.get('kind'), issue: issueNumber(p.get('issue')), syncAvailable: S.communityHubSync,
+        onFeedback(skinId, source) {
+          if (!panel.isConnected) return
+          const work = feedbackWork(skinId, source)
+          if (work) navigate(communityHref('feedback', { compose: 1, ...work }))
+        },
+        onWear() {
+          if (panel.isConnected && requireLogin('佩戴社区装扮')) meSettings('deco', null, 'community')
+        },
+      })
+    } catch (err) {
+      if (panel.isConnected) panel.replaceChildren(emptyState('加载失败', err.message,
+        h('button', { class: 'btn btn-primary sm', type: 'button', onclick: showPanel }, '重试')))
+    }
+  }
+  void showPanel()
+}
+
+function roadWorkLink(work) {
+  const getName = () => communityEntries().find((skin) => skin.id === work.skin)?.name || work.skin
+  const name = h('span', null, getName())
+  void loadCommunitySkins().then(() => { name.textContent = getName() }).catch(() => {})
+  return h('a', { class: 'rd-source', href: communityHref('skins', { skin: work.skin }), 'data-link': '' },
+    icon('palette', 'i tiny'), '关联作品 · ', name)
+}
+
 // 附件选完即上传；视频另传封面，普通文件继续强制下载。
 function roadAttach() {
   const input = h('input', { type: 'file', multiple: true, class: 'sr-only', tabindex: '-1', 'aria-hidden': 'true' })
@@ -4138,17 +4202,34 @@ function roadMedia(media) {
 }
 const ROAD_KIND = { feature: ['需求', 'rocket'], bug: ['Bug', 'search'], idea: ['改进意见', 'pen'] }
 const ROAD_ST = { open: '待评估', planned: '计划中', doing: '进行中', done: '已上线', declined: '暂不做' }
-async function renderRoad() {
-  if (!S.me) {
-    main.replaceChildren(emptyState('鞭打需要登录', '登录后可查看需求和反馈', h('a', { class: 'btn btn-primary sm', href: loginHref() }, '登录查看')))
+function renderRoad(panel, p) {
+  const work = feedbackWork(p.get('skin'), p.get('source'))
+  const issue = issueNumber(p.get('issue'))
+  if (p.has('issue') && (!issue || !S.communityHubSync)) {
+    const title = issue ? '暂时无法查看关联反馈' : '无效的 Issue 编号'
+    const message = issue ? '当前站点尚未开放按 GitHub Issue 查找鞭打反馈。' : '反馈链接中的 GitHub Issue 编号必须是有效的正整数。'
+    panel.replaceChildren(emptyState(title, message,
+      h('a', { class: 'btn btn-primary sm', href: communityHref('feedback'), 'data-link': '' }, '查看全部反馈')))
     return
   }
-  const p = new URLSearchParams(location.search)
-  const st = { kind: p.get('kind') || '', status: p.get('status') || '', sort: ['new','hot'].includes(p.get('sort')) ? p.get('sort') : 'waiting', item: p.get('item') || '' }
+  if (!S.me) {
+    const reason = work ? '登录后可继续提交这件作品的反馈。' : issue ? `登录后可查看与 Issue #${issue} 关联的反馈。` : '登录后可查看和提交反馈。'
+    panel.replaceChildren(...nodes(
+      work && h('div', { class: 'notice-bar' }, roadWorkLink(work)),
+      emptyState('鞭打需要登录', reason,
+        h('a', { class: 'btn btn-primary sm', href: loginHref() }, work ? '登录后反馈' : '登录查看'))))
+    return
+  }
+  const st = {
+    kind: Object.hasOwn(ROAD_KIND, p.get('kind')) ? p.get('kind') : '',
+    status: Object.hasOwn(ROAD_ST, p.get('status')) ? p.get('status') : '',
+    sort: ['new', 'hot'].includes(p.get('sort')) ? p.get('sort') : 'waiting',
+    item: issueNumber(p.get('item')) || '',
+    issue,
+  }
   const list = loadingBox()
   const setQ = () => {
-    const q = new URLSearchParams(Object.entries(st).filter(([k, v]) => v && !(k === 'sort' && v === 'waiting')))
-    history.replaceState(history.state, '', '/road' + (q.toString() ? '?' + q : ''))
+    history.replaceState(history.state, '', communityHref('feedback', { ...work, ...st, sort: st.sort === 'waiting' ? '' : st.sort }))
     S.bgKey = location.pathname + location.search
   }
   const seg = (key, opts, label) => h('div', { class: 'segs small', role: 'group', 'aria-label': label },
@@ -4160,7 +4241,7 @@ async function renderRoad() {
     seg('status', [['', '全部状态'], ...Object.entries(ROAD_ST)], '状态'),
     seg('sort', [['waiting', '久未处理'], ['new', '最新提出'], ['hot', '票多优先']], '排序'))
   bar()
-  const openForm = () => { if (requireLogin('提需求')) roadForm(load) }
+  const openForm = () => roadForm(load, work)
   const backfillStatus = h('span', { class: 'muted sm', role: 'status', 'aria-live': 'polite' })
   let backfillAfter = 0, backfillUpto = null, scanned = 0, matched = 0
   const backfill = S.me?.is_admin && h('button', { class: 'btn btn-ghost sm road-backfill', type: 'button', onclick: async () => {
@@ -4177,25 +4258,42 @@ async function renderRoad() {
     } catch (e) { backfillStatus.textContent = e.message + '；再次点击可从已完成位置继续' }
     finally { backfill.disabled = false }
   } }, '回填历史反馈')
-  main.replaceChildren(...nodes(pageHead('鞭打模块', '需求与问题反馈；未完成的优先显示，已上线和不处理的排在后面。支持按等待时间、最新提出或票数排序。',
-    h('button', { class: 'btn btn-primary sm', type: 'button', onclick: openForm }, icon('plus', 'i tiny'), '提一条')), filters,
-    st.item && h('div', { class: 'notice-bar' }, `正在查看鞭打 #${st.item}`, h('a', { class: 'btn-text', href: '/road', 'data-link': '' }, '查看全部')),
+  const issueNotice = issue && h('div', { class: 'notice-bar' }, `正在查看 Issue #${issue} 关联的反馈`,
+    h('button', { class: 'btn-text', type: 'button', onclick: () => {
+      st.issue = null
+      setQ()
+      issueNotice.remove()
+      void load()
+    } }, '清除 Issue 筛选'))
+  panel.replaceChildren(...nodes(
+    h('div', { class: 'community-feedback-head' }, h('h2', null, '鞭打反馈'),
+      h('button', { class: 'btn btn-primary sm', type: 'button', onclick: openForm }, icon('plus', 'i tiny'), '提一条')),
+    filters,
+    st.item && h('div', { class: 'notice-bar' }, `正在查看鞭打 #${st.item}`, h('a', { class: 'btn-text', href: communityHref('feedback'), 'data-link': '' }, '查看全部')),
+    issueNotice,
     backfill && h('div', { class: 'road-backfill-bar' }, backfill, backfillStatus), list))
-  let seq = 0
+  let request
+  PAGE_CLEAN.push(() => request?.abort())
   async function load() {
-    const my = ++seq
+    if (!list.isConnected) return
+    request?.abort()
+    const current = request = new AbortController()
     try {
-      const { items } = await api('/road?' + new URLSearchParams(Object.entries(st).filter(([, v]) => v)))
-      if (my !== seq || !list.isConnected) return
+      const { items } = await api('/road?' + new URLSearchParams(Object.entries(st).filter(([, v]) => v)), { signal: current.signal })
+      if (current.signal.aborted || !list.isConnected) return
       list.className = 'road-list'
       list.removeAttribute('role')
       list.replaceChildren(...(items.length ? items.map((it) => roadCard(it, load))
         : [emptyState('这里还空着', '来提第一条吧', h('button', { class: 'btn btn-primary sm', type: 'button', onclick: openForm }, '提一条'))]))
     } catch (e) {
-      if (my === seq) list.replaceChildren(emptyState('加载失败', e.message, h('button', { class: 'btn btn-primary sm', onclick: load }, '重试')))
+      if (!current.signal.aborted && list.isConnected) list.replaceChildren(emptyState('加载失败', e.message, h('button', { class: 'btn btn-primary sm', onclick: load }, '重试')))
     }
   }
-  load()
+  void load()
+  if (p.get('compose') === '1') {
+    setQ()
+    openForm()
+  }
 }
 function roadCard(it, reload) {
   const score = h('strong', { class: 'rd-score' }, String(it.score))
@@ -4226,6 +4324,7 @@ function roadCard(it, reload) {
       if (!await window.siteConfirm(`${removeLabel}鞭打「${it.title}」？${it.source_msg_id ? '原群聊消息会保留。' : ''}`)) return
       try { await api(`/road/${it.id}`, { method: 'DELETE' }); reload() } catch (e) { toast(e.message, 'err') }
     } }, removeLabel)
+  const work = S.communityHubSync && feedbackWork(it.skin_id, it.skin_source)
   return h('article', { class: 'rd-card st-' + it.status, id: 'road-' + it.id },
     h('div', { class: 'rd-vote' }, up, score, down),
     h('div', { class: 'rd-main' },
@@ -4237,8 +4336,10 @@ function roadCard(it, reload) {
       it.body && h('div', { class: 'rd-body' }, richBody(it.body, { md: 'lite' })),
       it.source_msg_id && h('button', { class: 'rd-source', type: 'button', 'data-msg': it.source_msg_id, onclick: () => openChatMsg(it.source_group_id, it.source_msg_id) },
         icon('chat', 'i tiny'), `来自群聊 · 查看原消息 #${it.source_msg_id}`),
+      work && roadWorkLink(work),
       roadMedia(it.media),
       it.reply && h('div', { class: 'rd-reply' }, h('strong', null, '站长回复：'), richText(it.reply)),
+      S.communityHubSync && roadGithubCard(it),
       h('div', { class: 'rd-foot muted sm' },
         avatar(it.user.avatar, it.user.name || it.user.username, 18),
         uName('button', it.user, { class: 'rd-who', type: 'button', 'data-pop': 'u' + it.user.username, onclick: (e) => userCard(it.user.username, e.currentTarget) }, it.user.name || it.user.username, 'post'),
@@ -4246,6 +4347,99 @@ function roadCard(it, reload) {
         h('span', { class: 'grow' }), cmtBtn, ...acts),
       cmt))
 }
+function roadGithubCard(item) {
+  const row = h('div', { class: 'community-github-links muted sm' })
+  const canEdit = item.mine || S.me?.is_admin
+  const paint = () => {
+    const attempt = roadGithub.get(item.id)
+    const issue = issueNumber(item.github_issue) || attempt?.issue
+    const status = issue ? 'linked' : attempt?.status || item.github_sync_status
+    const pending = status === 'pending'
+    const message = canEdit && !issue && (attempt?.error || ({
+      pending: attempt?.promise ? '正在同步到 GitHub…' : 'GitHub 同步结果尚待确认',
+      failed: 'GitHub 同步失败',
+    })[status])
+    const verify = canEdit && pending && h('button', {
+      class: 'btn-text sm', type: 'button', disabled: !!attempt?.promise, onclick: async () => {
+        const result = roadGithub.sync(item.id, { reconcile: true })
+        paint()
+        roadGithubNotice(await result)
+      },
+    }, '重新核对')
+    const action = canEdit && !issue && h('button', {
+      class: 'btn-text sm', type: 'button', disabled: !!attempt?.promise,
+      onclick: () => roadGithubForm(item, paint, pending),
+    }, pending ? '关联已有 Issue' : message ? '重试 GitHub 同步' : '关联 GitHub')
+    row.replaceChildren(...nodes(
+      issue && h('a', { href: COMMUNITY_REPO + '/issues/' + issue, target: '_blank', rel: 'noopener' }, 'GitHub Issue #' + issue),
+      issue && h('a', { href: communityHref('updates', { issue }), 'data-link': '' }, '查看关联更新'),
+      message && h('span', { role: 'status' }, message),
+      verify, action))
+    row.hidden = !row.childNodes.length
+    if (attempt?.promise) void attempt.promise.then(() => { if (row.isConnected) paint() })
+  }
+  paint()
+  return row
+}
+
+function roadGithubNotice(attempt) {
+  if (attempt.error) toast(attempt.error, 'err')
+  else if (attempt.issue) toast('已关联 GitHub Issue #' + attempt.issue, 'ok')
+  else toast('GitHub 同步尚未完成，可在反馈卡片重试', 'err')
+}
+
+function roadGithubForm(item, paint, linkOnly) {
+  const panel = openModalShell('road-form')
+  const modal = S.modal
+  modal.kind = 'road-github'
+  const last = roadGithub.get(item.id)?.payload
+  // 来自群聊的反馈由用户另行填写公开文本。
+  const draft = last?.title != null ? last : item.source_msg_id ? {} : { title: item.title, body: item.body }
+  const publicFields = publicIssueFields({ h, field }, draft)
+  const number = h('input', {
+    class: 'input', type: 'text', inputmode: 'numeric', maxlength: 16, pattern: '[1-9][0-9]*', required: true, value: last?.issue || '',
+    oninput: () => number.setCustomValidity(''),
+  })
+  const numberField = field('Issue 编号', number)
+  const send = h('button', { class: 'btn btn-primary', type: 'submit' })
+  const create = h('button', { class: 'seg', type: 'button', onclick: () => choose(false) }, '新建 Issue')
+  const link = h('button', { class: 'seg', type: 'button', onclick: () => choose(true) }, '关联已有 Issue')
+  let existing
+  function choose(linkExisting) {
+    existing = linkExisting
+    create.classList.toggle('on', !existing)
+    create.setAttribute('aria-pressed', String(!existing))
+    link.classList.toggle('on', existing)
+    link.setAttribute('aria-pressed', String(existing))
+    publicFields.show(!existing)
+    numberField.hidden = number.disabled = !existing
+    send.textContent = existing ? '关联 Issue' : '公开发布'
+  }
+  choose(linkOnly || !!last?.issue)
+  panel.replaceChildren(
+    h('header', { class: 'compose-head' }, h('h2', null, linkOnly ? '关联已有 Issue' : '关联 GitHub'), closeBtn()),
+    h('form', { class: 'ma-body road-fbody', onsubmit: async (e) => {
+      e.preventDefault()
+      const issue = existing ? issueNumber(number.value.trim()) : null
+      if (existing && !issue) {
+        number.setCustomValidity('请输入有效的 Issue 编号')
+        number.reportValidity()
+        return
+      }
+      const payload = issue ? { issue } : publicFields.value()
+      if (!payload || send.disabled) return
+      send.disabled = link.disabled = create.disabled = true
+      const pending = roadGithub.sync(item.id, payload)
+      paint()
+      const attempt = await pending
+      if (S.modal === modal) closeModal(false)
+      roadGithubNotice(attempt)
+    } },
+    !linkOnly && h('div', { class: 'segs small', role: 'group', 'aria-label': '关联方式' }, create, link),
+    publicFields.el, numberField, h('div', { class: 'row-end' }, send)))
+  requestAnimationFrame(() => { if (S.modal === modal) focusEditorOnOpen(existing ? number : publicFields.title, panel) })
+}
+
 async function roadComments(it, box, btn, cnt) {
   if (!box.hidden) { box.hidden = true; btn.setAttribute('aria-expanded', 'false'); return }
   box.hidden = false
@@ -4276,32 +4470,59 @@ async function roadComments(it, box, btn, cnt) {
         c.body && h('div', { class: 'rd-c-body' }, richBody(c.body, { md: 'lite' })), roadMedia(c.media)))), form)
   } catch (e) { box.replaceChildren(h('p', { class: 'muted sm' }, e.message)) }
 }
-function roadForm(done) {
+function roadForm(done, work) {
   const panel = openModalShell('road-form')
-  S.modal.kind = 'road-form'
+  const modal = S.modal
+  modal.kind = 'road-form'
   let kind = 'feature'
   const kinds = h('div', { class: 'segs', role: 'radiogroup', 'aria-label': '类型' })
   const drawK = () => kinds.replaceChildren(...Object.entries(ROAD_KIND).map(([k, [l, ic]]) =>
     h('button', { class: 'seg' + (k === kind ? ' on' : ''), type: 'button', role: 'radio', 'aria-checked': String(k === kind), onclick: () => { kind = k; drawK() } }, icon(ic, 'i tiny'), l)))
   drawK()
-  const title = h('input', { class: 'input', maxlength: 60, placeholder: '一句话说清楚，比如「群聊支持语音消息」', required: true })
+  const title = h('input', { class: 'input', minlength: 2, maxlength: 60, placeholder: '一句话说清楚，比如「群聊支持语音消息」', required: true })
   const body = h('textarea', { class: 'input', rows: 6, maxlength: 2000, placeholder: '详细说说：想怎么用、在哪个页面、Bug 怎么复现（可选；支持部分 Markdown，写 No.1234 引用帖子；截图可以直接粘贴进来）' })
+  const syncAvailable = S.communityHubSync
+  const workLink = work && roadWorkLink(work)
+  if (workLink && !syncAvailable) body.value = `关于这件社区作品\n${workLink.href}\n\n`
   const att = roadAttach()
   att.bind(body)
   const pub = h('button', { class: 'btn btn-primary', type: 'submit' }, '提交')
+  const publicFields = syncAvailable ? publicIssueFields({ h, field }) : null
+  publicFields?.show(false)
+  let prepared = false
+  const sync = publicFields && h('input', { type: 'checkbox', onchange: () => {
+    if (sync.checked && !prepared) {
+      publicFields.fill(title.value, body.value)
+      prepared = true
+    }
+    publicFields.show(sync.checked)
+  } })
   panel.replaceChildren(
     h('header', { class: 'compose-head' }, h('h2', null, '提一条'), closeBtn()),
     h('form', { class: 'ma-body road-fbody', onsubmit: async (e) => {
       e.preventDefault()
+      if (pub.disabled) return
+      const draft = sync?.checked ? publicFields.value() : null
+      if (sync?.checked && !draft) return
+      const feedback = { kind, title: title.value, body: body.value,
+        ...(syncAvailable && work ? { skin_id: work.skin, ...(work.source ? { skin_source: work.source } : {}) } : {}) }
       pub.disabled = true
       try {
-        await api('/road', { method: 'POST', body: { kind, title: title.value, body: body.value, media: await att.media() } })
-        closeModal()
-        toast('提交了，感谢', 'ok')
-        done()
+        const { id } = await api('/road', { method: 'POST', body: { ...feedback, media: await att.media() } })
+        const pending = draft ? roadGithub.sync(id, draft) : null
+        if (S.modal === modal) {
+          closeModal(false)
+          if (pending) navigate('/road?item=' + id)
+          else done()
+        }
+        toast(pending ? '已提交站内反馈，正在同步 GitHub' : '提交了，感谢', 'ok')
+        if (pending) roadGithubNotice(await pending)
       } catch (err) { toast(err.message, 'err'); pub.disabled = false }
-    } }, field('类型', kinds), field('标题', title), field('详情', body), field('附件（图片 / 视频 / 文件，单个 20MB 内）', h('div', null, att.el, att.btn)), h('div', { class: 'row-end' }, pub)))
-  setTimeout(() => title.focus())
+    } }, workLink, field('类型', kinds), field('标题', title), field('详情', body),
+    field('附件（图片 / 视频 / 文件，单个 20MB 内）', h('div', null, att.el, att.btn)),
+    sync && h('label', { class: 'set-check' }, sync, '同步到 GitHub'), publicFields?.el,
+    h('div', { class: 'row-end' }, pub)))
+  requestAnimationFrame(() => { if (S.modal === modal) focusEditorOnOpen(title, panel) })
 }
 function roadAdmin(it, anchor, reload) {
   const sel = h('select', { class: 'input sm', 'aria-label': '状态' }, Object.entries(ROAD_ST).map(([k, l]) => h('option', { value: k, selected: k === it.status }, l)))
@@ -12888,7 +13109,7 @@ const ROUTES = [
   [/^\/s\/(.+)$/, (m) => renderWall({ series: decodeURIComponent(m[1]) })],
   [/^\/(puzzles|tools)$/, () => navigate('/', { replace: true })],
   [/^\/me$/, () => renderMe()],
-  [/^\/road$/, () => renderRoad()],
+  [/^\/road$/, () => renderCommunityHub()],
   [/^\/bottles(?:\/(?:new|mine|admin|b\/\d+))?$/, () => renderBottles()],
   [/^\/autumn(?:\/.*)?$/, () => renderAutumnRoute()],
   [/^\/farm$/, () => renderFarmRoute()],
@@ -12990,7 +13211,7 @@ function pageTitle(path, search) {
   if (path.startsWith('/chat')) return '群聊'
   if (path.startsWith('/dm')) return '私信'
   if (path.startsWith('/me')) return '我的'
-  if (path.startsWith('/road')) return '鞭打模块'
+  if (path.startsWith('/road')) return '社区共建'
   if (path.startsWith('/bottles')) return '漂流瓶'
   if (path.startsWith('/autumn')) return '死如秋叶'
   if (path.startsWith('/farm')) return '欢欢农场'
@@ -13490,7 +13711,7 @@ function imageAiSettings() {
     h('div', { class: 'set-save' }, save, retry), status)
 }
 
-function meSettings(section, initialTrial=null) {
+function meSettings(section, initialTrial=null, initialDecoCategory) {
   const panel = openModalShell('me-settings')
   S.modal.kind = 'settings'
   const close = () => closeModal(false)
@@ -13544,7 +13765,7 @@ function meSettings(section, initialTrial=null) {
         } catch (e) { toast(e.message, 'err') }
       } }, '保存资料')))],
     ['miniapp','小程序隐私','user',()=>{const host=h('section',{class:'set-sec'},h('p',{class:'muted'},'正在读取隐私设置…'));import('/miniapp-privacy.js?v=472f7fbf').then(({createMiniappPrivacySettings})=>{if(host.isConnected)host.replaceChildren(createMiniappPrivacySettings({h,api,toast}))}).catch(()=>{host.replaceChildren(h('p',null,'设置加载失败，请重新打开。'))});return host}],
-    ['deco', '装扮', 'sparkle', () => decoEditor(initialTrial)],
+    ['deco', '装扮', 'sparkle', () => decoEditor(initialTrial, initialDecoCategory)],
     ['appearance', '外观', 'palette', () => h('section', { class: 'set-sec' }, h('h3', null, '深浅色'), themeControl())],
     ['ai', 'AI 小伙伴', 'sparkle', () => imageAiSettings()],
     ['badges', '徽章墙', 'trophy', () => h('section', { class: 'set-sec' }, h('h3', null, '徽章墙'),
@@ -14003,6 +14224,7 @@ async function bootApplication() {
     const me = await api('/me',{signal:AbortSignal.timeout(12000)})
     if(me.main_activation_required){location.replace('/activate');return}
     S.me = me.user
+    S.communityHubSync = me.community_hub_sync === true
     // 注册不满 30 天：只显示图廊、群聊、鱼鱼谷（服务端同样限制）
     document.documentElement.toggleAttribute('data-newbie', !!me.newbie)
     if (S.me) {
