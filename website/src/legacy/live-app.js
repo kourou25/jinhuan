@@ -100,6 +100,7 @@ import { canManage, canManageAi, findSessionUser, isChatAdmin, isFancy, isOwner,
 import { CHAT_HISTORY_FLOOR, assertCurrentAccess, needMember } from '../services/chat-access'
 import { chatActivationRequired } from '../services/chat-realtime-access'
 import { readChatReplyCounts } from '../services/chat-message-hydrate'
+import { readChatPacketProjections } from '../services/chat-packet-projection'
 import { beginChatCommand, chatCommandIds, chatCommandSharedPacket, findChatCommand, finishChatCommand, readChatCommand, readChatHistory } from '../services/chat-realtime-store'
 import { chatRankView } from '../services/chat-rank'
 import { canDeleteComment, deleteComment } from '../services/comments'
@@ -12209,16 +12210,9 @@ async function decorateMsgsRaw(c, rows, shared) {
 		shared?.reads ?? atReads(c, rows),
 		readChatReplyCounts(c.env.DB, u?.id ?? 0, rows.map(r => r.id), shared),
 		shared?.decorations?.road ?? c.env.DB.prepare("SELECT source_msg_id AS mid, id FROM road_items INDEXED BY idx_road_source_msg WHERE source_msg_id IN (SELECT value FROM json_each(?)) AND hidden = 0 AND source_hidden = 0").bind(ids).all(),
-		rows.some((r) => !r.deleted && (r.redpack_id || sharedPacket(r.body))) ? c.env.DB.prepare(`SELECT p.message_id, p.mode, p.game, p.prompt, p.provider, p.notify_at, p.draw_data, COALESCE(lp.mode,fp.mode) AS ldc_mode, COALESCE(lp.room_revision,fp.room_revision) AS guess_revision, lp.total_cents AS ldc_total,lp.count AS ldc_count,lp.payment_provider AS payment_provider, COALESCE(lp.response_mode,fp.response_mode) AS ldc_response_mode, CASE WHEN COALESCE(lp.response_mode,fp.response_mode)='similarity' THEN COALESCE(lp.answer_length,fp.answer_length) ELSE NULL END AS ldc_answer_length, CASE WHEN cp.packet_id IS NOT NULL THEN json_object('state',CASE WHEN cp.expires_at<=unixepoch() THEN 'expired' WHEN cp.remaining_count=0 THEN 'exhausted' ELSE 'active' END,'claimed',EXISTS(SELECT 1 FROM coin52_packet_slots WHERE packet_id=p.id AND recipient_id=${u?.id ?? 0}),'remaining',cp.remaining_count,'total',cp.count,'claimed_count',cp.count-cp.remaining_count,'expires_at',cp.expires_at,'kind',cp.mode) ELSE v.data END AS snapshot, v.synced_at, o.solved_at,
-       (SELECT COUNT(*) FROM chat_redpack_opens s WHERE s.packet_id=p.id AND s.solved_at IS NOT NULL) AS opened
-       FROM chat_redpacks p LEFT JOIN chat_redpack_opens o ON o.packet_id=p.id AND o.user_id=?
-       LEFT JOIN chat_redpack_external_views v ON v.packet_id=p.id AND v.user_id=?
-       LEFT JOIN ldc_packets lp ON lp.packet_id=p.id
-       LEFT JOIN guess_free_rounds fp ON fp.packet_id=p.id
-       LEFT JOIN coin52_packets cp ON cp.packet_id=p.id
-       WHERE p.message_id IN (SELECT value FROM json_each(?))`).bind(u?.id ?? 0, u?.id ?? 0, ids).all() : { results: [] }
+		readChatPacketProjections(c.env.DB, u?.id ?? 0, rows, shared?.packets)
 	]);
-	const packetMap = new Map(packets.results.map((p) => [p.message_id, {
+	const packetMap = new Map(packets.map((p) => [p.message_id, {
 		mode: p.mode,
 		game: p.game,
 		prompt: p.prompt,
@@ -13753,8 +13747,11 @@ app.put("/api/chat/groups/:id/mute", async (c) => {
 });
 app.post("/api/chat/groups/:id/read", async (c) => {
 	const { u, g } = await needMember(c, groupId(c));
-	const id = intIn((await jsonBody(c)).id, 0, Number.MAX_SAFE_INTEGER, 0);
-	await c.env.DB.prepare("UPDATE chat_members SET away_from = CASE WHEN last_read_at <= ?1 - 600 THEN last_read ELSE away_from END, last_read_at = MAX(last_read_at, ?1), last_read = MAX(last_read, ?2) WHERE group_id = ?3 AND user_id = ?4").bind(now(), id, g.id, u.id).run();
+	const body = await jsonBody(c);
+	if (body.reader_id !== undefined && body.reader_id !== u.id) fail(403, "登录账号已切换");
+	const id = intIn(body.id, 0, Number.MAX_SAFE_INTEGER, 0);
+	// 跳过游标和读取时间均未推进的请求，保留旧客户端的最后阅读时间和离开摘要。
+	await c.env.DB.prepare("UPDATE chat_members SET away_from = CASE WHEN last_read_at <= ?1 - 600 THEN last_read ELSE away_from END, last_read_at = MAX(last_read_at, ?1), last_read = MAX(last_read, ?2) WHERE group_id = ?3 AND user_id = ?4 AND (last_read < ?2 OR last_read_at < ?1)").bind(now(), id, g.id, u.id).run();
 	return c.json({ ok: true });
 });
 var LAYER_KINDS = [

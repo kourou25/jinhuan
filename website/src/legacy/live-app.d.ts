@@ -11,5 +11,8 @@ export function atReads(c: { env: import('../env').Env }, rows: import('../servi
 export function decorateMsgs(
   c: { env: import('../env').Env; get(key: 'user'): Pick<import('../types').User, 'id' | 'is_admin' | 'role'> },
   rows: import('../services/chat-realtime-projection').ChatRealtimeRow[],
-  shared: { decorations: import('../services/chat-message-hydrate').ChatDecorations; reads: Map<number, Record<string, boolean>>; joinedAt: number; historyFloor: number },
+  shared: {
+    decorations: import('../services/chat-message-hydrate').ChatDecorations; reads: Map<number, Record<string, boolean>>
+    packets: import('../services/chat-packet-projection').ChatPacketPublicMap; joinedAt: number; historyFloor: number
+  },
 ): Promise<Array<{ id: number; [field: string]: unknown }>>

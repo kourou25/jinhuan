@@ -57,7 +57,7 @@ import { stickerPreviews } from '/sticker-preview.js?v=472f7fbf'
 import { onRemoval, windowContent, wakeWindowContent, observeResourceDocument } from '/resource-memory.js?v=472f7fbf'
 import {focusChatBottom,focusChatMessage,captureChatScroll} from '/chat-scroll-anchor.js?v=472f7fbf'
 import {refreshMessageReference} from '/message-reference.js?v=472f7fbf'
-import {createChatRealtime,isChatCursor} from '/chat-realtime.js?v=472f7fbf'
+import {createChatReadQueue,createChatRealtime,isChatCursor} from '/chat-realtime.js?v=69059860'
 import { socialCards } from '/social-preview.js?v=472f7fbf'
 import { socialLink,socialLinks,socialMessageText,canSocialPost,isOfficialEmbed } from '/social-links.js?v=472f7fbf'
 import { PERSONAL_TITLES as LEGACY_PERSONAL_TITLES } from '/personal-catalog.js?v=472f7fbf'
@@ -182,6 +182,7 @@ async function api(path, opts = {}) {
   const messages = init.method === 'GET' && /^\/chat\/groups\/\d+\/messages(?:\?|$)/.test(path)
   if (messages) init.priority = 'high'
   if(opts.signal)init.signal=opts.signal
+  if (opts.keepalive) init.keepalive = true
   if (opts.body instanceof FormData) init.body = opts.body
   else if (opts.body !== undefined) {
     init.headers['content-type'] = 'application/json'
@@ -4419,7 +4420,12 @@ async function renderMe() {
   const wallet=h('section',{class:'me-wallet'});mountWallet(wallet,{onLeave:onPageLeave})
   const logout=h('button',{class:'btn btn-ghost me-logout',type:'button',onclick:async e=>{
     const button=e.currentTarget;button.disabled=true
-    try{await api('/auth/logout',{method:'POST'});location.href='/'}catch(err){button.disabled=false;toast(err.message,'err')}
+    try {
+      // 先尝试提交已经读到的位置，连接不可用时仍能及时退出。
+      await Promise.race([chatReads.flush(undefined, { departing: true }), new Promise(resolve => setTimeout(resolve, 1000))])
+      await api('/auth/logout',{method:'POST'})
+      location.href='/'
+    } catch (err) { button.disabled=false;toast(err.message,'err') }
   }},icon('logout','i tiny'),'退出登录')
   const categories=settingsSections({h,label:'个人中心分类',initial:section,onSelect:key=>{
     const query=new URLSearchParams(location.search);key==='content'?query.delete('section'):query.set('section',key)
@@ -7375,10 +7381,17 @@ bindMsgTools(document)
 // 群消息优先使用实时推送，断开时每 3 秒轮询；群列表及未读数每 30 秒刷新。
 const CHAT = { groups: [], dmUnread: 0, canManage: false, loaded: false, subs: new Set(), panes: new Set(), at: 0 }
 const chatRealtime = createChatRealtime(() => S.me?.id)
+const chatReads = createChatReadQueue({
+  getUser: () => S.me?.id,
+  send: (id, upto, { userId, keepalive }) => api(`/chat/groups/${id}/read`, {
+    method: 'POST', body: { id: upto, reader_id: userId }, keepalive, signal: AbortSignal.timeout?.(12000),
+  }),
+  onConfirmed: confirmChatRead,
+})
 const chatPacketOwner = new WeakMap()
 addEventListener('offline', () => chatRealtime.pause())
-addEventListener('online', () => chatRealtime.resume())
-addEventListener('pagehide', () => chatRealtime.pause())
+addEventListener('online', () => { chatRealtime.resume(); void chatReads.flush() })
+addEventListener('pagehide', () => { void chatReads.flush(undefined, { departing: true }); chatRealtime.pause() })
 addEventListener('pageshow', () => chatRealtime.resume())
 const onChat = (fn) => { CHAT.subs.add(fn); return () => CHAT.subs.delete(fn) }
 function chatCommandId() {
@@ -7390,6 +7403,31 @@ const groupUnread = () => CHAT.groups.reduce((a, g) => a + (g.muted ? (g.at_me |
 const chatUnread = () => groupUnread() + CHAT.dmUnread
 const findGroup = (id) => CHAT.groups.find((g) => g.id === id)
 const findGone = (id) => (CHAT.gone || []).find((g) => g.id === id)
+const chatMentionPattern = () => S.me && new RegExp('@' + S.me.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w.-])', 'i')
+function confirmChatRead(id, upto) {
+  const group = findGroup(id)
+  if (group && upto > (group.last_read || 0)) {
+    const latest = group.latest?.id || 0
+    group.last_read = upto
+    if (latest <= upto) {
+      group.unread = 0
+      group.at_me = 0
+    } else {
+      // 只有连续覆盖剩余消息的面板能重算未读。关闭面板后由群列表刷新补齐。
+      const pane = [...CHAT.panes].find(p => p.group.id === id && p.st.done && !p.st.after &&
+        p.st.first <= upto && p.st.items.at(-1)?.id >= latest)
+      if (pane) {
+        const left = pane.st.items.filter(m => m.id > upto && !m.mine && !m.deleted)
+        const mention = chatMentionPattern()
+        group.unread = left.length
+        group.at_me = left.filter(m => mention?.test(stripQuotes(m.body || ''))).length
+      }
+    }
+    trackGroupDelivery(group)
+    CHAT.subs.forEach(fn => fn())
+  }
+  chatNotifSeen(id, upto)
+}
 // 只保存消息编号与视口偏移，不缓存聊天正文；同一浏览器按账号、群隔离。
 const CHAT_POS = {
   all() { try { const a = JSON.parse(localStorage.getItem('chatReading:v1')); return a && typeof a === 'object' && !Array.isArray(a) ? a : {} } catch { return {} } },
@@ -8514,7 +8552,7 @@ function packetAffectsBagBadge(message) {
 }
 // 一个群的消息区 + 输入框：站内群聊页、飞书伪装、LINUX DO 聊天抽屉共用，外观由各自的 CSS 决定
 function chatPane(g, { onHead, targetDocument = document } = {}) {
-  const st = { first: 0, last: 0, more: true, busy: false, olderFailed: false, since: 0, items: [], unreadAt: null, sentRead: 0, stick: true, done: false }
+  const st = { first: 0, last: 0, more: true, busy: false, olderFailed: false, since: 0, items: [], unreadAt: null, stick: true, done: false }
   const userId = S.me?.id
   let historySince = 0, historyFloor = 0
   const positionKey = `${S.me?.id || 0}:${g.id}`
@@ -8681,7 +8719,12 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (st.backAt - st.hiddenAt > 60000) setTimeout(showAway, 1500) // 等切回来那次轮询拉完
   }
   const onVis = () => {
-    if (doc.hidden) { savePosition(); if (!st.blur) { st.hiddenAt = Date.now(); st.awayEnd = 0; dropAway(); st.awayDismissed = false } return }
+    if (doc.hidden) {
+      savePosition()
+      if (active()) void chatReads.flush(g.id)
+      if (!st.blur) { st.hiddenAt = Date.now(); st.awayEnd = 0; dropAway(); st.awayDismissed = false }
+      return
+    }
     if (st.blur && doc.hasFocus()) st.blur = false // 有的浏览器切回标签页不发 focus
     if (!st.blur) back()
     guessPanel?.refresh()
@@ -8693,13 +8736,17 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   const onFocus = () => { if (!st.blur) return; st.blur = false; if (!doc.hidden) back() }
   win?.addEventListener('blur', onBlur)
   win?.addEventListener('focus', onFocus)
-  doc.defaultView?.addEventListener('pagehide', savePosition)
+  const onPageHide = () => {
+    savePosition()
+    if (active()) void chatReads.flush(g.id, { departing: true })
+  }
+  doc.defaultView?.addEventListener('pagehide', onPageHide)
   // 「你离开的 x 分钟里有 N 条新消息」：速览 / 从第一条看 / 导出
   st.awayIds = []
   let awayEl = null
   const awayMsgs = () => { const ids = new Set(st.awayIds); return st.items.filter((m) => ids.has(m.id) && !m.deleted) }
   const dropAway = () => { awayEl?.remove(); awayEl = null; st.awayIds = []; st.awayMark = false; st.awayDismissed = true }
-  const meRe = () => S.me && new RegExp('@' + S.me.username.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?![\\w.-])', 'i')
+  const meRe = chatMentionPattern
   let awayT = 0
   function showAway() {
     const ms = awayMsgs()
@@ -9026,7 +9073,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       if (!active() || revision !== listRevision) return
       if (!scroller.isConnected && st.first) return
       if (!initial && membershipChanged(d.group)) {
-        await reopenForMembership()
+        await reopenForMembership(true)
         return
       }
       if (initial) {
@@ -9036,8 +9083,8 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         st.stick = false
         st.followPaused = true
         st.since = d.now
-        const lr = d.last_read || 0
-        st.sentRead = lr
+        chatReads.observe(g.id, d.last_read || 0)
+        const lr = chatReads.confirmed(g.id)
         st.unreadAt = d.items.find((m) => m.id > lr && !m.mine)?.id ?? -1
         st.newIds = d.items.filter(m => m.id > lr && !m.mine && !m.deleted).map(m => m.id)
         st.after = d.more_after ? d.items.at(-1)?.id || 0 : 0
@@ -9102,7 +9149,8 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     const dialog = doc.querySelector('.rpk-dialog[open]')
     if (dialog && chatPacketOwner.get(dialog) === el) dialog.close()
   }
-  async function reopenForMembership() {
+  async function reopenForMembership(changedMembership = false) {
+    if (changedMembership) chatReads.reset(g.id)
     closeHist()
     closeChatPacket()
     if (POP?.el.ownerDocument === doc) closePop()
@@ -9164,7 +9212,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         st.realtimeResetAt = now
         void reopenForMembership()
       },
-      revoked() { if (active()) void reopenForMembership() }
+      revoked() { if (active()) void reopenForMembership(true) }
     })
   }
 
@@ -9284,7 +9332,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         if (!active() || !scroller.isConnected || revision !== listRevision || transport !== transportRevision) { more = false; return }
         if (membershipChanged(d.group) || (st.realtimeGeneration && d.realtime_generation && d.realtime_generation !== st.realtimeGeneration)) {
           more = false
-          await reopenForMembership()
+          await reopenForMembership(true)
           return
         }
         if (isChatCursor(d.realtime_cursor)) {
@@ -9319,6 +9367,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   async function lost(e) {
     if (st.lost) return
     st.lost = true
+    chatReads.reset(g.id)
     destroy()
     el.replaceChildren(h('div', { class: 'chat-empty' }, icon('chat'), h('p', null, e.message)))
     await loadGroups()
@@ -9403,7 +9452,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         const started = deliveryRevision
         const d = await api(`/chat/groups/${g.id}/messages?around=${edge}`)
         if (!active() || histView !== hv) return
-        if (membershipChanged(d.group)) { await reopenForMembership(); return }
+        if (membershipChanged(d.group)) { await reopenForMembership(true); return }
         const have = new Set(hv.items.map((m) => m.id))
         const fresh = mergeMessages(d.items, d.realtime_cursor, started).filter(m => !have.has(m.id))
         const oldTop = hv.rows.get(edge)?.getBoundingClientRect().top
@@ -9435,7 +9484,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       const started = deliveryRevision
       const d = await api(`/chat/groups/${g.id}/messages?around=${id}`)
       if (!active() || histView !== hv) return
-      if (membershipChanged(d.group)) { await reopenForMembership(); return }
+      if (membershipChanged(d.group)) { await reopenForMembership(true); return }
       hv.items = mergeMessages(d.items, d.realtime_cursor, started)
       hv.more = d.more
       hv.after = !!d.more_after
@@ -9461,7 +9510,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     try {
       const d = await api(`/chat/groups/${g.id}/messages?around=${id}`)
       if (!active() || revision !== listRevision) return
-      if (membershipChanged(d.group)) { await reopenForMembership(); return }
+      if (membershipChanged(d.group)) { await reopenForMembership(true); return }
       resetList()
       revision = listRevision
       st.more = d.more
@@ -9480,10 +9529,11 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     try {
       const d = await api(`/chat/groups/${g.id}/messages?around=${st.after}`)
       if (!active() || revision !== listRevision || !scroller.isConnected) return
-      if (membershipChanged(d.group)) { await reopenForMembership(); return }
+      if (membershipChanged(d.group)) { await reopenForMembership(true); return }
       const items = mergeMessages(d.items, d.realtime_cursor, started).filter(m => m.id > st.after)
       add(items, 'bottom')
-      st.newIds.push(...items.filter(m => m.id > st.sentRead && !m.mine && !m.deleted).map(m => m.id))
+      const lastRead = chatReads.confirmed(g.id)
+      st.newIds.push(...items.filter(m => m.id > lastRead && !m.mine && !m.deleted).map(m => m.id))
       st.after = d.more_after ? items[items.length - 1]?.id || 0 : 0
       trimHistory('newer')
       drawLatest()
@@ -9597,32 +9647,9 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     const nk = NICKS.get(b.dataset.at)
     if (nk && b.textContent.startsWith('@')) b.textContent = `${nk}(${b.textContent})`
   })).catch(() => {})
-  async function markRead() {
-    if (!userId || !active() || !st.done || st.restoring || st.followPaused || st.blur || doc.hidden || !scroller.offsetParent || histEl || st.after || !exactBottom() || st.reading) return
-    const upto = st.items.at(-1)?.id || 0
-    if (upto <= st.sentRead) return
-    const revision = listRevision
-    st.reading = true
-    let read = false
-    try {
-      await api(`/chat/groups/${g.id}/read`, { method: 'POST', body: { id: upto } })
-      if (!active() || revision !== listRevision) return
-      st.sentRead = Math.max(st.sentRead, upto)
-      read = true
-      const gg = findGroup(g.id)
-      if (gg && upto >= (gg.last_read || 0)) {
-        const left = st.items.filter((m) => !m.mine && !m.deleted && m.id > upto)
-        gg.last_read = upto
-        gg.unread = left.length
-        gg.at_me = left.filter((m) => meRe()?.test(stripQuotes(m.body || ''))).length
-        trackGroupDelivery(gg)
-        CHAT.subs.forEach((fn) => fn())
-      }
-      chatNotifSeen(g.id, upto)
-    } catch {} finally {
-      st.reading = false
-      if (read && (st.items.at(-1)?.id || 0) > upto) queueMicrotask(markRead)
-    }
+  function markRead() {
+    if (!userId || !active() || !st.done || st.restoring || st.followPaused || st.blur || doc.hidden || !scroller.offsetParent || histEl || st.after || !exactBottom()) return
+    chatReads.queue(g.id, st.items.at(-1)?.id || 0)
   }
   scroller.addEventListener('scroll', () => {
     if (!st.done || st.restoring || st.destroyed || !scroller.clientHeight) return
@@ -9986,6 +10013,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   }
   function destroy() {
     if (st.destroyed) return
+    if (active()) void chatReads.flush(g.id)
     drawLifetime.abort()
     savePosition()
     st.destroyed = true
@@ -10007,7 +10035,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     clearInterval(st.readT)
     clearInterval(bagTimer)
     doc.removeEventListener('visibilitychange', onVis)
-    doc.defaultView?.removeEventListener('pagehide', savePosition)
+    doc.defaultView?.removeEventListener('pagehide', onPageHide)
     win?.removeEventListener('blur', onBlur)
     win?.removeEventListener('focus', onFocus)
     doc.defaultView?.removeEventListener('title-raffle-update', refreshTitleRaffles)

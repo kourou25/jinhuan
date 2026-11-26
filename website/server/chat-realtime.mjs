@@ -10,6 +10,11 @@ const MAX_SUBSCRIPTIONS = 8
 const MAX_READERS = 8
 const MAX_QUEUE_BYTES = 512 * 1024
 const MAX_FRAMES_PER_SWEEP = 64
+const TURN_BUDGET_MS = 8
+const AUTH_CHUNK_SIZE = 8
+const REPLAY_FRAMES_WITH_LIVE = 8
+const MAX_CACHED_PAGES = 8
+const SWEEP_LANES = ['live', 'live', 'live', 'replay', 'audit']
 const isCursor = (n) => Number.isSafeInteger(n) && n >= 0
 const isId = (n) => isCursor(n) && n > 0
 
@@ -81,16 +86,25 @@ export function attachChatRealtime(server, env, api, context, makeRequest) {
   const clients = new Set()
   const handshakes = new Set()
   const streams = new Map()
+  const queued = new Set()
+  const pages = new Map()
   let closed = false
   let busy = false
-  let pending = false
-  let timer
+  let mergeTimer
+  let continuation
 
   function wake() {
-    if (closed || !streams.size) return
-    pending = true
-    if (busy || timer) return
-    timer = setTimeout(sweep, WAKE_MS)
+    if (closed || !streams.size || mergeTimer) return
+    // 首次工作合并新提交，已经排队的工作独立续发，避免每片再等一次。
+    mergeTimer = setTimeout(() => {
+      mergeTimer = undefined
+      for (const stream of streams.values()) queued.add(stream)
+      continueSweep()
+    }, WAKE_MS)
+  }
+
+  function continueSweep() {
+    if (!closed && !busy && !continuation && queued.size) continuation = setTimeout(sweep, 0)
   }
 
   function remove(client, group) {
@@ -99,7 +113,12 @@ export function attachChatRealtime(server, env, api, context, makeRequest) {
     client.groups.delete(group)
     const stream = streams.get(group)
     stream.subs.delete(sub)
-    if (!stream.subs.size) streams.delete(group)
+    if (!stream.subs.size) {
+      streams.delete(group)
+      queued.delete(stream)
+      pages.delete(group + ':live')
+      pages.delete(group + ':replay')
+    }
   }
 
   function send(sub, data) {
@@ -148,17 +167,18 @@ export function attachChatRealtime(server, env, api, context, makeRequest) {
     if (type !== 'subscribe' || !isCursor(cursor) || (mode !== 'live' && mode !== 'shadow')
       || (generation !== undefined && (typeof generation !== 'string' || !generation.length || generation.length > 256))
       || (!existing && client.groups.size >= MAX_SUBSCRIPTIONS)) return client.ws.close(1008, '无效的订阅请求')
-    const sub = { client, group, cursor, subscription, mode, ready: false, generation }
+    const sub = { client, group, cursor, subscription, mode, ready: false, generation, checkAccessAt: 0 }
     if (!realtime.groups.has(group)) return send(sub, { type: 'disabled' })
     remove(client, group)
-    if (!streams.has(group)) streams.set(group, { subs: new Set(), checkAccessAt: 0 })
+    if (!streams.has(group)) streams.set(group, { group, subs: new Set(), nextLane: 0 })
     streams.get(group).subs.add(sub)
     client.groups.set(group, sub)
     wake()
   }
 
   function connect(ws, auth) {
-    const client = { ws, auth, groups: new Map(), alive: true, commandWindow: 0, commands: 0 }
+    const authKey = api.chatRealtimeAuthKey(auth)
+    const client = { ws, auth, authKey, groups: new Map(), alive: true, commandWindow: 0, commands: 0 }
     clients.add(client)
     ws.on('error', () => ws.terminate())
     ws.on('pong', () => { client.alive = true })
@@ -203,14 +223,31 @@ export function attachChatRealtime(server, env, api, context, makeRequest) {
     }
   }
 
-  async function scan(group, stream) {
+  async function eventPage(db, group, lane, after, initial) {
+    const key = group + ':' + lane
+    const cached = pages.get(key)
+    if (cached?.revision === initial && cached.after <= after && after < cached.last) return cached
+
+    const { results: events } = await db.prepare(
+      'SELECT seq,group_id,message_id,kind,audience_user_id FROM chat_realtime_events WHERE group_id=? AND seq>? ORDER BY seq LIMIT ?',
+    ).bind(group, after, PAGE_SIZE).all()
+    const page = { revision: initial, after, events, last: events.at(-1).seq }
+    // 只在数据库版本一致时复用公共页，权限和个人字段每次从当前读快照查询。
+    pages.delete(key)
+    pages.set(key, page)
+    if (pages.size > MAX_CACHED_PAGES) pages.delete(pages.keys().next().value)
+    return page
+  }
+
+  async function scan(stream, deadline) {
+    const { group, subs } = stream
     const initial = DB.revision()
     const current = () => !closed && DB.revision() === initial
-    const subscribers = [...stream.subs]
 
     return realtime.withSnapshot(async (db) => {
       const readEnv = { ...env, DB: db }
-      const now = Math.floor(Date.now() / 1000)
+      const checkedAt = Date.now()
+      const now = Math.floor(checkedAt / 1000)
       const status = await db.prepare(
         'SELECT COALESCE((SELECT seq FROM chat_realtime_pruned WHERE group_id=?1),0) floor, '
         + 'COALESCE((SELECT MAX(seq) FROM chat_realtime_events WHERE group_id=?1),0) latest, '
@@ -218,96 +255,112 @@ export function attachChatRealtime(server, env, api, context, makeRequest) {
         + 'COALESCE((SELECT shadow FROM chat_realtime_controls WHERE group_id=?1),0) shadow',
       ).bind(group).first()
       if (!current()) return true
-      const cursor = Math.max(status.floor, status.latest)
+      const head = Math.max(status.floor, status.latest)
       const mode = status.shadow ? 'shadow' : 'live'
-      const needed = subscribers.filter((sub) => status.disabled || sub.mode !== mode || !sub.ready || sub.cursor !== cursor)
-      const checkAll = Date.now() >= stream.checkAccessAt
-      if (!checkAll && !needed.length) return false
-
-      const eligible = []
-      for (const sub of checkAll ? subscribers : needed) {
-        if (!stream.subs.has(sub)) continue
-        if (status.disabled) stop(sub, 'disabled')
-        else if (sub.mode !== mode) stop(sub, 'reset')
-        else eligible.push(sub)
+      const controls = [], lanes = { live: [], replay: [], audit: [] }
+      for (const sub of subs) {
+        if (status.disabled || sub.mode !== mode) controls.push(sub)
+        else if (!sub.ready || sub.cursor !== head) lanes[sub.ready ? 'live' : 'replay'].push(sub)
+        else if (checkedAt >= sub.checkAccessAt) lanes.audit.push(sub)
       }
-      if (!eligible.length) return false
+      if (controls.length) {
+        let processed = 0
+        for (const sub of controls) {
+          if (processed >= MAX_FRAMES_PER_SWEEP || (processed && performance.now() >= deadline)) return true
+          if (!current()) return true
+          stop(sub, status.disabled ? 'disabled' : 'reset')
+          processed++
+        }
+        return !!(lanes.live.length || lanes.replay.length || lanes.audit.length)
+      }
+
+      // 有实时待发时限制补拉份额，空闲时让补拉使用整个切片。
+      let lane
+      for (let i = 0; i < SWEEP_LANES.length; i++) {
+        lane = SWEEP_LANES[stream.nextLane]
+        if (lanes[lane].length) break
+        stream.nextLane = (stream.nextLane + 1) % SWEEP_LANES.length
+      }
+      const candidates = lanes[lane]
+      if (!candidates.length) return false
+      stream.nextLane = (stream.nextLane + 1) % SWEEP_LANES.length
+      const limit = lane === 'replay' && lanes.live.length ? REPLAY_FRAMES_WITH_LIVE : MAX_FRAMES_PER_SWEEP
+      const needsPage = sub => sub.cursor >= status.floor && sub.cursor < head
+      const anchor = candidates.slice(0, limit).find(needsPage)
+      const page = anchor ? await eventPage(db, group, lane, anchor.cursor, initial) : null
+      const targets = candidates.filter(sub => !needsPage(sub) || (page && page.after <= sub.cursor && sub.cursor < page.last)).slice(0, limit)
       const ctx = context()
-      const auths = [...new Map(eligible.map(({ client }) => [api.chatRealtimeAuthKey(client.auth), client.auth])).values()]
-      const permissions = await api.getChatRealtimeAccessBatch(auths, group, readEnv, ctx)
-      if (!current()) return true
-      const pending = []
-      for (const sub of eligible) {
-        if (!stream.subs.has(sub)) continue
-        const access = permissions.get(api.chatRealtimeAuthKey(sub.client.auth))
-        if (!access || (sub.generation !== undefined && sub.generation !== access.generation)) stop(sub, 'revoked')
-        else if (sub.cursor < status.floor || sub.cursor > cursor) stop(sub, 'reset')
-        else {
-          sub.generation = access.generation
-          if (sub.cursor < cursor) pending.push({ sub, access })
-          else if (!sub.ready) sub.ready = send(sub, { type: 'ready', cursor, now })
-        }
-      }
-      if (checkAll) stream.checkAccessAt = Date.now() + SWEEP_MS
-      if (!pending.length) return false
+      let more = targets.length < candidates.length ||
+        Object.entries(lanes).some(([name, waiting]) => name !== lane && waiting.length)
+      let processed = 0
 
-      // 活跃订阅和积压订阅轮流优先。同一页的公共字段只查一次。
-      const after = (stream.replayFirst = !stream.replayFirst)
-        ? Math.min(...pending.map(({ sub }) => sub.cursor))
-        : Math.max(...pending.map(({ sub }) => sub.cursor))
-      const { results: events } = await db.prepare(
-        'SELECT seq,group_id,message_id,kind FROM chat_realtime_events WHERE group_id=? AND seq>? ORDER BY seq LIMIT ?',
-      ).bind(group, after, PAGE_SIZE).all()
-      const last = events.at(-1).seq
-      const rows = await api.hydrateChatRealtimeBatch(readEnv, group, [...new Set(events.map((event) => event.message_id))])
-      let remaining = false
-      let frames = 0
-      for (const { sub, access } of pending) {
-        if (!stream.subs.has(sub)) continue
-        if (sub.cursor < after || sub.cursor >= last || frames >= MAX_FRAMES_PER_SWEEP) {
-          remaining = true
-          continue
-        }
-        const page = sub.cursor === after ? events : events.filter((event) => event.seq > sub.cursor)
-        const { items, changed, resync } = await api.projectChatRealtimeBatch(sub.client.auth, access, group, rows, page, readEnv, ctx)
-        // 所有数据和权限来自同一读快照。发现并发提交时，丢掉尚未发送的帧并重读。
+      for (let start = 0; start < targets.length; start += AUTH_CHUNK_SIZE) {
+        if (processed && performance.now() >= deadline) return true
+        const cohort = targets.slice(start, start + AUTH_CHUNK_SIZE).filter(sub => subs.has(sub))
+        if (!cohort.length) continue
+        const auths = [...new Map(cohort.map(({ client }) => [client.authKey, client.auth])).values()]
+        const permissions = await api.getChatRealtimeAccessBatch(auths, group, readEnv, ctx)
         if (!current()) return true
-        if (!stream.subs.has(sub)) continue
-        if (resync) stop(sub, 'reset')
-        // 只有追到快照末尾后，客户端才可据此推进 HTTP 回退的时间游标。
-        else if (send(sub, {
-          type: 'batch', from: sub.cursor, cursor: last, state_cursor: cursor,
-          now: last === cursor ? now : undefined, items, changed,
-        })) {
-          sub.cursor = last
-          if (last === cursor) {
-            if (!sub.ready) sub.ready = send(sub, { type: 'ready', cursor, now })
-          } else remaining = true
+        for (const sub of cohort) {
+          if (processed && performance.now() >= deadline) return true
+          if (!subs.has(sub)) continue
+          const access = permissions.get(sub.client.authKey)
+          if (!access || (sub.generation !== undefined && sub.generation !== access.generation)) stop(sub, 'revoked')
+          else if (sub.cursor < status.floor || sub.cursor > head) stop(sub, 'reset')
+          else {
+            sub.generation = access.generation
+            sub.checkAccessAt = checkedAt + SWEEP_MS
+            if (sub.cursor < head) {
+              page.rows ??= await api.hydrateChatRealtimeBatch(readEnv, group, [...new Set(page.events.map(event => event.message_id))])
+              const events = sub.cursor === page.after ? page.events : page.events.filter(event => event.seq > sub.cursor)
+              const { items, changed, resync } = await api.projectChatRealtimeBatch(sub.client.auth, access, group, page.rows, events, readEnv, ctx)
+              // 投影中的并发提交使剩余帧重新取数，已经撤销的订阅不会继续发送。
+              if (!current()) return true
+              if (!subs.has(sub)) continue
+              if (resync) stop(sub, 'reset')
+              else if (send(sub, {
+                type: 'batch', from: sub.cursor, cursor: page.last, state_cursor: head,
+                now: page.last === head ? now : undefined, items, changed,
+              })) sub.cursor = page.last
+              else if (subs.has(sub)) remove(sub.client, group)
+            }
+            if (subs.has(sub)) {
+              if (!sub.ready && sub.cursor === head) sub.ready = send(sub, { type: 'ready', cursor: head, now })
+              more ||= !sub.ready || sub.cursor < head
+              // 已处理的订阅放回队尾，下一片先服务前面仍待发的订阅。
+              subs.delete(sub)
+              subs.add(sub)
+            }
+          }
+          processed++
         }
-        frames++
       }
-      return remaining
+      return more
     })
   }
 
   async function sweep() {
-    timer = undefined
-    pending = false
+    continuation = undefined
     busy = true
+    const deadline = performance.now() + TURN_BUDGET_MS
+    const queuedAtStart = queued.size
     try {
-      for (const [group, stream] of [...streams]) {
+      for (let i = 0; i < queuedAtStart && queued.size && (i === 0 || performance.now() < deadline); i++) {
         if (closed) return
+        const stream = queued.values().next().value
+        queued.delete(stream)
+        if (!stream.subs.size) continue
         try {
-          if (await scan(group, stream)) pending = true
+          if (await scan(stream, deadline) && stream.subs.size) queued.add(stream)
         } catch (error) {
           if (closed) return
-          console.error('群聊实时扫描失败', group, error?.message)
+          console.error('群聊实时扫描失败', stream.group, error?.message)
           for (const sub of stream.subs) stop(sub, 'disabled')
         }
       }
     } finally {
       busy = false
-      if (pending) wake()
+      continueSweep()
     }
   }
 
@@ -327,7 +380,8 @@ export function attachChatRealtime(server, env, api, context, makeRequest) {
     closed = true
     server.off('upgrade', upgrade)
     DB.onCommit(undefined)
-    clearTimeout(timer)
+    clearTimeout(mergeTimer)
+    clearTimeout(continuation)
     clearInterval(periodic)
     clearInterval(heartbeat)
     for (const socket of handshakes) socket.destroy()

@@ -15,7 +15,7 @@ npm run dev
 
 打开 http://localhost:8787/ ，访问 `/auth/dev` 用测试口令登录。需要站长权限时，从本地数据库查到测试账号 ID 填进 `wrangler.toml` 的 `ADMIN_USER_IDS`。
 
-`schema.sql` 是新实例的完整表结构（含 0202 号及之前的全部迁移），新库只需执行它。`migrations/` 供已有实例升级使用。
+`schema.sql` 是新实例的完整表结构（含 0203 号及之前的全部迁移），新库只需执行它。`migrations/` 供已有实例升级使用。
 
 ## 自己部署（Node.js 服务器）
 
@@ -32,9 +32,9 @@ cd server && MEME_ROOT=/meme CLIENT_DIR=../web/dist/client node main.mjs   # 监
 
 ### VPS 群聊实时推送
 
-同源浏览器通过 `/api/chat/ws` 订阅群聊，发送、上传和查历史仍走原 HTTP 接口。普通消息提交后推给有权查看的成员，重连用 SQLite 事件游标补齐，超过保留区间时重新取快照。已读位置按原有阅读条件更新。此部署方式使用一个 Node 进程和同机 SQLite；多实例发布前需要重新核验跨实例撤权和广播。
+同源浏览器通过 `/api/chat/ws` 订阅群聊，发送、上传和查历史仍走原 HTTP 接口。普通消息提交后推给有权查看的成员，重连用 SQLite 事件游标补齐，超过保留区间时重新取快照。主窗口和画中画共享同一账号、同一群的已读进度。阅读最新消息时合并写回，离开面板时立即提交已看到的位置。此部署方式使用一个 Node 进程和同机 SQLite；多实例发布前需要重新核验跨实例撤权和广播。
 
-1. 已有实例备份数据库后按现有发布流程执行 `0202_chat_realtime.sql`。安装本版 `deploy/nginx-meme.conf`（或合并其中的精确 `/api/chat/ws` location），通过 `nginx -t` 后重载 Nginx。应用发布包同时需要 `server/dist/app.mjs` 和 `server/dist/chat-realtime.mjs`。
+1. 已有实例先备份数据库，再按顺序应用尚未执行的 `0202_chat_realtime.sql` 和 `0203_chat_realtime_packet_audience.sql`。已运行 0202 的实例只需补 0203，随后启动新版服务。安装本版 `deploy/nginx-meme.conf`（或合并其中的精确 `/api/chat/ws` location），通过 `nginx -t` 后重载 Nginx。应用发布包同时需要 `server/dist/app.mjs` 和 `server/dist/chat-realtime.mjs`。
 2. 选择测试群，例如群 7。在数据库写入下面的影子设置，再在 `/meme/config/.env` 添加 `CHAT_REALTIME_GROUPS=7` 并重启应用。该配置接受逗号分隔的群 ID，默认留空。影子模式同时收取 HTTP 和 WebSocket，以 HTTP 渲染；页面上可监听 `chat-realtime-shadow` 事件，查看该面板的 `compared`、`mismatch` 和 `batches` 计数。
 3. 确认比对覆盖活跃消息且无异常后，在同一行把 `shadow` 改为 0。用两个账号确认发言、编辑、撤回和重连补发，并在浏览器 Network 中检查稳定连接期间的群消息 GET。群摘要、@ 已读和私信有独立请求。随时把 `disabled` 改为 1，可让在线客户端退回 HTTP，数据库、草稿和命令回执继续保留。重新开启后，重新打开群聊即可重新协商能力。
 
@@ -51,7 +51,7 @@ ON CONFLICT(group_id) DO UPDATE SET disabled=0,shadow=1;
 npm ci
 npm run build
 npm run build:server
-node --test scripts/check-chat-realtime-schema.mjs
+node --test scripts/check-chat-realtime-schema.mjs scripts/test-chat-realtime-gateway.mjs scripts/test-chat-read-queue.mjs
 node scripts/test-chat-realtime-server.mjs
 node scripts/test-chat-realtime-server.mjs --browser
 node scripts/test-chat-realtime-server.mjs --measure

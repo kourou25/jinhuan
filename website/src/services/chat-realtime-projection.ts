@@ -5,19 +5,26 @@ import { hydrateChatDecorations } from './chat-message-hydrate'
 import type { ChatRealtimeAccess, ChatRealtimeAuth } from './chat-realtime-access'
 import { chatCommandIds } from './chat-realtime-store'
 import { maskJsonPeople } from './identity-mask'
+import { hydrateChatPackets } from './chat-packet-projection'
 
-export type ChatRealtimeRow = { id: number; group_id: number; user_id: number; created_at: number; seq: number }
-type ChatRealtimeEvent = { seq: number; group_id: number; message_id: number; kind: 'create' | 'update' | 'delete' }
+export type ChatRealtimeRow = {
+  id: number; group_id: number; user_id: number; created_at: number; seq: number
+  deleted: number; redpack_id: string | null; body: string
+}
+type ChatRealtimeEvent = {
+  seq: number; group_id: number; message_id: number; kind: 'create' | 'update' | 'delete'; audience_user_id?: number | null
+}
 
 export async function hydrateChatRealtimeBatch(env: Env, groupId: number, messageIds: number[]) {
   const rows = messageIds.length ? (await env.DB.prepare(`${CHAT_SELECT}
     WHERE x.group_id=? AND x.id IN (SELECT value FROM json_each(?))`)
     .bind(groupId, JSON.stringify(messageIds)).all<ChatRealtimeRow>()).results : []
-  const [decorations, reads] = await Promise.all([
+  const [decorations, reads, packets] = await Promise.all([
     hydrateChatDecorations(env.DB, rows.map(row => row.id)),
     atReads({ env }, rows),
+    hydrateChatPackets(env.DB, rows),
   ])
-  return { byId: new Map(rows.map(row => [row.id, row])), decorations, reads }
+  return { byId: new Map(rows.map(row => [row.id, row])), decorations, reads, packets }
 }
 
 export async function projectChatRealtimeBatch(
@@ -27,7 +34,7 @@ export async function projectChatRealtimeBatch(
   if (access.user.id !== auth.userId) return { items: [], changed: [], resync: true }
   const live = new Map<number, { row: ChatRealtimeRow; firstSeen: boolean }>()
   for (const event of events) {
-    if (event.group_id !== groupId) continue
+    if (event.group_id !== groupId || (event.audience_user_id != null && event.audience_user_id !== auth.userId)) continue
     const row = batch.byId.get(event.message_id)
     // 硬删除行已经不可用于权限判断，用通用重载信号修复缓存。
     if (!row) return { items: [], changed: [], resync: true }
@@ -39,7 +46,7 @@ export async function projectChatRealtimeBatch(
   const rows = [...live.values()].map(item => item.row)
   const [messages, commandIds] = await Promise.all([
     decorateMsgs({ env, get: () => access.user }, rows, {
-      decorations: batch.decorations, reads: batch.reads, joinedAt: access.joinedAt, historyFloor: access.historyFloor,
+      decorations: batch.decorations, reads: batch.reads, packets: batch.packets, joinedAt: access.joinedAt, historyFloor: access.historyFloor,
     }),
     chatCommandIds(env.DB, auth.userId, rows.filter(row => row.user_id === auth.userId).map(row => row.id)),
   ])

@@ -4753,13 +4753,13 @@ CREATE TABLE chat_realtime_controls (
   shadow INTEGER NOT NULL DEFAULT 0 CHECK(shadow IN (0,1))
 );
 
--- 事件只记录需要重新装饰的消息编号。业务事务回滚时对应事件一起回滚。
+-- 事件只记录需要重新装饰的消息编号及可选的接收用户。业务事务回滚时对应事件一起回滚。
 CREATE TABLE chat_realtime_events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT,
   group_id INTEGER NOT NULL,
   message_id INTEGER NOT NULL,
   kind TEXT NOT NULL CHECK(kind IN ('create','update','delete'))
-);
+, audience_user_id INTEGER CHECK(audience_user_id IS NULL OR kind='update'));
 CREATE INDEX idx_chat_realtime_events_group_seq ON chat_realtime_events(group_id,seq);
 
 CREATE TABLE chat_realtime_pruned (
@@ -4919,8 +4919,8 @@ CREATE TRIGGER chat_realtime_packet_open_delete AFTER DELETE ON chat_redpack_ope
 END;
 
 CREATE TRIGGER chat_realtime_packet_view_insert AFTER INSERT ON chat_redpack_external_views BEGIN
-  INSERT INTO chat_realtime_events(group_id,message_id,kind)
-    SELECT m.group_id,m.id,'update' FROM chat_redpacks p JOIN chat_messages m ON m.id=p.message_id
+  INSERT INTO chat_realtime_events(group_id,message_id,kind,audience_user_id)
+    SELECT m.group_id,m.id,'update',NEW.user_id FROM chat_redpacks p JOIN chat_messages m ON m.id=p.message_id
     WHERE p.id=NEW.packet_id AND m.deleted=0;
 END;
 
@@ -4928,14 +4928,17 @@ CREATE TRIGGER chat_realtime_packet_view_update AFTER UPDATE ON chat_redpack_ext
 WHEN OLD.data IS NOT NEW.data OR OLD.synced_at IS NOT NEW.synced_at
   OR OLD.packet_id IS NOT NEW.packet_id OR OLD.user_id IS NOT NEW.user_id
 BEGIN
-  INSERT INTO chat_realtime_events(group_id,message_id,kind)
-    SELECT m.group_id,m.id,'update' FROM chat_redpacks p JOIN chat_messages m ON m.id=p.message_id
-    WHERE p.id IN (OLD.packet_id,NEW.packet_id) AND m.deleted=0;
+  INSERT INTO chat_realtime_events(group_id,message_id,kind,audience_user_id)
+    SELECT m.group_id,m.id,'update',OLD.user_id FROM chat_redpacks p JOIN chat_messages m ON m.id=p.message_id
+    WHERE (OLD.packet_id IS NOT NEW.packet_id OR OLD.user_id IS NOT NEW.user_id) AND p.id=OLD.packet_id AND m.deleted=0;
+  INSERT INTO chat_realtime_events(group_id,message_id,kind,audience_user_id)
+    SELECT m.group_id,m.id,'update',NEW.user_id FROM chat_redpacks p JOIN chat_messages m ON m.id=p.message_id
+    WHERE p.id=NEW.packet_id AND m.deleted=0;
 END;
 
 CREATE TRIGGER chat_realtime_packet_view_delete AFTER DELETE ON chat_redpack_external_views BEGIN
-  INSERT INTO chat_realtime_events(group_id,message_id,kind)
-    SELECT m.group_id,m.id,'update' FROM chat_redpacks p JOIN chat_messages m ON m.id=p.message_id
+  INSERT INTO chat_realtime_events(group_id,message_id,kind,audience_user_id)
+    SELECT m.group_id,m.id,'update',OLD.user_id FROM chat_redpacks p JOIN chat_messages m ON m.id=p.message_id
     WHERE p.id=OLD.packet_id AND m.deleted=0;
 END;
 

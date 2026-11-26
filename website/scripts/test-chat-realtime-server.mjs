@@ -112,6 +112,14 @@ try {
   assert.equal(deliberate.status, 200)
   assert.notEqual(deliberate.data.message.id, mid)
   assert.equal(db.prepare('SELECT COUNT(*) AS n FROM chat_messages WHERE body=?').get(cmd.body).n, 2)
+  const readPath = '/api/chat/groups/7/read'
+  const readProgress = db.prepare('SELECT last_read FROM chat_members WHERE group_id=7 AND user_id=?')
+  const readBeforeSwitch = readProgress.get(reader).last_read
+  assert.equal((await api(receiver, readPath, 'POST', { id: mid, reader_id: writer })).status, 403)
+  assert.equal(readProgress.get(reader).last_read, readBeforeSwitch)
+  assert.equal((await api(receiver, readPath, 'POST', { id: deliberate.data.message.id, reader_id: reader })).status, 200)
+  assert.equal((await api(receiver, readPath, 'POST', { id: mid })).status, 200)
+  assert.equal(readProgress.get(reader).last_read, deliberate.data.message.id)
   await stop('SIGKILL')
   await start()
   const restored = await connect(receiver, delivery.cursor, first.data.realtime_generation)
@@ -141,6 +149,16 @@ try {
     assert.equal(packet.solved, solved)
     assert.equal(!!packet.snapshot?.claimed, solved)
   }
+  // 单独更新领取者的同步时间，双方都要追平，但只有本人收到红包内容。
+  const syncedAt = Math.floor(Date.now() / 1000) + 1
+  db.prepare('UPDATE chat_redpack_external_views SET synced_at=? WHERE packet_id=? AND user_id=?')
+    .run(syncedAt, packetId, reader)
+  const privateCursor = db.prepare('SELECT MAX(seq) AS seq FROM chat_realtime_events WHERE group_id=7').get().seq
+  const mine = await restored.next(f => f.type === 'batch' && f.cursor === privateCursor)
+  assert.equal(mine.changed.find(m => m.id === packetMessage)?.redpack.synced_at, syncedAt)
+  const other = await own.next(f => f.type === 'batch' && f.cursor === privateCursor)
+  assert.deepEqual(other.items, [])
+  assert.deepEqual(other.changed, [])
   db.prepare('DELETE FROM chat_members WHERE group_id=7 AND user_id=?').run(reader)
   await restored.next(f => f.type === 'revoked')
   assert.ok([403, 404].includes((await api(receiver, path)).status))

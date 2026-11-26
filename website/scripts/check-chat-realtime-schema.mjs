@@ -5,6 +5,7 @@ import { test } from 'node:test'
 
 const schema = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8')
 const migration = readFileSync(new URL('../migrations/0202_chat_realtime.sql', import.meta.url), 'utf8')
+const audienceMigration = readFileSync(new URL('../migrations/0203_chat_realtime_packet_audience.sql', import.meta.url), 'utf8')
 
 function database(t) {
   const db = new DatabaseSync(':memory:')
@@ -44,10 +45,15 @@ test('空库与升级路径使用相同的实时数据库对象', (t) => {
   upgraded.exec('ALTER TABLE chat_members DROP COLUMN realtime_epoch')
   upgraded.exec('INSERT INTO chat_members(group_id,user_id,joined_at) VALUES (21,900001,1)')
   upgraded.exec(migration)
+  upgraded.exec("INSERT INTO chat_realtime_events(group_id,message_id,kind) VALUES (21,42,'update')")
+  upgraded.exec(audienceMigration)
   assert.deepEqual(upgraded.prepare(objects).all(), fresh.prepare(objects).all())
   assert.deepEqual(upgraded.prepare('PRAGMA table_info(chat_members)').all(), fresh.prepare('PRAGMA table_info(chat_members)').all())
   assert.equal(upgraded.prepare('SELECT realtime_epoch AS epoch FROM chat_members').get().epoch, null)
-  assert.deepEqual(events(upgraded), [])
+  assert.deepEqual(events(upgraded), [[42, 'update']])
+  const row = upgraded.prepare('SELECT seq,audience_user_id FROM chat_realtime_events').get()
+  assert.equal(row.seq, 1)
+  assert.equal(row.audience_user_id, null)
 })
 
 test('写入与旧楼层触发器兼容，撤回、物理删除和回复计数按顺序记录', (t) => {
@@ -98,7 +104,34 @@ test('直接写入表情、AI 短评、路线图和红包时通知消息失效',
   `)
   assert.deepEqual(events(db, afterSend), Array.from({length: 12}, () => [id, 'update']))
   assert.deepEqual(db.prepare('PRAGMA table_info(chat_realtime_events)').all().map(x => x.name), [
-    'seq', 'group_id', 'message_id', 'kind',
+    'seq', 'group_id', 'message_id', 'kind', 'audience_user_id',
+  ])
+})
+
+test('红包同步只通知其账号，公共开奖继续通知群组', (t) => {
+  const db = database(t)
+  const mid = message(db), second = message(db, 22)
+  const packet = db.prepare("INSERT INTO chat_redpacks(id,message_id,secret,mode,provider) VALUES(?,?,'','open','fish')")
+  packet.run('external', mid)
+  packet.run('second', second)
+  const cursor = head(db)
+  db.exec(`
+    INSERT INTO chat_redpack_external_views(packet_id,user_id,data,synced_at) VALUES('external',900002,'{}',4);
+    UPDATE chat_redpack_external_views SET synced_at=4 WHERE packet_id='external';
+    UPDATE chat_redpack_external_views SET synced_at=5 WHERE packet_id='external';
+    UPDATE chat_redpacks SET draw_data='{"draw_complete":true}' WHERE id='external';
+    UPDATE chat_redpack_external_views SET packet_id='second',user_id=900001 WHERE packet_id='external';
+    DELETE FROM chat_redpack_external_views WHERE packet_id='second';
+  `)
+  assert.deepEqual(db.prepare(`
+    SELECT group_id,message_id,kind,audience_user_id FROM chat_realtime_events WHERE seq>? ORDER BY seq
+  `).all(cursor).map(r => [r.group_id, r.message_id, r.kind, r.audience_user_id]), [
+    [21, mid, 'update', 900002],
+    [21, mid, 'update', 900002],
+    [21, mid, 'update', null],
+    [21, mid, 'update', 900002],
+    [22, second, 'update', 900001],
+    [22, second, 'update', 900001],
   ])
 })
 

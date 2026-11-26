@@ -16,6 +16,7 @@ from playwright.sync_api import expect, sync_playwright
 
 
 TIMEOUT = 20_000
+READ_SETTLE_MS = 1_100
 
 
 def wait_for(page, predicate, description):
@@ -36,11 +37,12 @@ class Client:
         self.read_path = f"/api/chat/groups/{self.group}/read"
         self.requests = []
         self.frames = []
+        self.read_posts = []
         self.read_updates = []
+        self.held_batches = None
         self.sockets = []
         self.connections = 0
         self.connected = None
-        self.block_poll = False
         self.repeat_body = None
         self.replayed = False
         self.last_send = 0
@@ -52,12 +54,13 @@ class Client:
             localStorage.setItem('guideDone', '1');
             window.addEventListener('chat-realtime-shadow', event => { window.testShadow = event.detail; });
         """)
-        self.context.route("**/*", self.route_http)
         self.context.route_web_socket("**/*", self.route_socket)
         self.page = self.context.new_page()
+        self.network = self.context.new_cdp_session(self.page)
+        self.network.send("Network.enable")
         self.page.set_default_timeout(TIMEOUT)
-        self.page.on("request", self.track_request)
-        self.page.on("response", self.track_read)
+        self.context.on("request", self.track_request)
+        self.context.on("response", self.track_read)
         self.page.on("websocket", lambda socket: self.sockets.append(socket)
                      if urlsplit(socket.url).path == "/api/chat/ws" else None)
 
@@ -75,19 +78,16 @@ class Client:
         self.page.goto(f"{self.origin}{dest}", wait_until="networkidle")
         expect(self.input).to_be_visible(timeout=TIMEOUT)
 
-    def route_http(self, route):
-        target = urlsplit(route.request.url)
-        if f"{target.scheme}://{target.netloc}" != self.origin:
-            route.abort()
-        elif (self.block_poll and target.path == self.messages
-                and route.request.method == "GET" and "after" in parse_qs(target.query)):
-            route.fulfill(status=503, json={"error": "本地验收当前阻止轮询"})
-        else:
-            route.continue_()
+    def set_poll_blocked(self, blocked):
+        # 仅阻断主页面的增量轮询。Playwright 的请求路由会使原生画中画卡在加载样式时。
+        urls = [f"{self.origin}{self.messages}?after=*"] if blocked else []
+        self.network.send("Network.setBlockedURLs", {"urls": urls})
 
     def track_request(self, request):
         target = urlsplit(request.url)
         self.requests.append((request.method, target.path, parse_qs(target.query)))
+        if request.method == "POST" and target.path == self.read_path:
+            self.read_posts.append(request.post_data_json["id"])
 
     def track_read(self, response):
         if (response.ok and response.request.method == "POST"
@@ -107,6 +107,9 @@ class Client:
         def forward(raw):
             frame = json.loads(raw)
             self.frames.append((connection, frame))
+            if self.held_batches is not None and frame.get("type") == "batch":
+                self.held_batches.append((route, raw))
+                return
             route.send(raw)
             if (self.repeat_body is not None and not self.replayed
                     and frame.get("type") == "batch"
@@ -193,6 +196,100 @@ def wait_read(client, mid):
     assert client.read_cursor() >= mid, f"服务端已读游标未推进到消息 {mid}"
 
 
+def assert_read_posts(client, start, expected, scenario):
+    actual = client.read_posts[start:]
+    assert actual == expected, f"{scenario}已读 POST 游标应为 {expected}，实际为 {actual}"
+
+
+def check_read_burst(sender, receiver, tag, *, popout=False):
+    scenario = "双窗口" if popout else "主窗口"
+    receiver.page.wait_for_function("""popout => {
+        const documents = popout ? [document, documentPictureInPicture.window?.document] : [document];
+        return documents.every(doc => {
+            const scroller = doc?.querySelector('.cm-scroll');
+            return scroller?.offsetParent && !doc.hidden &&
+                scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 3;
+        });
+    }""", arg=popout)
+    # 保留真实服务端发送的各个批次，集中转发给收件端来复现短时连收。
+    batches = []
+    messages = []
+    receiver.held_batches = batches
+    try:
+        for index in range(1, 4):
+            body = f"浏览器{scenario}已读合并 {tag} {index}"
+            mid = sender.send(body)
+            receiver.wait_frame("batch", mid=mid)
+            messages.append((mid, body))
+    finally:
+        receiver.held_batches = None
+
+    before = len(receiver.read_posts)
+    for route, raw in batches:
+        route.send(raw)
+        receiver.page.wait_for_timeout(60)
+    for mid, body in messages:
+        receiver.see(mid, body)
+        if popout:
+            receiver.page.wait_for_function("""({mid, body}) => {
+                const doc = documentPictureInPicture.window?.document;
+                const text = doc?.querySelector(`.cm-list .cm-row[data-row="${mid}"] .cm-text`);
+                if (text?.textContent !== body) return false;
+                const rect = text.getBoundingClientRect();
+                const viewport = text.closest('.cm-scroll').getBoundingClientRect();
+                return rect.height > 0 && rect.bottom > viewport.top && rect.top < viewport.bottom;
+            }""", arg={"mid": mid, "body": body})
+
+    last = messages[-1][0]
+    wait_read(receiver, last)
+    receiver.page.wait_for_timeout(READ_SETTLE_MS)
+    assert_read_posts(receiver, before, [last], scenario)
+    assert receiver.read_cursor() == last, f"{scenario}服务端游标与最后一条消息不一致"
+    print(f"通过{scenario}已读合并验收，三条消息只发一次真实 POST，最终游标 {last}")
+
+
+def open_main_group(client, name):
+    page = client.page
+    expected = f"{client.origin}/chat/{client.group}"
+    page.locator('nav[aria-label="主导航"] a[href="/chat"]').click()
+    if page.url != expected:
+        page.locator(".chat-groups .chat-gr").filter(has=page.get_by_text(name, exact=True)).click()
+    page.wait_for_url(expected)
+    expect(client.input).to_be_visible(timeout=TIMEOUT)
+
+
+def check_read_leave(sender, receiver, tag):
+    page = receiver.page
+    group_name = page.locator(".chat-head-name strong").inner_text()
+    before = len(receiver.read_posts)
+    body = f"浏览器离开前已读验收 {tag}"
+    read = sender.send(body)
+    receiver.wait_frame("batch", mid=read)
+    receiver.see(read, body)
+    assert_read_posts(receiver, before, [], "仍在合并期内")
+    with page.expect_request(lambda req: req.method == "POST" and urlsplit(req.url).path == receiver.read_path,
+                             timeout=600) as flushed:
+        page.get_by_role("link", name="图廊", exact=True).click()
+    assert flushed.value.post_data_json["id"] == read, "离开时未保存已阅读的最新游标"
+    wait_read(receiver, read)
+
+    body = f"浏览器离开期间未读验收 {tag}"
+    unread = sender.send(body)
+    page.wait_for_timeout(READ_SETTLE_MS)
+    assert_read_posts(receiver, before, [read], "离开群聊期间")
+    assert receiver.read_cursor() == read, "离开后到达的消息被标记为已读"
+
+    open_main_group(receiver, group_name)
+    receiver.see(unread, body)
+    expect(receiver.row(unread).locator(".cm-unread")).to_be_visible(timeout=TIMEOUT)
+    page.wait_for_timeout(READ_SETTLE_MS)
+    assert_read_posts(receiver, before, [read], "恢复阅读前")
+    receiver.go_latest()
+    wait_read(receiver, unread)
+    assert_read_posts(receiver, before, [read, unread], "恢复阅读后")
+    print(f"通过离开已读验收，离开时提交 {read}，新消息 {unread} 回到最新后才提交")
+
+
 @contextmanager
 def chat_controls(path, group):
     # 操作隔离夹具，退出验收时恢复这条配置记录。
@@ -269,7 +366,7 @@ def check_reconnect(sender, receiver, tag):
 
     previous = receiver.connections
     receiver.allow_socket(False)
-    receiver.block_poll = True
+    receiver.set_poll_blocked(True)
     receiver.connected.close(code=4001, reason="本地验收模拟漏收消息")
     try:
         body = f"浏览器实时补收验收 {tag}"
@@ -280,7 +377,7 @@ def check_reconnect(sender, receiver, tag):
         receiver.see(missed, body)
     finally:
         receiver.allow_socket(True)
-        receiver.block_poll = False
+        receiver.set_poll_blocked(False)
     wait_read(receiver, missed)
     print(f"通过断线 HTTP 补收、重新建立实时连接和 WS 补收验收，消息 {offline}、{mid}、{missed}")
 
@@ -303,17 +400,21 @@ def check_old_window(sender, receiver, tag):
     receiver.wait_frame("ready", after_connection=previous)
     old_top = anchor.evaluate("row => row.getBoundingClientRect().top")
 
+    before = len(receiver.read_posts)
     body = f"浏览器旧窗口验收 {tag}"
     mid = sender.send(body)
     receiver.wait_frame("batch", mid=mid, after_connection=previous)
     expect(latest).to_be_visible(timeout=TIMEOUT)
     expect(receiver.row(mid)).to_have_count(0)
     assert abs(anchor.evaluate("row => row.getBoundingClientRect().top") - old_top) <= 3, "旧阅读位置发生跳动"
+    page.wait_for_timeout(READ_SETTLE_MS)
+    assert_read_posts(receiver, before, [], "历史窗口")
     assert receiver.read_cursor() == cursor, "旧窗口意外推进了服务端已读游标"
 
     latest.click()
     receiver.see(mid, body)
     wait_read(receiver, mid)
+    assert_read_posts(receiver, before, [mid], "历史窗口回到最新后")
     print(f"通过旧窗口验收，旧阅读窗口保持定位且游标为 {cursor}，回到最新后呈现并标记消息 {mid}")
 
 
@@ -341,7 +442,7 @@ def check_shadow(sender, receiver, args, tag):
             client.go_latest()
 
         page = receiver.page
-        receiver.block_poll = True
+        receiver.set_poll_blocked(True)
         try:
             body = f"浏览器影子比对验收 {tag}"
             shadow = sender.send(body)
@@ -349,7 +450,7 @@ def check_shadow(sender, receiver, args, tag):
             page.wait_for_function("window.testShadow?.batches > 0")
             expect(receiver.row(shadow)).to_have_count(0)
         finally:
-            receiver.block_poll = False
+            receiver.set_poll_blocked(False)
         receiver.see(shadow, body)
         stats = page.wait_for_function("window.testShadow?.compared > 0 && window.testShadow").json_value()
         assert stats["mismatch"] == 0, "影子阶段同快照比对发生差异"
@@ -373,7 +474,6 @@ def check_shadow(sender, receiver, args, tag):
 
 def check_popout(sender, receiver, tag):
     page = receiver.page
-    expected = f"{receiver.origin}/chat/{receiver.group}"
     assert page.evaluate("typeof window.documentPictureInPicture?.requestWindow === 'function'"), "本机 Chromium 缺少文档画中画能力"
     page.get_by_role("link", name="图廊", exact=True).click()
     page.get_by_role("button", name="打开群聊", exact=True).click()
@@ -381,27 +481,19 @@ def check_popout(sender, receiver, tag):
     if pick.is_visible():
         pick.select_option(str(receiver.group))
     page.get_by_role("button", name="置顶浮窗", exact=False).click()
-    page.wait_for_function("documentPictureInPicture.window?.document.querySelector('.cm-list .cm-row')")
+    page.wait_for_function("""() => {
+        const doc = documentPictureInPicture.window?.document;
+        return doc?.querySelector('link[href*="/chat.css"]')?.sheet && doc.querySelector('.cm-list .cm-row');
+    }""")
     connection = receiver.wait_socket_ready()
     try:
         group_name = page.evaluate("documentPictureInPicture.window.document.querySelector('.pip-name').textContent")
-        page.locator('nav[aria-label="主导航"] a[href="/chat"]').click()
-        if page.url != expected:
-            page.locator(".chat-groups .chat-gr").filter(has=page.get_by_text(group_name, exact=True)).click()
-        page.wait_for_url(expected)
-        expect(receiver.input).to_be_visible(timeout=TIMEOUT)
+        open_main_group(receiver, group_name)
         receiver.go_latest()
         assert receiver.wait_socket_ready() == connection, "打开主窗后建立了额外的 WS 连接"
         assert sum(not s.is_closed() for s in receiver.sockets) == 1, "两窗没有共用一个实际 WS 连接"
-
-        body = f"浏览器双窗口验收 {tag}"
-        mid = sender.send(body)
-        receiver.wait_frame("batch", mid=mid, after_connection=connection - 1)
-        receiver.see(mid, body)
-        page.wait_for_function("""({mid, body}) => {
-            const doc = documentPictureInPicture.window?.document;
-            return doc?.querySelector(`.cm-list .cm-row[data-row="${mid}"] .cm-text`)?.textContent === body;
-        }""", arg={"mid": mid, "body": body})
+        check_read_burst(sender, receiver, tag, popout=True)
+        assert receiver.connections == connection, "双窗口收消息时建立了额外的 WS 连接"
     finally:
         page.evaluate("documentPictureInPicture.window?.close()")
         page.wait_for_function("!documentPictureInPicture.window")
@@ -413,7 +505,7 @@ def check_popout(sender, receiver, tag):
     receiver.see(after, body)
     assert receiver.connections == connection and not receiver.sockets[-1].is_closed(), "关闭浮窗影响了主窗 WS 连接"
     assert receiver.message_gets(before_send) == [], "关闭浮窗后主窗恢复了群消息 GET"
-    print(f"通过原生文档画中画验收，两窗共用一个实际 WS 连接，关闭浮窗后原连接继续推送，消息 {mid}、{after}")
+    print(f"通过原生文档画中画验收，两窗共用一个实际 WS 连接，关闭浮窗后原连接继续推送，消息 {after}")
 
 
 def main():
@@ -445,12 +537,16 @@ def main():
 
     tag = uuid4().hex[:10]
     with sync_playwright() as p:
-        sender_browser = p.chromium.launch(headless=True, executable_path=args.chromium)
-        receiver_browser = p.chromium.launch(headless=True, executable_path=args.chromium)
+        # Chromium 直接连接环回地址，其余流量交给本机不可用的代理端口。
+        launch = {"headless": True, "executable_path": args.chromium, "args": ["--proxy-server=http://127.0.0.1:1"]}
+        sender_browser = p.chromium.launch(**launch)
+        receiver_browser = p.chromium.launch(**launch)
         try:
             sender = Client(sender_browser, args, args.sender, key)
             receiver = Client(receiver_browser, args, args.receiver, key)
             check_live(sender, receiver, tag)
+            check_read_burst(sender, receiver, tag)
+            check_read_leave(sender, receiver, tag)
             check_reconnect(sender, receiver, tag)
             check_old_window(sender, receiver, tag)
             check_shadow(sender, receiver, args, tag)
