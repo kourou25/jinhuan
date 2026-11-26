@@ -2,7 +2,7 @@
 
 群管理员在「成员与设置 → 群机器人」安装机器人。每次安装绑定一个群，生成独立的推送地址、Token 和机器人用户名。安装或轮换时复制凭证，之后可暂停、恢复或移除机器人。
 
-已有数据库在部署 Worker 前应用 `migrations/0003_group_chat_bots.sql`。新库通过 `schema.sql` 初始化。要启用双向回调，在 Worker 设置随机签名密钥 `CHAT_BOT_WEBHOOK_KEY`，并在 `CHAT_BOT_WEBHOOK_ORIGINS` 列出允许的 HTTPS 源，以逗号分隔。填写回调时使用这些源下的地址。回调必须直接接收 POST，重定向会视为投递失败。
+已有数据库在部署 Worker 前应用 `migrations/0003_group_chat_bots.sql`。新库通过 `schema.sql` 初始化。要启用双向回调，在 Worker 设置随机签名密钥 `CHAT_BOT_WEBHOOK_KEY`。群管理员安装机器人时填写接入服务的公开 HTTPS 地址。回调必须直接接收 POST，重定向会视为投递失败。
 
 ## 推送到群聊
 
