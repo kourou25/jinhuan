@@ -290,11 +290,13 @@ function drawSiteUpdates(content, { updates, stale }, { kind, issue, skin, syncA
   const ordered = target ? [target, ...shown.filter(item => item !== target)] : shown
   const more = appendPaged(list, ordered, record => updateCard(record, record === target, syncAvailable))
   backlink?.show(Boolean(target))
-  content.replaceChildren(
+  const children = [
     stale ? el('div', { className: 'ch-notice ch-notice-actions', role: 'status' }, el('span', null, 'GitHub 暂时连不上，下面是最近一次读到的内容。'), button('重新读取', retry, 'btn btn-ghost sm')) : null,
     counts.size ? filters : null,
     ordered.length ? list : state('还没有更新记录。'),
-    ordered.length ? more : null)
+    ordered.length ? more : null,
+  ]
+  content.replaceChildren(...children.filter(Boolean))
 }
 
 function skinUpdateCard(update, pending) {
