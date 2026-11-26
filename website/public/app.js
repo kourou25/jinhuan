@@ -8556,7 +8556,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   const userId = S.me?.id
   let historySince = 0, historyFloor = 0
   const positionKey = `${S.me?.id || 0}:${g.id}`
-  let positionTimer = 0
+  let positionTimer = 0, lastPosition = null, readingRecovery = null
   let aiPanel, aiLoading, guessPanel, guessLoading, huancaiPanel, huancaiLoading, gamePanel, gameLoading, vipPanel, vipLoading, sideMode='', bagTimer=0, bagLast=0, bagBusy=false, bagQueued=false
   async function openGuess(mid = 0) {
     sideMode='guess';huancaiPanel?.close();gamePanel?.close()
@@ -8589,7 +8589,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   // 消息列表视图：主列表和历史消息层各一个，共用 renderRow 渲染和 pane 根上的事件委托（按消息所在的列表找视图）
   // 以后再加一种消息列表，只要 VIEWS.set(容器, 视图)，右键 / 左滑 / 操作条就都有了
   const VIEWS = new WeakMap()
-  let listRevision = 0
+  let listRevision = 0, permissionRevision = 0
   let histEl = null // 历史消息层（historyView）
   let histView = null
   let histMotion = null
@@ -8609,17 +8609,40 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   } })
   const nearBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 80
   const exactBottom = () => scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 3
+  function readingPosition(view) {
+    const { box, scrollRoot } = view
+    const children = box.children
+    if (!box.isConnected || !scrollRoot.clientHeight || !children.length) return null
+    // 二分查找视口第一行，历史层与主列表可使用不同的定位容器。
+    const top = scrollRoot.getBoundingClientRect().top + scrollRoot.clientTop
+    let lo = 0, hi = children.length - 1
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1
+      if (children[mid].getBoundingClientRect().bottom <= top) lo = mid + 1
+      else hi = mid
+    }
+    const row = children[lo], id = Number(row.dataset.row)
+    if (!Number.isSafeInteger(id) || id <= 0) return null
+    const rect = row.getBoundingClientRect()
+    return { id, offset: rect.top - top, height: rect.height, width: scrollRoot.clientWidth }
+  }
+  function placeReadingPosition(view, position) {
+    const { scrollRoot, rows, items } = view
+    const row = rows.get(position.id) || rows.get(items.find(m => m.id >= position.id)?.id) || rows.get(items.at(-1)?.id)
+    if (!row) return false
+    const rect = row.getBoundingClientRect()
+    const offset = Math.abs((position.width || 0) - scrollRoot.clientWidth) > 20 && position.height > 0
+      ? Math.min(0, position.offset / position.height) * rect.height : position.offset
+    scrollRoot.scrollTop += rect.top - scrollRoot.getBoundingClientRect().top - scrollRoot.clientTop - offset
+    return true
+  }
   function savePosition() {
     clearTimeout(positionTimer)
-    if (!st.done || st.restoring || st.destroyed || !scroller.isConnected || !scroller.clientHeight || !st.items.length) return
-    // 二分查找视口第一行，避免每次滚动逐条测量整个历史窗口。
-    const children = list.children, top = scroller.scrollTop
-    let lo = 0, hi = children.length - 1
-    while (lo < hi) { const mid = (lo + hi) >> 1, r = children[mid]; if (r.offsetTop + r.offsetHeight <= top) lo = mid + 1; else hi = mid }
-    const r = children[lo], id = Number(r?.dataset.row)
-    if (!Number.isSafeInteger(id) || id <= 0) return
-    CHAT_POS.set(positionKey, { id, offset: r.offsetTop - top, height: r.offsetHeight, width: scroller.clientWidth,
-      tail: st.items.at(-1).id, bottom: !st.after && exactBottom(), at: Date.now() })
+    if (!st.done || st.restoring || st.destroyed || !scroller.isConnected) return
+    const position = readingPosition(mainView)
+    if (!position) return
+    lastPosition = position
+    CHAT_POS.set(positionKey, { ...position, tail: st.items.at(-1).id, bottom: !histEl && !st.after && exactBottom(), at: Date.now() })
   }
   const queuePosition = () => { clearTimeout(positionTimer); positionTimer = setTimeout(savePosition, 400) }
   const pauseFollow = () => {
@@ -8680,6 +8703,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   function requestBottom() {
     if (st.destroyed) return
     closeHist()
+    if (readingRecovery && !st.done && !st.forceLatest) return backToLatest(true)
     // 翻页完成后再跳到最新，避免正在加载时丢掉点击。
     if (st.busy) { st.bottomRequested = true; return }
     if (st.after) return backToLatest()
@@ -9065,16 +9089,22 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     let loaded = false
     try {
       const initial = !st.first && !st.done
-      const saved = initial && !st.forceLatest ? CHAT_POS.get(positionKey) : null
+      const recovery = initial ? readingRecovery : null
+      const saved = initial && !st.forceLatest && !recovery ? CHAT_POS.get(positionKey) : null
       const currentGroup = initial ? findGroup(g.id) || g : g
-      const resume = saved && (!saved.bottom || (currentGroup.latest?.id || 0) > saved.tail) ? saved : null
+      const resume = recovery?.position || (saved && (!saved.bottom || (currentGroup.latest?.id || 0) > saved.tail) ? saved : null)
       const around = initial && !st.forceLatest ? (resume?.id || (currentGroup.unread > 0 ? Math.max(1, currentGroup.last_read || 0) : 0)) : 0
+      if (manual) recovery?.history?.loading()
       const d = await api(`/chat/groups/${g.id}/messages` + (st.first ? `?before=${st.first}` : around ? `?around=${around}` : ''))
       if (!active() || revision !== listRevision) return
       if (!scroller.isConnected && st.first) return
-      if (!initial && membershipChanged(d.group)) {
-        await reopenForMembership(true)
+      if ((!initial || recovery) && membershipChanged(d, recovery?.generation)) {
+        await reopenForMembership()
         return
+      }
+      if (recovery && (st.reply || st.editing)) {
+        await restoreMessageAction(d.items, revision)
+        if (!active() || revision !== listRevision) return
       }
       if (initial) {
         historySince = d.group.history_since
@@ -9085,7 +9115,11 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         st.since = d.now
         chatReads.observe(g.id, d.last_read || 0)
         const lr = chatReads.confirmed(g.id)
-        st.unreadAt = d.items.find((m) => m.id > lr && !m.mine)?.id ?? -1
+        const previousUnread = recovery?.unreadAt > lr ? recovery.unreadAt : 0
+        const beforeWindow = d.more && d.items[0]?.id > previousUnread
+        const afterWindow = d.more_after && d.items.at(-1)?.id < previousUnread
+        st.unreadAt = previousUnread && (beforeWindow || afterWindow) ? previousUnread
+          : d.items.find(m => m.id > lr && m.id >= previousUnread && !m.mine && !m.deleted)?.id ?? -1
         st.newIds = d.items.filter(m => m.id > lr && !m.mine && !m.deleted).map(m => m.id)
         st.after = d.more_after ? d.items.at(-1)?.id || 0 : 0
         if (st.after) st.last = Math.max(st.last, currentGroup.latest?.id || 0)
@@ -9096,24 +9130,28 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       if (!initial) trimHistory('older')
       if (initial) {
         // 导航插入 pane、手机紧凑头部和同步占位尺寸完成后再恢复，期间不标已读。
-        await new Promise(resolve => requestAnimationFrame(resolve))
+        const nextFrame = () => new Promise(resolve => doc.defaultView.requestAnimationFrame(resolve))
+        await nextFrame()
         if (!active() || revision !== listRevision || !scroller.isConnected) return
         const mark = list.querySelector('.cm-unread')
-        const target = resume && (rows.get(resume.id) || rows.get(d.items.find(m => m.id >= resume.id)?.id) || rows.get(d.items.at(-1)?.id))
-        const place = () => { if (st.userScrollIntent) return; if (target) {
-          const offset = Math.abs((resume.width || 0) - scroller.clientWidth) > 20 && resume.height > 0
-            ? Math.min(0, resume.offset / resume.height) * target.offsetHeight : resume.offset
-          scroller.scrollTop = target.offsetTop - offset
-        } else if (!st.forceLatest && mark) scroller.scrollTop = Math.max(0, mark.offsetTop - 40)
-        else if (!st.after) toBottom() }
+        const place = () => {
+          if (st.userScrollIntent) return
+          const sameTail = recovery?.followedTail && !st.after && d.items.at(-1)?.id <= recovery.followedTail
+          if (sameTail && !histEl && !away()) toBottom()
+          else if (resume && placeReadingPosition(mainView, resume)) return
+          else if (!st.forceLatest && mark) scroller.scrollTop = Math.max(0, mark.offsetTop - 40)
+          else if (!st.after && !histEl) toBottom()
+        }
         place()
         // 离屏占位首轮测量可能修正上方行高；在恢复阶段完成一次校准，之后不抢用户滚动。
-        await new Promise(resolve => requestAnimationFrame(resolve))
+        await nextFrame()
         if (!active() || revision !== listRevision || !scroller.isConnected) return
         place()
         st.done = true
         st.restoring = false
         st.forceLatest = false
+        readingRecovery = null
+        recovery?.history?.restore()
         if (isChatCursor(d.realtime_cursor)) {
           st.realtimeCursor = d.realtime_cursor
           st.realtimeMode = d.realtime_mode === 'shadow' ? 'shadow' : 'live'
@@ -9135,22 +9173,44 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       st.olderFailed = false
     } catch (e) {
       if (!active() || revision !== listRevision) return
-      if (e.status === 401 || e.status === 403) return lost(e)
+      if (e.status === 401 || e.status === 403 || e.status === 404) return lost(e)
       st.olderFailed = true
-      topSpin.replaceChildren(h('button', { class: 'btn-text', onclick: () => older(true) }, e.message + ' · 重试'))
+      const retry = () => older(true)
+      topSpin.replaceChildren(h('button', { class: 'btn-text', onclick: retry }, e.message + ' · 重试'))
+      readingRecovery?.history?.retry(e, retry)
     } finally {
       finishChatPage(revision)
     }
     if (loaded && st.more && scroller.scrollTop < 300 && scroller.isConnected && scroller.clientHeight) requestAnimationFrame(() => older())
   }
 
-  const membershipChanged = (group) => historySince !== group.history_since || historyFloor !== (group.history_floor || 0)
+  function membershipChanged({ group, realtime_generation: generation }, previous = st.realtimeGeneration) {
+    return historySince !== group.history_since || historyFloor !== (group.history_floor || 0)
+      || (previous && generation && previous !== generation)
+  }
+  async function restoreMessageAction(items, revision) {
+    const target = st.reply || st.editing
+    let message = items.find(m => m.id === target.id)
+    if (!message) {
+      try { ({ message } = await api(`/chat/groups/${g.id}/messages/${target.id}`)) }
+      catch (e) { if (e.status !== 404 && e.status !== 410) throw e }
+    }
+    if (!active() || revision !== listRevision) return
+    if (st.reply === target) setReply(message?.deleted ? null : message, false)
+    if (st.editing === target) {
+      if (message?.can_edit) st.editing = message
+      else setEdit(null, false)
+    }
+  }
   function closeChatPacket() {
     const dialog = doc.querySelector('.rpk-dialog[open]')
     if (dialog && chatPacketOwner.get(dialog) === el) dialog.close()
   }
-  async function reopenForMembership(changedMembership = false) {
-    if (changedMembership) chatReads.reset(g.id)
+  async function reopenForMembership() {
+    permissionRevision++
+    chatReads.reset(g.id)
+    readingRecovery = null
+    lastPosition = null
     closeHist()
     closeChatPacket()
     if (POP?.el.ownerDocument === doc) closePop()
@@ -9159,7 +9219,25 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     dropAway()
     if (st.reply) setReply(null, false)
     if (st.editing) setEdit(null, false)
+    for (const job of [...inflight]) job.settle()
     await backToLatest(true)
+  }
+
+  function recoverReading() {
+    if (!active() || readingRecovery) return
+    const position = readingPosition(mainView) || lastPosition || (st.first ? { id: st.first, offset: 0 } : null)
+    const followedTail = !histEl && !st.after && st.stick && !st.followPaused && exactBottom() && !away() ? st.items.at(-1)?.id : 0
+    readingRecovery = { position, followedTail, unreadAt: st.unreadAt, generation: st.realtimeGeneration,
+      hadAfter: !!st.after, history: histView?.suspend() }
+    closeChatPacket()
+    if (POP?.anchor?.closest?.('.cm-pane') === el) closePop()
+    searchEl?.remove()
+    searchEl = null
+    awayEl?.remove()
+    awayEl = null
+    if (st.reply) reply.replaceChildren(icon('reply', 'i tiny'), h('span', null, '正在恢复回复'),
+      h('button', { class: 'cm-x', type: 'button', 'aria-label': '取消回复', onclick: () => setReply(null, false) }, icon('close', 'i tiny')))
+    return reloadReading()
   }
 
   let transportRevision = 0
@@ -9210,9 +9288,9 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         const now = Date.now()
         if (now - (st.realtimeResetAt || 0) < 10000) st.realtimeRetryAt = now + 10000
         st.realtimeResetAt = now
-        void reopenForMembership()
+        void recoverReading()
       },
-      revoked() { if (active()) void reopenForMembership(true) }
+      revoked() { if (active()) void reopenForMembership() }
     })
   }
 
@@ -9330,16 +9408,16 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         const started = deliveryRevision
         const d = await loadChatPoll(`/chat/groups/${g.id}/messages?after=${st.last}&since=${st.since}&include_total=0`)
         if (!active() || !scroller.isConnected || revision !== listRevision || transport !== transportRevision) { more = false; return }
-        if (membershipChanged(d.group) || (st.realtimeGeneration && d.realtime_generation && d.realtime_generation !== st.realtimeGeneration)) {
+        if (membershipChanged(d)) {
           more = false
-          await reopenForMembership(true)
+          await reopenForMembership()
           return
         }
         if (isChatCursor(d.realtime_cursor)) {
           const mode = d.realtime_mode === 'shadow' ? 'shadow' : 'live'
           if (typeof WebSocket === 'function' && (!isChatCursor(st.realtimeCursor) || st.realtimeMode !== mode)) {
             more = false
-            await reopenForMembership()
+            await recoverReading()
             return
           }
           if (mode === 'shadow') shadowSample(d, d.realtime_cursor, 'http')
@@ -9355,7 +9433,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       }
     } catch (e) {
       more = false
-      if (active() && revision === listRevision && transport === transportRevision && (e.status === 401 || e.status === 403)) void lost(e)
+      if (active() && revision === listRevision && transport === transportRevision && (e.status === 401 || e.status === 403 || e.status === 404)) void lost(e)
     } finally {
       if (st.polling === run) {
         st.polling = false
@@ -9405,7 +9483,10 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   function closeHist() { if (!histEl) return; histMotion?.destroy(); histMotion = null; histEl.remove(); histEl = null; histView = null; drawDown();bubbleMotion.refresh() }
   async function historyView(id) {
     closeHist()
-    const box = h('div', { class: 'cm-hist-list' }, h('div', { class: 'cm-hist-loading', role: 'status', 'aria-label': '正在加载历史消息' }, h('div', { class: 'spinner', 'aria-hidden': 'true' })))
+    const box = h('div', { class: 'cm-hist-list' })
+    const loading = () => box.replaceChildren(h('div', { class: 'cm-hist-loading', role: 'status', 'aria-label': '正在加载历史消息' }, h('div', { class: 'spinner', 'aria-hidden': 'true' })))
+    const retry = (e, run) => box.replaceChildren(h('button', { class: 'btn-text cm-hist-more', type: 'button', onclick: run }, e.message + ' · 重试'))
+    loading()
     const title = h('span', { class: 'cm-hist-t' }, '历史消息')
     const close = closeHist
     histEl = h('div', { class: 'cm-hist', role: 'region', 'aria-label': '历史消息' },
@@ -9429,7 +9510,8 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     hv.pane = { ...api_, gallery: (m, i) => galleryOf(hv.items, m, i) }
     VIEWS.set(rowsBox, hv)
     const historyMotion = histMotion = createChatBubbleVisibility({list:rowsBox,scrollRoot:box,document:doc,isLive:()=>!st.destroyed&&histView===hv})
-    onRemoval(rowsBox,()=>historyMotion.destroy())
+    // 补拉期间消息容器会暂时移开，动效观察器跟随历史层外壳的生命周期。
+    onRemoval(histEl,()=>historyMotion.destroy())
     const draw = () => {
       hv.rows.clear()
       rowsBox.replaceChildren(...hv.items.map((m, i) => renderRow(hv, m, hv.items[i - 1])))
@@ -9442,17 +9524,19 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     }
     // 历史层允许双向翻阅，但只保留附近 150 条；裁掉的一侧仍可从边界重新加载。
     const HISTORY_WINDOW = 150
-    let extending = false
+    let extending = false, fetchRevision = 0, anchor = id, lastHistoryPosition = null
+    const current = (revision) => active() && histView === hv && revision === fetchRevision
     const extend = async (dir) => {
       if (extending) return
       const edge = dir === 'up' ? hv.items[0]?.id : hv.items[hv.items.length - 1]?.id
       if (!edge) return
       extending = true
+      const revision = fetchRevision
       try {
         const started = deliveryRevision
         const d = await api(`/chat/groups/${g.id}/messages?around=${edge}`)
-        if (!active() || histView !== hv) return
-        if (membershipChanged(d.group)) { await reopenForMembership(true); return }
+        if (!current(revision)) return
+        if (membershipChanged(d)) { await reopenForMembership(); return }
         const have = new Set(hv.items.map((m) => m.id))
         const fresh = mergeMessages(d.items, d.realtime_cursor, started).filter(m => !have.has(m.id))
         const oldTop = hv.rows.get(edge)?.getBoundingClientRect().top
@@ -9475,31 +9559,64 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         const newTop = hv.rows.get(edge)?.getBoundingClientRect().top
         if (oldTop != null && newTop != null) box.scrollTop += newTop - oldTop
       } catch (e) {
-        if (!active() || histView !== hv) return
-        if (e.status === 401 || e.status === 403) void lost(e)
+        if (!current(revision)) return
+        if (e.status === 401 || e.status === 403 || e.status === 404) void lost(e)
         else toast(e.message, 'err')
-      } finally { extending = false }
+      } finally { if (current(revision)) extending = false }
     }
-    try {
+    async function load(position = null) {
+      const revision = ++fetchRevision
       const started = deliveryRevision
-      const d = await api(`/chat/groups/${g.id}/messages?around=${id}`)
-      if (!active() || histView !== hv) return
-      if (membershipChanged(d.group)) { await reopenForMembership(true); return }
-      hv.items = mergeMessages(d.items, d.realtime_cursor, started)
-      hv.more = d.more
-      hv.after = !!d.more_after
-      const t = hv.items.find((m) => m.id === id)
-      if (!t) { close(); return toast(id < (d.items[0]?.id || Infinity) ? '原消息早于你入群的时间，看不到原文' : '原消息找不到了') }
-      title.textContent = '历史消息 · ' + fullDate(t.created_at)
-      draw()
-      const r = hv.rows.get(id)?.querySelector('.cm-msg')
-      if(r)settleChatFocus(box,r)
-      if (r) flashMsg(r, t)
-    } catch (e) {
-      if (!active() || histView !== hv) return
-      if (e.status === 401 || e.status === 403) void lost(e)
-      else { close(); toast(e.message, 'err') }
+      loading()
+      try {
+        const d = await api(`/chat/groups/${g.id}/messages?around=${anchor}`)
+        if (!current(revision)) return
+        if (membershipChanged(d)) { await reopenForMembership(); return }
+        hv.items = mergeMessages(d.items, d.realtime_cursor, started)
+        hv.more = d.more
+        hv.after = !!d.more_after
+        const exact = hv.items.find(m => m.id === anchor)
+        const target = exact || (position && (hv.items.find(m => m.id >= anchor) || hv.items.at(-1)))
+        if (!target) {
+          close()
+          return toast(anchor < (d.items[0]?.id || Infinity) ? '原消息早于你入群的时间，看不到原文' : '原消息找不到了')
+        }
+        title.textContent = '历史消息 · ' + fullDate(target.created_at)
+        draw()
+        if (position) {
+          placeReadingPosition(hv, position)
+          const top = box.scrollTop
+          doc.defaultView.requestAnimationFrame(() => {
+            if (current(revision) && box.scrollTop === top) placeReadingPosition(hv, position)
+          })
+        } else {
+          const row = hv.rows.get(anchor)?.querySelector('.cm-msg')
+          if (row) { settleChatFocus(box, row); flashMsg(row, target) }
+        }
+      } catch (e) {
+        if (!current(revision)) return
+        if (e.status === 401 || e.status === 403 || e.status === 404) void lost(e)
+        else retry(e, () => load(position))
+      }
     }
+    hv.suspend = () => {
+      const position = readingPosition(hv) || lastHistoryPosition || { id: anchor, offset: 0 }
+      lastHistoryPosition = position
+      anchor = position.id
+      fetchRevision++
+      extending = false
+      title.textContent = '历史消息'
+      hv.rows.clear()
+      hv.items = []
+      rowsBox.replaceChildren()
+      loading()
+      return {
+        restore: () => { if (histView === hv) void load(position) },
+        loading: () => { if (histView === hv) loading() },
+        retry: (e, run) => { if (histView === hv) retry(e, run) },
+      }
+    }
+    await load()
   }
   // 跳转窗口：清空列表，只放 id 前后各 25 条
   const resetList = () => { listRevision++; rows.clear(); list.replaceChildren(); st.items = []; st.first = 0; st.last = 0; st.olderFailed = false; st.newIds = []; pill.hidden = true; st.unreadAt = -1 }
@@ -9510,7 +9627,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     try {
       const d = await api(`/chat/groups/${g.id}/messages?around=${id}`)
       if (!active() || revision !== listRevision) return
-      if (membershipChanged(d.group)) { await reopenForMembership(true); return }
+      if (membershipChanged(d)) { await reopenForMembership(); return }
       resetList()
       revision = listRevision
       st.more = d.more
@@ -9529,7 +9646,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     try {
       const d = await api(`/chat/groups/${g.id}/messages?around=${st.after}`)
       if (!active() || revision !== listRevision || !scroller.isConnected) return
-      if (membershipChanged(d.group)) { await reopenForMembership(true); return }
+      if (membershipChanged(d)) { await reopenForMembership(); return }
       const items = mergeMessages(d.items, d.realtime_cursor, started).filter(m => m.id > st.after)
       add(items, 'bottom')
       const lastRead = chatReads.confirmed(g.id)
@@ -9544,11 +9661,10 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         void poll(true)
       }
     } catch (e) {
-      if (active() && revision === listRevision && (e.status === 401 || e.status === 403)) void lost(e)
+      if (active() && revision === listRevision && (e.status === 401 || e.status === 403 || e.status === 404)) void lost(e)
     } finally { finishChatPage(revision) }
   }
-  async function backToLatest(replacing = false) {
-    if (!active() || (st.busy && !replacing)) return
+  function reloadReading(forceLatest = false) {
     stopRealtime()
     st.realtimeCursor = null
     st.realtimeGeneration = null
@@ -9557,14 +9673,21 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     clearTimeout(st.catchupT)
     messageVersions.clear()
     shadowSamples.clear()
+    st.done = false
+    st.restoring = false
     st.after = 0
     st.more = true
     resetList()
     drawLatest()
-    st.done = false
+    topSpin.replaceChildren(h('div', { class: 'spinner' }))
     st.userScrollIntent = false
-    st.forceLatest = true
-    await older()
+    st.forceLatest = forceLatest
+    return older()
+  }
+  function backToLatest(replacing = false) {
+    if (!active() || (st.busy && !replacing)) return
+    if (readingRecovery) readingRecovery = { generation: readingRecovery.generation }
+    return reloadReading(true)
   }
   async function latestAfterSend() {
     const deadline=Date.now()+5000
@@ -9585,7 +9708,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   }
   const latestBtn = h('button', { class: 'cm-pill cm-latest', type: 'button', hidden: true, onclick: requestBottom }, '回到最新消息 ↓')
   const drawLatest = () => {
-    latestBtn.hidden = !st.after
+    latestBtn.hidden = !st.after && !readingRecovery?.hadAfter
     const unread = (findGroup(g.id) || g).unread || 0
     latestBtn.textContent = (unread ? `${unread > 99 ? '99+' : unread} 条未读 · ` : '') + '回到最新消息 ↓'
   }
@@ -9722,6 +9845,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     }
   }
   async function saveEdit() {
+    if (readingRecovery) return toast('正在核对要编辑的消息，请稍候')
     const m = st.editing
     const body = ta.value.trim()
     if (body === m.body.trim()) return setEdit(null)
@@ -9746,26 +9870,36 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   }
   const ta = richInput({ placeholder: `发消息到 ${g.name}`, label: '消息' })
   let att = attachSlot('chat')
+  function replyWaitingForRecovery() {
+    if (!readingRecovery || !st.reply) return false
+    toast('正在核对要回复的消息，请稍候')
+    return true
+  }
   // 发文件（压缩包、文档…）：选了直接传、直接发，一个文件一条消息
   const fileIn = h('input', { type: 'file', multiple: true, class: 'sr-only', tabindex: '-1', 'aria-hidden': 'true' })
+  fileIn.addEventListener('click', (e) => { if (replyWaitingForRecovery()) e.preventDefault() })
   fileIn.addEventListener('change', async () => {
+    if (replyWaitingForRecovery()) return
     const fs = [...fileIn.files]
+    fileIn.value = ''
+    const permission = permissionRevision
+    const restoring = !!readingRecovery
     const replyTarget=st.reply
     const keepReplyPosition=!!replyTarget&&(!!histEl||!!st.after||!nearBottom())
-    let fromHistory=!!histEl||!!st.after||!!(replyTarget&&!nearBottom())
-    fileIn.value = ''
+    let fromHistory=!restoring&&(!!histEl||!!st.after||!!(replyTarget&&!nearBottom()))
     for (const f of fs) {
       if (f.size > MAX_FILE) { toast(`「${f.name}」超过 20MB`, 'err'); continue }
       const tip = toast(`正在上传 ${f.name}…`)
       try {
         const r = await uploadFile(f, 'chat', 'file')
-        if (!active()) return
+        if (!active() || permission !== permissionRevision) return
         const started = deliveryRevision
         const { message: saved } = await api(`/chat/groups/${g.id}/messages`, { method: 'POST', body: { command_id: chatCommandId(), body: '', reply_to: replyTarget?.id || 0, media: [{ key: r.key, name: f.name }] } })
-        if (!active()) return
+        if (!active() || permission !== permissionRevision) return
+        if (readingRecovery || (restoring && st.after)) continue
         const message = latestMessage(saved, null, started)
         if((st.reply?.id||0)===(replyTarget?.id||0))setReply(null)
-        if(!keepReplyPosition)closeHist()
+        if(!restoring&&!keepReplyPosition)closeHist()
         const follow = st.stick && !st.followPaused && nearBottom()
         if(keepReplyPosition)keepHistoricalReply(message)
         else if(fromHistory){fromHistory=false;await latestAfterSend()}
@@ -9779,16 +9913,19 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   // 乐观发送：先在底部画一条「发送中」，输入框立刻清空可以接着打字；失败了给重试 / 撤回
   // only：直接发这段内容（表情包），不动输入框里写了一半的字和待发的图
   async function send(only) {
+    if (replyWaitingForRecovery()) return
     const body = only || ta.value.trim()
     if (!body && !att.items.length) return
     if (!requireLogin('聊天')) return
     // only 只来自「+1 复读」：和回复一样是对眼前这条消息的操作
     const repeat = !!only
-    const fromHistory = !!histEl || !!st.after || !!((st.reply || repeat) && !nearBottom())
+    const restoring = !!readingRecovery
+    const fromHistory = !restoring && (!!histEl || !!st.after || !!((st.reply || repeat) && !nearBottom()))
     const keepReplyPosition = (!!st.reply || repeat) && fromHistory
-    const followSend = st.stick && !st.followPaused && nearBottom() && !histEl && !st.after
+    const followSend = !restoring && st.stick && !st.followPaused && nearBottom() && !histEl && !st.after
+    const permission = permissionRevision
     // 回复或复读旧消息时都保留历史视图，不跳到最新；其余发送继续沿用原来的跳转行为。
-    if (!keepReplyPosition) closeHist()
+    if (!restoring && !keepReplyPosition) closeHist()
     const job = { commandId: chatCommandId(), body, reply: st.reply, tray: !only && att.items.length ? att : null, done: false, tries: 0 }
     const fake = { id: 0, user: { id: S.me.id, username: S.me.username, name: S.me.name, avatar: S.me.avatar, is_admin: S.me.is_admin, fancy: S.me.fancy },
       body, media: job.tray ? att.local() : null, created_at: Date.now() / 1000, reactions: [], mine: true,
@@ -9828,9 +9965,10 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         const started = deliveryRevision
         // 重试复用这一条发送的标识。新发送即使内容相同，也使用独立标识。
         const { message: saved } = await api(`/chat/groups/${g.id}/messages`, { method: 'POST', body: { command_id: job.commandId, body, reply_to: job.reply?.id || 0, media, retry: job.tries++ > 0 || undefined } })
-        if (!active()) return
+        if (!active() || permission !== permissionRevision) return
         const message = latestMessage(saved, null, started)
         if (!job.done) job.settle(message)
+        if (readingRecovery || (restoring && st.after)) return
         const stick = followSend && st.stick && !st.followPaused && nearBottom()
         if(keepReplyPosition)keepHistoricalReply(message,repeat?'已复读':'回复已发送')
         else if(fromHistory)await latestAfterSend()

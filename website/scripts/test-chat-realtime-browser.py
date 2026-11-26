@@ -127,9 +127,9 @@ class Client:
             };
         }""", allow)
 
-    def wait_frame(self, kind, *, after_connection=0, mid=None):
+    def wait_frame(self, kind, *, after_connection=0, after_frame=0, mid=None):
         def find():
-            return next((frame for connection, frame in self.frames if
+            return next((frame for connection, frame in self.frames[after_frame:] if
                          connection > after_connection and frame.get("group") == self.group
                          and frame.get("type") == kind
                          and (mid is None or any(m.get("id") == mid for m in frame.get("items", [])))), None)
@@ -382,7 +382,102 @@ def check_reconnect(sender, receiver, tag):
     print(f"通过断线 HTTP 补收、重新建立实时连接和 WS 补收验收，消息 {offline}、{mid}、{missed}")
 
 
-def check_old_window(sender, receiver, tag):
+def open_old_overlay(client, before):
+    response = client.context.request.get(f"{client.origin}{client.messages}", params={"before": before})
+    assert response.ok, f"读取历史验收消息失败，HTTP {response.status}"
+    target = next((m for m in response.json()["items"] if m["body"] and len(m["body"]) <= 80
+                   and m["body"].isprintable() and "@" not in m["body"] and not client.row(m["id"]).count()), None)
+    assert target, "验收群缺少主列表以外的可搜索历史消息"
+    page = client.page
+    page.get_by_role("button", name="搜索聊天记录", exact=True).click()
+    search = page.get_by_role("searchbox", name="搜索聊天记录", exact=True)
+    search.fill(target["body"])
+    page.locator(".cms-row").filter(has=page.get_by_text(target["body"], exact=True)).click()
+    overlay = page.get_by_role("region", name="历史消息", exact=True)
+    row = overlay.locator(f'.cm-row[data-row="{target["id"]}"]')
+    expect(row.locator(".cm-text")).to_have_text(target["body"], timeout=TIMEOUT)
+    return overlay, row
+
+
+def row_top(row):
+    return row.evaluate("""row => row.getBoundingClientRect().top -
+        row.closest('.cm-scroll, .cm-hist-list').getBoundingClientRect().top""")
+
+
+def prune_chat_events(path, group, stale, fence):
+    # 只改隔离夹具的事件日志，触发与生产保留期相同的清理高水位更新。
+    with closing(sqlite3.connect(f"{path.resolve().as_uri()}?mode=rw", uri=True)) as db, db:
+        assert stale < fence, "裁剪边界必须高于离线客户端的游标"
+        deleted = db.execute("DELETE FROM chat_realtime_events WHERE group_id=? AND seq<=?", (group, fence)).rowcount
+        floor = db.execute("SELECT seq FROM chat_realtime_pruned WHERE group_id=?", (group,)).fetchone()
+        assert deleted and floor == (fence,), f"事件裁剪未把群游标边界推进到 {fence}，实际为 {floor}"
+
+
+def check_expired_cursor(sender, receiver, args, tag, anchor, overlay, overlay_row, stale):
+    page = receiver.page
+    main_top, overlay_top = row_top(anchor), row_top(overlay_row)
+
+    def around_response(mid):
+        def matches(response):
+            url = urlsplit(response.url)
+            return (response.request.method == "GET" and url.path == receiver.messages
+                    and parse_qs(url.query).get("around") == [mid])
+
+        return matches
+
+    disconnected = receiver.connections
+    receiver.allow_socket(False)
+    receiver.set_poll_blocked(True)
+    receiver.connected.close(code=4001, reason="本地验收模拟游标离线过期")
+    try:
+        missed = sender.send(f"浏览器游标过期期间消息 {tag}")
+        delivered = sender.wait_frame("batch", mid=missed)
+        prune_chat_events(args.db, args.group, stale, delivered["cursor"])
+        # 读取实际视口第一行。历史层初次跳转会居中，中心消息未必是恢复请求的锚点。
+        visible_anchor = """row => {
+            const scroller = row.closest('.cm-scroll, .cm-hist-list');
+            const top = scroller.getBoundingClientRect().top + scroller.clientTop;
+            return [...scroller.querySelectorAll('.cm-row[data-row]')]
+                .find(item => item.getBoundingClientRect().bottom > top)?.dataset.row;
+        }"""
+        main_id = anchor.evaluate(visible_anchor)
+        overlay_id = overlay_row.evaluate(visible_anchor)
+        assert main_id and overlay_id and main_id != overlay_id, "主列表与历史覆盖层应有两个有效的视口锚点"
+        with (page.expect_response(around_response(main_id)) as main_fetch,
+              page.expect_response(around_response(overlay_id)) as overlay_fetch):
+            receiver.allow_socket(True)
+            reset = receiver.wait_frame("reset", after_connection=disconnected)
+            receiver.set_poll_blocked(False)
+    finally:
+        receiver.allow_socket(True)
+        receiver.set_poll_blocked(False)
+
+    for mid, fetch in ((main_id, main_fetch), (overlay_id, overlay_fetch)):
+        response = fetch.value
+        assert response.ok, f"恢复锚点 {mid} 的 HTTP 请求失败，状态 {response.status}"
+        assert any(str(m["id"]) == mid for m in response.json()["items"]), f"恢复请求未取回实际锚点 {mid}"
+    reset_index = next(index for index, (_, frame) in enumerate(receiver.frames, 1) if frame is reset)
+    ready = receiver.wait_frame("ready", after_frame=reset_index)
+    assert ready["cursor"] == delivered["cursor"], "重新订阅未使用清理后的新游标"
+    print(f"收到真实游标过期 reset 并重新就绪，旧游标 {stale}，新游标 {ready['cursor']}，HTTP 取回主窗锚点 {main_id} 和历史层锚点 {overlay_id}")
+
+    expect(overlay).to_be_visible(timeout=2000)
+    assert abs(row_top(anchor) - main_top) <= 3, "游标过期后主列表历史锚点跳动"
+    assert abs(row_top(overlay_row) - overlay_top) <= 3, "游标过期后历史覆盖层锚点跳动"
+
+    body = f"浏览器恢复游标后的实时消息 {tag}"
+    mid = sender.send(body)
+    frame = receiver.wait_frame("batch", after_frame=reset_index, mid=mid)
+    assert frame["from"] == ready["cursor"], "恢复后的首条实时消息未从新游标投递"
+    expect(overlay).to_be_visible(timeout=TIMEOUT)
+    expect(receiver.row(missed)).to_have_count(0)
+    expect(receiver.row(mid)).to_have_count(0)
+    assert abs(row_top(anchor) - main_top) <= 3, "收到推送后主列表历史锚点跳动"
+    assert abs(row_top(overlay_row) - overlay_top) <= 3, "收到推送后历史覆盖层锚点跳动"
+    return missed, mid, body
+
+
+def check_old_window(sender, receiver, args, tag):
     page = receiver.page
     oldest = int(page.locator(".cm-list .cm-row").first.get_attribute("data-row"))
     cursor = receiver.read_cursor()
@@ -403,7 +498,7 @@ def check_old_window(sender, receiver, tag):
     before = len(receiver.read_posts)
     body = f"浏览器旧窗口验收 {tag}"
     mid = sender.send(body)
-    receiver.wait_frame("batch", mid=mid, after_connection=previous)
+    frame = receiver.wait_frame("batch", mid=mid, after_connection=previous)
     expect(latest).to_be_visible(timeout=TIMEOUT)
     expect(receiver.row(mid)).to_have_count(0)
     assert abs(anchor.evaluate("row => row.getBoundingClientRect().top") - old_top) <= 3, "旧阅读位置发生跳动"
@@ -411,8 +506,16 @@ def check_old_window(sender, receiver, tag):
     assert_read_posts(receiver, before, [], "历史窗口")
     assert receiver.read_cursor() == cursor, "旧窗口意外推进了服务端已读游标"
 
+    overlay, overlay_row = open_old_overlay(receiver, oldest)
+    missed, mid, body = check_expired_cursor(sender, receiver, args, tag, anchor, overlay, overlay_row, frame["cursor"])
+    page.wait_for_timeout(READ_SETTLE_MS)
+    assert_read_posts(receiver, before, [], "过期恢复后保持历史窗口")
+    assert receiver.read_cursor() == cursor, "游标过期恢复意外推进已读游标"
+    overlay.get_by_role("button", name="回到当前聊天", exact=True).click()
+    expect(latest).to_be_visible(timeout=TIMEOUT)
     latest.click()
     receiver.see(mid, body)
+    expect(receiver.row(missed)).to_have_count(1, timeout=TIMEOUT)
     wait_read(receiver, mid)
     assert_read_posts(receiver, before, [mid], "历史窗口回到最新后")
     print(f"通过旧窗口验收，旧阅读窗口保持定位且游标为 {cursor}，回到最新后呈现并标记消息 {mid}")
@@ -430,6 +533,27 @@ def check_disabled(sender, receiver, args, tag):
         assert all(not any(m.get("id") == mid for m in frame.get("items", []))
                    for _, frame in receiver.frames), "关闭后仍通过 WS 接收群消息"
     print(f"通过服务端关闭实时后的轮询验收，消息 {mid}")
+
+
+def check_revoked_overlay(receiver, args):
+    # 放在所有共用夹具的场景之后。恢复实时后重载页面，避开退回轮询的等待窗口。
+    previous = receiver.connections
+    receiver.page.reload(wait_until="networkidle")
+    receiver.wait_frame("ready", after_connection=previous)
+    oldest = int(receiver.page.locator(".cm-list .cm-row").first.get_attribute("data-row"))
+    overlay, _ = open_old_overlay(receiver, oldest)
+    before_revoke = len(receiver.frames)
+    with closing(sqlite3.connect(f"{args.db.resolve().as_uri()}?mode=rw", uri=True)) as db, db:
+        removed = db.execute("DELETE FROM chat_members WHERE group_id=? AND user_id=?",
+                             (args.group, receiver.user_id)).rowcount
+        assert removed == 1, "撤权验收缺少测试群成员"
+    receiver.wait_frame("revoked", after_frame=before_revoke)
+    expect(overlay).to_have_count(0, timeout=TIMEOUT)
+    expect(receiver.input).to_have_count(0, timeout=TIMEOUT)
+    expect(receiver.page.locator(".cm-list .cm-row")).to_have_count(0, timeout=TIMEOUT)
+    response = receiver.context.request.get(f"{receiver.origin}{receiver.messages}")
+    assert response.status == 403, f"撤权后的真实历史 HTTP 应拒绝访问，实际为 {response.status}"
+    print("通过真实撤权验收，清除历史层和主列表，HTTP 返回 403")
 
 
 def check_shadow(sender, receiver, args, tag):
@@ -515,7 +639,7 @@ def main():
     parser.add_argument("--sender", default="vps_browser_a", help="已加入测试群的发件账号")
     parser.add_argument("--receiver", default="vps_browser_b", help="已加入测试群的收件账号")
     parser.add_argument("--key-file", type=Path, help="包含 DEV_LOGIN_KEY 的本机 .env 文件")
-    parser.add_argument("--db", required=True, type=Path, help="可临时切换群实时开关的隔离 SQLite 数据库")
+    parser.add_argument("--db", required=True, type=Path, help="一次性隔离 SQLite 数据库，会裁剪测试群事件并撤销测试成员资格")
     parser.add_argument("--chromium", default=shutil.which("chromium"), help="本机 Chromium 可执行文件路径")
     args = parser.parse_args()
     args.origin = args.origin.rstrip("/")
@@ -548,10 +672,11 @@ def main():
             check_read_burst(sender, receiver, tag)
             check_read_leave(sender, receiver, tag)
             check_reconnect(sender, receiver, tag)
-            check_old_window(sender, receiver, tag)
+            check_old_window(sender, receiver, args, tag)
             check_shadow(sender, receiver, args, tag)
             check_popout(sender, receiver, tag)
             check_disabled(sender, receiver, args, tag)
+            check_revoked_overlay(receiver, args)
         finally:
             receiver_browser.close()
             sender_browser.close()

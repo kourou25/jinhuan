@@ -32,7 +32,7 @@ cd server && MEME_ROOT=/meme CLIENT_DIR=../web/dist/client node main.mjs   # 监
 
 ### VPS 群聊实时推送
 
-同源浏览器通过 `/api/chat/ws` 订阅群聊，发送、上传和查历史仍走原 HTTP 接口。普通消息提交后推给有权查看的成员，重连用 SQLite 事件游标补齐，超过保留区间时重新取快照。主窗口和画中画共享同一账号、同一群的已读进度。阅读最新消息时合并写回，离开面板时立即提交已看到的位置。此部署方式使用一个 Node 进程和同机 SQLite；多实例发布前需要重新核验跨实例撤权和广播。
+同源浏览器通过 `/api/chat/ws` 订阅群聊，发送、上传和查历史仍走原 HTTP 接口。普通消息提交后推给有权查看的成员，重连用 SQLite 事件游标补齐。游标过期时，正在翻历史的面板通过 HTTP 重新加载当前阅读位置附近的消息，随后从新快照继续订阅。主窗口和画中画共享同一账号、同一群的已读进度。阅读最新消息时合并写回，离开面板时立即提交已看到的位置。此部署方式使用一个 Node 进程和同机 SQLite；多实例发布前需要重新核验跨实例撤权和广播。
 
 1. 已有实例先备份数据库，再按顺序应用尚未执行的 `0202_chat_realtime.sql` 和 `0203_chat_realtime_packet_audience.sql`。已运行 0202 的实例只需补 0203，随后启动新版服务。安装本版 `deploy/nginx-meme.conf`（或合并其中的精确 `/api/chat/ws` location），通过 `nginx -t` 后重载 Nginx。应用发布包同时需要 `server/dist/app.mjs` 和 `server/dist/chat-realtime.mjs`。
 2. 选择测试群，例如群 7。在数据库写入下面的影子设置，再在 `/meme/config/.env` 添加 `CHAT_REALTIME_GROUPS=7` 并重启应用。该配置接受逗号分隔的群 ID，默认留空。影子模式同时收取 HTTP 和 WebSocket，以 HTTP 渲染；页面上可监听 `chat-realtime-shadow` 事件，查看该面板的 `compared`、`mismatch` 和 `batches` 计数。
