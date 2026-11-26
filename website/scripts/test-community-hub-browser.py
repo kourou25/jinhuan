@@ -28,11 +28,26 @@ def tab(page, name, selected=None):
     return link
 
 
+def assert_no_visible_null(section):
+    visible_null = section.evaluate("""root => {
+        const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+        for (let text = walker.nextNode(); text; text = walker.nextNode()) {
+            if (text.textContent.trim() !== 'null' || getComputedStyle(text.parentElement).visibility !== 'visible') continue;
+            const range = document.createRange();
+            range.selectNode(text);
+            if ([...range.getClientRects()].some(rect => rect.width && rect.height)) return true;
+        }
+        return false;
+    }""")
+    assert not visible_null, "站点更新出现了可见的裸文本 null"
+
+
 def updates(page, args):
     page.goto(args.origin + "/road", wait_until="networkidle")
     tab(page, "更新记录", selected=True)
     expect(page.get_by_role("heading", name=args.fix_title, exact=True)).to_be_visible(timeout=TIMEOUT)
     expect(page.get_by_role("heading", name=args.feature_title, exact=True)).to_be_visible()
+    assert_no_visible_null(page.get_by_role("region", name="站点更新", exact=True))
     if args.backend == "sync":
         expect(page.get_by_role("heading", name="已上线", exact=True)).to_be_visible()
         expect(page.get_by_role("heading", name="待主站同步", exact=True)).to_be_visible()
@@ -83,10 +98,10 @@ def skin_history(page, args):
 def legacy_skin_history(page, args):
     page.goto(f"{args.origin}/road?tab=updates&skin={SKIN}", wait_until="networkidle")
     tab(page, "更新记录", selected=True)
-    expect(page.get_by_text("当前站点暂未提供作品更新记录。", exact=True)).to_be_visible(timeout=TIMEOUT)
+    back = page.get_by_role("link", name="返回作品", exact=True)
+    expect(page.locator("p").filter(has=back)).to_contain_text("当前站点暂未提供作品更新记录。", timeout=TIMEOUT)
     expect(page.get_by_role("heading", name=args.fix_title, exact=True)).to_be_visible()
     expect(page.get_by_role("heading", name=args.feature_title, exact=True)).to_be_visible()
-    back = page.get_by_role("link", name="返回作品", exact=True)
     expect(back).to_have_attribute("href", f"/road?tab=skins&skin={SKIN}")
     back.click()
     page.wait_for_url(f"**/road?tab=skins&skin={SKIN}")
