@@ -186,10 +186,12 @@ try {
       latency.length, Math.round(latency[Math.ceil(latency.length * 0.5)-1]), Math.round(latency[Math.ceil(latency.length * 0.95)-1]))
   }
   if (process.argv.includes('--browser')) {
-    for (const name of ['vps_browser_a', 'vps_browser_b']) seedUser(name)
+    const browserUsers = ['vps_browser_a', 'vps_browser_b'].map(seedUser)
     const insert = db.prepare('INSERT INTO chat_messages(group_id,user_id,body,created_at,updated_at) VALUES(7,?,?,unixepoch(),unixepoch())')
     db.exec('BEGIN')
     for (let i = 1; i <= 110; i++) insert.run(writer, '浏览器验收历史 ' + i)
+    // 升级前的本人消息没有发送命令编号，两位成员都要能恢复历史窗口。
+    for (const uid of browserUsers) insert.run(uid, '升级前的本人消息')
     db.exec('UPDATE chat_members SET last_read=(SELECT MAX(id) FROM chat_messages WHERE group_id=7) WHERE group_id=7; COMMIT')
     const browser = spawn(process.env.PYTHON || 'python3',
       ['scripts/test-chat-realtime-browser.py', '--origin', origin, '--db', join(root, 'data/db/meme-hall.sqlite'), '--key-file', join(root, 'config/.env')],

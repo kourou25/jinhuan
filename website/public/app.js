@@ -9243,10 +9243,10 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
 
   function settleCommands(items, allowLegacy = false) {
     for (const m of items) {
-      if (!m.mine) continue
+      if (!m.mine || (!m.command_id && !allowLegacy)) continue
       const job = m.command_id
         ? inflight.find(j => !j.done && j.commandId === m.command_id)
-        : allowLegacy && inflight.find(j => !j.done && !j.tray && j.body === (m.body || '') &&
+        : inflight.find(j => !j.done && !j.tray && j.body === (m.body || '') &&
           Number(j.reply?.id || 0) === Number(m.reply_to?.id || 0) && !(m.media?.length || m.image))
       job?.settle(m)
     }
