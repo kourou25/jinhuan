@@ -25,7 +25,7 @@ if (values.help) {
   process.exit(0)
 }
 assert(values['work-dir'] && values['skin-root'], '请指定一次性工作目录和星光票根公开稿件目录')
-assert(!values['expect-backend'] || ['legacy', 'sync'].includes(values['expect-backend']), '预期服务端能力只能是 legacy 或 sync')
+assert(values['expect-backend'] === undefined || ['legacy', 'sync'].includes(values['expect-backend']), '预期服务端能力只能是 legacy 或 sync')
 
 const target = values['website-root'] ? resolve(values['website-root']) : fileURLToPath(new URL('..', import.meta.url))
 const website = existsSync(join(target, 'website/server/main.mjs')) ? join(target, 'website') : target
