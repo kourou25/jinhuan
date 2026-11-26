@@ -276,7 +276,7 @@ CREATE TABLE road_items (
   hidden     INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
-, media TEXT, source_msg_id INTEGER, source_group_id INTEGER, source_hidden INTEGER NOT NULL DEFAULT 0);
+, media TEXT, source_msg_id INTEGER, source_group_id INTEGER, source_hidden INTEGER NOT NULL DEFAULT 0, skin_id TEXT, skin_source TEXT, github_issue INTEGER CHECK(typeof(github_issue) = 'integer' AND github_issue > 0 OR github_issue IS NULL), github_sync_status TEXT NOT NULL DEFAULT 'none' CHECK(github_sync_status IN ('none','pending','failed','linked')), github_sync_key TEXT, github_sync_started_at INTEGER);
 
 CREATE TABLE road_votes (
   item_id INTEGER NOT NULL,
@@ -2474,6 +2474,8 @@ CREATE INDEX idx_chat_msg_at ON chat_messages (created_at);
 CREATE INDEX idx_chat_msg_reply ON chat_messages (reply_to) WHERE reply_to IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_road_source_msg ON road_items(source_msg_id);
+
+CREATE INDEX idx_road_github_issue ON road_items(github_issue) WHERE github_issue IS NOT NULL;
 
 CREATE UNIQUE INDEX idx_chat_redpack_id ON chat_messages(redpack_id) WHERE redpack_id IS NOT NULL;
 

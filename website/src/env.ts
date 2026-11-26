@@ -24,6 +24,7 @@ export interface Env {
   GOOGLE_CLIENT_SECRET?: string
   GITHUB_CLIENT_ID?: string // GitHub OAuth App（回调 /auth/github/callback）
   GITHUB_CLIENT_SECRET?: string
+  COMMUNITY_GITHUB_TOKEN?: string // 社区 Issue 写入专用凭据
   RESEND_API_KEY?: string
   MAIL_FROM?: string
   EMAIL_DAILY_MAX?: string

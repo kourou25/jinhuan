@@ -15,7 +15,7 @@ npm run dev
 
 打开 http://localhost:8787/ ，访问 `/auth/dev` 用测试口令登录。需要站长权限时，从本地数据库查到测试账号 ID 填进 `wrangler.toml` 的 `ADMIN_USER_IDS`。
 
-`schema.sql` 是当前线上的完整表结构（含 0201 号及之前的全部迁移），新库只需执行它。`migrations/` 供已有实例升级使用。
+`schema.sql` 包含截至 `0202_community_road.sql` 的完整结构。新库直接执行它，已有实例通过 `migrations/` 升级。
 
 ## 自己部署（Node.js 服务器）
 
@@ -29,6 +29,14 @@ cd server && MEME_ROOT=/meme CLIENT_DIR=../web/dist/client node main.mjs   # 监
 ```
 
 机密写在 `/meme/config/.env`。`deploy/` 里有 nginx、systemd、备份和发布脚本，服务器地址用环境变量 `MEME_HOST` 指定。漂流瓶的内置敏感词库不随仓库分发，部署后在站长后台自行维护。
+
+### 社区共建接口
+
+已有实例先应用 `migrations/0202_community_road.sql`，再发布服务端。旧版前端可以继续使用原有的鞭打接口。支持同步的服务端会在 `GET /api/me` 响应顶层返回 `community_hub_sync: true`，前端据此启用下列功能。这个标志表示接口可用，公开创建 Issue 还需要配置凭据。
+
+反馈作者或站长可以通过 `POST /api/road/:id/github` 关联 `kourou25/jinhuan` 已有的公开 Issue。要从站内创建新 Issue，需给服务端配置专用的 `COMMUNITY_GITHUB_TOKEN`，授予目标仓库的 Issues 写权限。Node 服务器支持进程环境变量或上述机密文件，Worker 使用同名 secret。站内反馈先独立保存，公开请求使用用户确认的标题和正文。创建结果不确定时，`{"reconcile":true}` 用于核对之前的请求。关联成功后，`GET /api/road?issue=123` 可查到当前账号可见的反馈。[GitHub 创建 Issue 的权限说明](https://docs.github.com/en/rest/issues/issues#create-an-issue)
+
+作品反馈可选填套装编号 `skin_id` 和目录版本 `skin_source`。公开接口 `GET /api/community-skins/updates` 对比官方投稿目录和主站发布目录，返回待同步和已上线的装扮变化。首次安装目录时建立基线，之后保留最近 200 条变更。
 
 ## 自己部署（Cloudflare）
 

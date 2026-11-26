@@ -38,6 +38,7 @@ const db = new D1Database(path.join(ROOT, 'data', 'db', 'meme-hall.sqlite'))
 const sandboxFile = path.join(ROOT, 'data', 'db', 'miniapp-sandbox.sqlite')
 const env = {
   ...vars, ...secrets,
+  COMMUNITY_GITHUB_TOKEN: process.env.COMMUNITY_GITHUB_TOKEN ?? secrets.COMMUNITY_GITHUB_TOKEN,
   DB: db, MINIAPP_DB: db,
   MINIAPP_SANDBOX_DB: fs.existsSync(sandboxFile) ? new D1Database(sandboxFile) : undefined,
   BUCKET: new R2Bucket(path.join(ROOT, 'data', 'storage')),

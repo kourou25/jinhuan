@@ -17,6 +17,7 @@ import { AI_BOT_ID, enqueueImageReply, ensureAiBot } from '../ai/images'
 import { authorFilter, cleanSeen, tagFilter } from '../browse-filter'
 import { chatRoadContent } from '../chat-road'
 import { communityProgressStatements } from '../community-growth'
+import { publishedSkinUpdates, skinUpdatesReader } from '../services/community-skin-updates.mjs'
 import { UNICODE_EMOJI, UNICODE_GROUPS } from '../emoji'
 import { FARM_EXPANSIONS, RANCH_EXPANSIONS } from '../farm/capacity'
 import { claimCoinPacket, coinPacketView, createCoinPacket, settleCoinPackets } from '../farm/coin-packets'
@@ -108,6 +109,7 @@ import { guideLevel, rewardStatements, settleInviteRewards } from '../services/i
 import { createInvite } from '../services/invites'
 import { recordLoginFailure } from '../services/login-failure'
 import { hashPassword, verifyPassword } from '../services/password'
+import { handleRoadGithub, roadGithubView, roadSkinSource } from '../services/road-github'
 import { settleDailyRanks } from '../services/rank-settlement'
 import { getSetting, setSetting } from '../services/settings'
 import { sendSleepReminder } from '../services/sleep-reminder'
@@ -8240,7 +8242,7 @@ var communitySkinRelease = (() => {
       throw Error("\u5DF2\u4FDD\u5B58\u76EE\u5F55\u65E0\u6CD5\u8BFB\u53D6");
     }
   }
-  async function syncCommunitySkins(bucket, fetcher = fetch) {
+  async function fetchSkinCatalog(fetcher = fetch) {
     const response = await fetcher(root2 + "main/catalog.json", { headers: { "cache-control": "no-cache" }, signal: AbortSignal.timeout(1e4) }), raw2 = await bytes(response, 512 * 1024);
     let catalog;
     try {
@@ -8249,6 +8251,11 @@ var communitySkinRelease = (() => {
       throw Error("\u6295\u7A3F\u76EE\u5F55\u683C\u5F0F\u65E0\u6548");
     }
     if (catalog?.schemaVersion !== 1 || !Number.isSafeInteger(catalog.revision) || catalog.revision < 1 || !/^[a-f0-9]{40}$/.test(catalog.source || "") || !Array.isArray(catalog.entries) || catalog.entries.length > 200) throw Error("\u6295\u7A3F\u76EE\u5F55\u65E0\u6548");
+    return catalog;
+  }
+  const readSkinUpdates = skinUpdatesReader(fetchSkinCatalog);
+  async function syncCommunitySkins(bucket, fetcher = fetch) {
+    const catalog = await fetchSkinCatalog(fetcher);
     const existing = await jsonObject(bucket, catalogKey);
     if (existing?.data?.revision > catalog.revision || existing?.data?.revision === catalog.revision && existing.data.source !== catalog.source) throw Error("\u62D2\u7EDD\u65E7\u7248\u6295\u7A3F\u76EE\u5F55");
     if (existing?.data?.revision === catalog.revision && existing.data.source === catalog.source) return { unchanged: true };
@@ -8315,7 +8322,9 @@ var communitySkinRelease = (() => {
     }
     const activeBubble = new Set(out.filter((x) => x.components?.bubble).map((x) => x.id)), archived = /* @__PURE__ */ new Map();
     for (const item of [...existing?.data?.archived || [], ...existing?.data?.entries || []]) if (item?.components?.bubble && !activeBubble.has(item.id)) archived.set(item.id, { id: item.id, name: item.name, author: item.author, github: item.github, license: item.license, components: { bubble: item.components.bubble } });
-    const value = JSON.stringify({ schemaVersion: 1, revision: catalog.revision, source: catalog.source, entries: out, archived: [...archived.values()] }), onlyIf = existing ? { etagMatches: existing.obj.etag } : new Headers({ "if-none-match": "*" });
+    const snapshot = { schemaVersion: 1, revision: catalog.revision, source: catalog.source, entries: out, archived: [...archived.values()] };
+    const recentUpdates = publishedSkinUpdates(existing?.data, snapshot, Math.floor(Date.now() / 1000));
+    const value = JSON.stringify({ ...snapshot, recentUpdates }), onlyIf = existing ? { etagMatches: existing.obj.etag } : new Headers({ "if-none-match": "*" });
     const written = await bucket.put(catalogKey, value, { onlyIf, httpMetadata: { contentType: "application/json", cacheControl: "public, max-age=60" } });
     if (!written) return { conflict: true };
     return { published: true, source: catalog.source, entries: out.length };
@@ -8344,7 +8353,13 @@ var communitySkinRelease = (() => {
   communityRoutes.get("/api/community-skins", async (c) => {
     cors(c);
     c.header("cache-control", "public, max-age=60");
-    return c.json(await readCommunityCatalog(c.env.BUCKET));
+    const { recentUpdates, ...catalog } = await readCommunityCatalog(c.env.BUCKET);
+    return c.json(catalog);
+  });
+  communityRoutes.get("/api/community-skins/updates", async (c) => {
+    cors(c);
+    c.header("cache-control", "public, max-age=30");
+    return c.json(await readSkinUpdates(await readCommunityCatalog(c.env.BUCKET)));
   });
   communityRoutes.get("/api/community-skins/status", async (c) => {
     cors(c);
@@ -10217,6 +10232,7 @@ app.get("/api/me", async (c) => {
 	];
 	if (u) settleLater(c);
 	return c.json({
+		community_hub_sync: true,
 		limits,
 		official_titles: OFFICIAL_TITLES,
 		guess_rewards: GUESS_REWARDS,
@@ -14142,6 +14158,13 @@ app.get("/api/road", async (c) => {
 		where.push("r.id = ?");
 		args.push(item);
 	}
+	const rawIssue = c.req.query("issue");
+	if (rawIssue !== void 0) {
+		const issue = /^[1-9]\d*$/.test(rawIssue) ? Number(rawIssue) : 0;
+		if (!Number.isSafeInteger(issue) || issue < 1) return c.json({ items: [] });
+		where.push("r.github_issue = ?");
+		args.push(issue);
+	}
 	const rows = (await c.env.DB.prepare(`SELECT r.*, u.username, u.name, u.avatar, u.is_admin, u.trust_level, u.fancy, u.deco,
        (SELECT v FROM road_votes WHERE item_id = r.id AND user_id = ?) AS my
      FROM road_items r JOIN users u ON u.id = r.user_id WHERE ${where.join(" AND ")} ORDER BY ${sort} LIMIT 200`).bind(...args).all()).results;
@@ -14161,6 +14184,9 @@ app.get("/api/road", async (c) => {
 		media: roadMedia(r.media),
 		source_msg_id: r.source_msg_id ?? null,
 		source_group_id: r.source_group_id ?? null,
+		skin_id: r.skin_id ?? null,
+		skin_source: r.skin_source ?? null,
+		...roadGithubView(r),
 		user: {
 			username: r.username,
 			name: r.name,
@@ -14184,7 +14210,8 @@ app.post("/api/road", async (c) => {
 	if (rateOn(c) && last?.t && now() - last.t < 30) fail(429, "慢一点，30 秒后再提");
 	const prepared = await prepareMedia(c, u.id, b.media, true), media = prepared.map(toGallery);
 	const t = now();
-	const [r] = await commitUploadContent(c.env.DB, u.id, mediaKeys(prepared), [c.env.DB.prepare("INSERT INTO road_items (user_id, kind, title, body, media, score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?) RETURNING id").bind(u.id, kind, title, body, media.length ? JSON.stringify(media) : null, t, t), c.env.DB.prepare("INSERT INTO road_votes (item_id, user_id, v) VALUES (last_insert_rowid(), ?, 1)").bind(u.id)]);
+	const { skinId, skinSource } = roadSkinSource(b);
+	const [r] = await commitUploadContent(c.env.DB, u.id, mediaKeys(prepared), [c.env.DB.prepare("INSERT INTO road_items (user_id, kind, title, body, media, skin_id, skin_source, score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?) RETURNING id").bind(u.id, kind, title, body, media.length ? JSON.stringify(media) : null, skinId, skinSource, t, t), c.env.DB.prepare("INSERT INTO road_votes (item_id, user_id, v) VALUES (last_insert_rowid(), ?, 1)").bind(u.id)]);
 	const id = r.results[0].id;
 	c.executionCtx.waitUntil(settleContentRewards(c.env.DB, t, {
 		source: "road",
@@ -14192,6 +14219,7 @@ app.post("/api/road", async (c) => {
 	}).catch(() => console.error("content_road_reward_retry")));
 	return c.json({ id });
 });
+app.post("/api/road/:id/github", (c) => handleRoadGithub(c, (u) => needNotLimited(c, u, "post")));
 var roadItem = async (c) => {
 	const id = intIn(c.req.param("id"), 0, Number.MAX_SAFE_INTEGER, 0);
 	const r = await c.env.DB.prepare("SELECT * FROM road_items WHERE id = ? AND hidden = 0 AND source_hidden = 0").bind(id).first();
