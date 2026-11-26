@@ -2,6 +2,10 @@ export interface Env {
   DB: D1Database
   CHAT_BOT_WEBHOOK_KEY?: string
   CHAT_BOT_WEBHOOK_ORIGINS?: string
+  CHAT_REALTIME?: {
+    groups: ReadonlySet<number>
+    withSnapshot<T>(read: (db: D1Database) => Promise<T>): Promise<T>
+  }
   MUSIC_ORIGIN?: string
   MUSIC_TOKEN?: string
   PUSH_VAPID_PUBLIC_KEY?: string

@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { D1Database, dumpSlowQueries } from './d1.mjs'
 import { R2Bucket } from './r2.mjs'
 import { Assets, DiskCache, RateLimiter, HTMLRewriter } from './runtime.mjs'
+import { attachChatRealtime, createChatRealtime } from './dist/chat-realtime.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = process.env.MEME_ROOT || '/meme'
@@ -46,8 +47,13 @@ const env = {
   // GAME_HUB（猜词服务 cc.52dmeme.com）已下线；JEV_RELAY 是 AI 网关的可选中转，不配置时直连
 }
 
-const { default: worker } = await import(pathToApp())
+const app = await import(pathToApp())
+const { default: worker } = app
 function pathToApp() { return new URL('./dist/app.mjs', import.meta.url).href }
+
+const realtime = createChatRealtime(process.env.CHAT_REALTIME_GROUPS ?? secrets.CHAT_REALTIME_GROUPS,
+  () => new D1Database(db.file, { readonly: true }))
+if (realtime.groups.size) env.CHAT_REALTIME = realtime
 
 // ---------- 后台任务（ctx.waitUntil） ----------
 const pending = new Set()
@@ -58,18 +64,22 @@ const ctx = () => ({
 })
 
 // ---------- HTTP ----------
+function requestFromNode(req) {
+  const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim()
+  const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost'
+  const url = new URL(req.url, `${proto}://${host}`)
+  const headers = new Headers()
+  for (const [k, v] of Object.entries(req.headers)) if (v != null && !k.startsWith(':')) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
+  const hasBody = !['GET', 'HEAD'].includes(req.method)
+  const request = new Request(url, { method: req.method, headers, body: hasBody ? Readable.toWeb(req) : undefined, duplex: hasBody ? 'half' : undefined, redirect: 'manual' })
+  // request.cf：经 Cloudflare 代理时国家代码在 CF-IPCountry 里
+  Object.defineProperty(request, 'cf', { value: { country: headers.get('cf-ipcountry') || undefined, colo: 'self' } })
+  return request
+}
+
 const server = http.createServer(async (req, res) => {
   try {
-    const proto = String(req.headers['x-forwarded-proto'] || 'http').split(',')[0].trim()
-    const host = req.headers['x-forwarded-host'] || req.headers.host || 'localhost'
-    const url = new URL(req.url, `${proto}://${host}`)
-    const headers = new Headers()
-    for (const [k, v] of Object.entries(req.headers)) if (v != null && !k.startsWith(':')) headers.set(k, Array.isArray(v) ? v.join(', ') : v)
-    const hasBody = !['GET', 'HEAD'].includes(req.method)
-    const request = new Request(url, { method: req.method, headers, body: hasBody ? Readable.toWeb(req) : undefined, duplex: hasBody ? 'half' : undefined, redirect: 'manual' })
-    // request.cf：经 Cloudflare 代理时国家代码在 CF-IPCountry 里
-    Object.defineProperty(request, 'cf', { value: { country: headers.get('cf-ipcountry') || undefined, colo: 'self' } })
-    const response = await worker.fetch(request, env, ctx())
+    const response = await worker.fetch(requestFromNode(req), env, ctx())
     const out = {}
     // content-length 不透传：中间件改写响应体后旧长度可能还留在头里（Hono 会抄回旧头），交给 Node 自己分块
     for (const [k, v] of response.headers) if (k !== 'set-cookie' && k !== 'content-length') out[k] = v
@@ -84,6 +94,7 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({ error: '服务器开小差了' }))
   }
 })
+const stopRealtime = env.CHAT_REALTIME ? attachChatRealtime(server, env, app, ctx, requestFromNode) : undefined
 server.keepAliveTimeout = 65000
 server.listen(PORT, HOST, () => console.info(`meme-hall listening on ${HOST}:${PORT}`))
 
@@ -114,12 +125,15 @@ const slowTimer = setInterval(() => { try { dumpSlowQueries(SLOW_FILE) } catch (
 const optimizeTimer = setInterval(() => db.optimize(), 6 * 3600e3)
 
 // ---------- 退出 ----------
+let stopping = false
 const shutdown = async (sig) => {
+  if (stopping) return
+  stopping = true
   console.info('shutdown', sig)
   clearTimeout(cronTimer); clearInterval(slowTimer); clearInterval(optimizeTimer)
   try { dumpSlowQueries(SLOW_FILE) } catch {}
-  server.close()
-  await Promise.race([Promise.allSettled([...pending]), new Promise((r) => setTimeout(r, 10000))])
+  const drained = new Promise(resolve => server.close(resolve))
+  await Promise.race([Promise.allSettled([drained, stopRealtime?.(), ...pending]), new Promise((r) => setTimeout(r, 10000))])
   db.close(); env.MINIAPP_SANDBOX_DB?.close()
   process.exit(0)
 }

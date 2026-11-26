@@ -1,6 +1,13 @@
 import type { Env } from '../env'
 import type { C, User } from '../types'
 import { fail } from '../lib/http'
+import { now } from '../lib/time'
+
+export const ACTIVE_SESSION_USER_SQL = "s.expires_at > ? AND u.disabled = 0 AND u.kind = 'user'"
+export function findSessionUser(db: D1Database, sessionId: string) {
+  return db.prepare(`SELECT u.*,s.seen_at AS session_seen_at FROM sessions s JOIN users u ON u.id=s.user_id
+    WHERE s.id=? AND ${ACTIVE_SESSION_USER_SQL}`).bind(sessionId, now()).first<User & { session_seen_at: number }>()
+}
 
 // 频率限制总开关，默认关
 export const rateOn = (c: C) => c.env.RATE_LIMIT === 'on'

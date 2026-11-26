@@ -36,6 +36,10 @@ class Statement {
     const meta = this.db._meta(reader)
     meta.duration = performance.now() - started
     record(this.sql, meta.duration, rows.length)
+    // WITH 后面可以接写入语句，原有 D1 元数据会把其中部分语句识别成读。
+    if (this.db.commitObserver && (meta.changed_db || (reader && /^\s*WITH\b/i.test(this.sql) && !stmt.columns().length))) {
+      this.db._notifyCommit()
+    }
     return { results: rows, success: true, meta }
   }
   async first(column) {
@@ -56,6 +60,7 @@ class Statement {
 export class D1Database {
   constructor(file, { readonly = false } = {}) {
     this.file = file
+    this.readonly = readonly
     this.sqlite = new DatabaseSync(file, { readOnly: readonly })
     // 与 D1 一致：外键约束开启；WAL 让读写并发；忙时最多等 5 秒
     this.sqlite.exec('PRAGMA foreign_keys = ON')
@@ -83,19 +88,45 @@ export class D1Database {
   }
   optimize() { try { this.sqlite.exec('PRAGMA analysis_limit = 1000; PRAGMA optimize = 0x10002') } catch (e) { console.error('sqlite_optimize_failed', e?.message) } }
   prepare(sql) { return new Statement(this, sql) }
+  onCommit(fn) { this.commitObserver = fn }
+  _notifyCommit() {
+    if (this.batching) this.batchChanged = true
+    else this.commitObserver?.()
+  }
+  // 本连接的变化和其他连接的提交分别计数，供发送实时数据前复核。
+  revision() {
+    const { local, external } = this._prepare('SELECT total_changes() local, data_version external FROM pragma_data_version').get()
+    return `${local}:${external}`
+  }
+  beginReadSnapshot() {
+    this.sqlite.exec('BEGIN')
+    this.inReadSnapshot = true
+  }
+  endReadSnapshot(commit) {
+    this.sqlite.exec(commit ? 'COMMIT' : 'ROLLBACK')
+    this.inReadSnapshot = false
+  }
   async batch(statements) {
     if (!statements.length) return []
-    this.sqlite.exec('BEGIN IMMEDIATE')
+    // 首屏中的批读共享游标所在的快照。
+    if (this.inReadSnapshot) return statements.map((statement) => statement._exec())
+    this.sqlite.exec(this.readonly ? 'BEGIN' : 'BEGIN IMMEDIATE')
+    this.batching = true
+    this.batchChanged = false
+    let out
     try {
-      const out = statements.map((s) => s._exec())
+      out = statements.map((s) => s._exec())
       this.sqlite.exec('COMMIT')
-      return out
     } catch (error) {
       try { this.sqlite.exec('ROLLBACK') } catch {}
       throw error
+    } finally {
+      this.batching = false
     }
+    if (this.batchChanged) this._notifyCommit()
+    return out
   }
-  async exec(sql) { this.sqlite.exec(sql); return { count: 1, duration: 0 } }
+  async exec(sql) { this.sqlite.exec(sql); this._notifyCommit(); return { count: 1, duration: 0 } }
   withSession() { return this }
   close() { this.sqlite.close() }
 }

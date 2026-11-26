@@ -4,8 +4,9 @@ import { build } from 'esbuild'
 import fs from 'node:fs'
 
 await build({
-  entryPoints: ['src/worker.ts'],
-  outfile: 'server/dist/app.mjs',
+  entryPoints: { app: 'src/worker.ts', 'chat-realtime': 'server/chat-realtime.mjs' },
+  outdir: 'server/dist',
+  outExtension: { '.js': '.mjs' },
   bundle: true, platform: 'node', format: 'esm', target: 'node24',
   tsconfig: 'tsconfig.json',
   // 打包后的 CommonJS 依赖需要 require
@@ -21,4 +22,4 @@ for (const line of section.split(/\r?\n/)) {
   if (m) vars[m[1]] = JSON.parse('"' + m[2] + '"')
 }
 fs.writeFileSync('server/vars.json', JSON.stringify(vars, null, 1) + '\n')
-console.log('server/dist/app.mjs 已生成；公开变量', Object.keys(vars).length, '个')
+console.log('服务器构建已生成；公开变量', Object.keys(vars).length, '个')

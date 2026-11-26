@@ -57,6 +57,7 @@ import { stickerPreviews } from '/sticker-preview.js?v=472f7fbf'
 import { onRemoval, windowContent, wakeWindowContent, observeResourceDocument } from '/resource-memory.js?v=472f7fbf'
 import {focusChatBottom,focusChatMessage,captureChatScroll} from '/chat-scroll-anchor.js?v=472f7fbf'
 import {refreshMessageReference} from '/message-reference.js?v=472f7fbf'
+import {createChatRealtime,isChatCursor} from '/chat-realtime.js?v=472f7fbf'
 import { socialCards } from '/social-preview.js?v=472f7fbf'
 import { socialLink,socialLinks,socialMessageText,canSocialPost,isOfficialEmbed } from '/social-links.js?v=472f7fbf'
 import { PERSONAL_TITLES as LEGACY_PERSONAL_TITLES } from '/personal-catalog.js?v=472f7fbf'
@@ -7371,9 +7372,19 @@ function bindMsgTools(doc) {
 bindMsgTools(document)
 
 // ---------- 群聊 ----------
-// 默认群自主申请，管理员审批后加入；建群、拉人只有管理员能做。打开的群 3 秒轮询一次，未读数 30 秒刷一次
+// 群消息优先使用实时推送，断开时每 3 秒轮询；群列表及未读数每 30 秒刷新。
 const CHAT = { groups: [], dmUnread: 0, canManage: false, loaded: false, subs: new Set(), panes: new Set(), at: 0 }
+const chatRealtime = createChatRealtime(() => S.me?.id)
+const chatPacketOwner = new WeakMap()
+addEventListener('offline', () => chatRealtime.pause())
+addEventListener('online', () => chatRealtime.resume())
+addEventListener('pagehide', () => chatRealtime.pause())
+addEventListener('pageshow', () => chatRealtime.resume())
 const onChat = (fn) => { CHAT.subs.add(fn); return () => CHAT.subs.delete(fn) }
+function chatCommandId() {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), byte => byte.toString(16).padStart(2, '0')).join('')
+}
 // 免打扰的群只算 @ 我的
 const groupUnread = () => CHAT.groups.reduce((a, g) => a + (g.muted ? (g.at_me || 0) : (g.unread || 0)), 0)
 const chatUnread = () => groupUnread() + CHAT.dmUnread
@@ -7439,7 +7450,7 @@ async function loadChatPoll(path) {
   let pending = chatPollRequests.get(key)
   if (!pending) {
     // 仅共享同账号、完整游标相同的进行中轮询；完成或失败后立即清理。
-    pending = api(path).finally(() => {
+    pending = api(path, { signal: AbortSignal.timeout?.(12000) }).finally(() => {
       if (chatPollRequests.get(key) === pending) chatPollRequests.delete(key)
     })
     chatPollRequests.set(key, pending)
@@ -7450,6 +7461,9 @@ async function loadChatPoll(path) {
   return structuredClone(data)
 }
 let groupsRequestSeq = 0, groupsAppliedSeq = 0
+let groupDeliveryRevision = 0
+const groupDeliveryAt = new WeakMap()
+const trackGroupDelivery = (group) => groupDeliveryAt.set(group, ++groupDeliveryRevision)
 let groupsInFlight = null, groupsRetryAt = 0, groupsRetryUser = null, groupsAppliedUser = null
 async function loadGroups({ background = false } = {}) {
   const userId = S.me?.id
@@ -7460,14 +7474,29 @@ async function loadGroups({ background = false } = {}) {
     if ((groupsRetryUser === userId && Date.now() < groupsRetryAt) || (groupsAppliedUser === userId && Date.now() - CHAT.at <= 30000)) return CHAT.groups
   }
   const seq = ++groupsRequestSeq
+  const deliveryRevision = groupDeliveryRevision
   const promise = (async () => {
     try {
       const d = await api('/chat/groups')
       // 后发的成功请求若先返回，不能再让旧快照覆盖群名、未读数和成员状态。
       if (S.me?.id !== userId || seq < groupsAppliedSeq) return CHAT.groups
       groupsAppliedSeq = seq
-      groupsAppliedUser = userId
       groupsRetryAt = 0
+      if (groupsAppliedUser === userId && deliveryRevision < groupDeliveryRevision) {
+        for (const group of d.groups) {
+          const current = findGroup(group.id)
+          if (!(groupDeliveryAt.get(current) > deliveryRevision)) continue
+          const newerMessage = (current.latest?.id || 0) > (group.latest?.id || 0)
+          const newerRead = (current.last_read || 0) > (group.last_read || 0)
+          if (!newerMessage && !newerRead) continue
+          if (newerMessage) group.latest = current.latest
+          group.last_read = Math.max(group.last_read || 0, current.last_read || 0)
+          group.unread = current.unread
+          group.at_me = current.at_me
+          groupDeliveryAt.set(group, groupDeliveryAt.get(current))
+        }
+      }
+      groupsAppliedUser = userId
       Object.assign(CHAT, { groups: d.groups, dmUnread: Math.max(0, Number(d.dm_unread)||0), gone: d.gone || [], canManage: d.can_manage, canCreate: !!d.can_create, loaded: true, at: Date.now() })
     } catch {
       // 失败不更新业务快照；仅合并自动重试，手动刷新和群成员操作不受此限制。
@@ -8486,6 +8515,7 @@ function packetAffectsBagBadge(message) {
 // 一个群的消息区 + 输入框：站内群聊页、飞书伪装、LINUX DO 聊天抽屉共用，外观由各自的 CSS 决定
 function chatPane(g, { onHead, targetDocument = document } = {}) {
   const st = { first: 0, last: 0, more: true, busy: false, olderFailed: false, since: 0, items: [], unreadAt: null, sentRead: 0, stick: true, done: false }
+  const userId = S.me?.id
   let historySince = 0, historyFloor = 0
   const positionKey = `${S.me?.id || 0}:${g.id}`
   let positionTimer = 0
@@ -8617,7 +8647,8 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (st.after) return backToLatest()
     toBottom()
   }
-  function finishChatPage() {
+  function finishChatPage(revision) {
+    if (revision !== listRevision) return
     st.busy = false
     if (!st.bottomRequested || st.destroyed) return
     st.bottomRequested = false
@@ -8834,18 +8865,20 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   let refreshTitleRaffles = () => {}
   const drawLifetime=new AbortController()
   let drawQueue=Promise.resolve()
-  const add = (items, where, advance = true, fresh = null) => {
+  const add = (items, where, advance = true, fresh = null, absoluteReplies = false) => {
     // 只保留本次入群以后的消息（移植自 kourou25/jinhuan#7）
     items = items.filter(m => m.created_at >= historySince && m.id >= historyFloor)
-    if (where === 'live' && advance && items.length) st.last = Math.max(st.last, ...items.map(m => m.id))
-    items = items.filter((m) => !rows.has(m.id))
+    const last = st.last
+    if (where === 'live' && advance && items.length) st.last = Math.max(last, ...items.map(m => m.id))
+    items = items.filter((m) => !rows.has(m.id) && !(where === 'live' && m.id < st.first && m.id <= last))
     if (!items.length) return
     if (where === 'live' && items.some(m => m.system_kind === 'title_raffle_open' || m.system_kind === 'title_raffle')) refreshTitleRaffles()
     if(where==='live')for(const m of items.filter(m=>m.system_kind==='redpack_due'&&!m.deleted).slice(0,3)){
       drawQueue=drawQueue.then(async()=>{
         if(drawLifetime.signal.aborted||doc.hidden)return
         const {syncPacketDraw}=await import('/redpacket.js?v=472f7fbf')
-        await syncPacketDraw({id:Number(m.system_ref),api,signal:drawLifetime.signal,onUpdate:update})
+        const ticket = actionTicket()
+        await syncPacketDraw({id:Number(m.system_ref),api,signal:drawLifetime.signal,onUpdate:message=>update(message,ticket)})
       }).catch(()=>{})
     }
     rememberNicks(items.map((m) => m.user))
@@ -8877,17 +8910,19 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (where !== 'live') st.last = Math.max(st.last, st.items[st.items.length - 1].id)
     // 新到的回复（轮询 / 自己刚发的）：已加载的原消息「N 条回复」跟着 +1；历史批次服务端已经算好，不用加
     // 同一批里的原消息、或这次轮询刚从服务端刷新过的原消息，回复数已经包含这条，跳过
-    const counted = where === 'live' ? new Set([...items.map((x) => x.id), ...(fresh || [])]) : null
-    if (where === 'live') items.forEach((m) => {
-      if (m.reply_to && counted.has(m.reply_to.id)) return
-      // 原消息开在历史层里的也一样 +1
-      const hi = m.reply_to && !m.deleted && histView ? histView.items.findIndex((x) => x.id === m.reply_to.id) : -1
-      if (hi >= 0) { histView.items[hi] = { ...histView.items[hi], reply_count: (histView.items[hi].reply_count || 0) + 1 }; redrawIn(histView, hi) }
-      const i = m.reply_to && !m.deleted ? st.items.findIndex((x) => x.id === m.reply_to.id) : -1
-      if (i < 0) return
-      st.items[i] = { ...st.items[i], reply_count: (st.items[i].reply_count || 0) + 1 }
-      redraw(i)
-    })
+    if (where === 'live' && !absoluteReplies) {
+      const counted = new Set([...items.map((x) => x.id), ...(fresh || [])])
+      items.forEach((m) => {
+        if (!m.reply_to || m.deleted || counted.has(m.reply_to.id)) return
+        // 原消息开在历史层里的也一样 +1
+        for (const view of histView ? [mainView, histView] : [mainView]) {
+          const i = view.items.findIndex(x => x.id === m.reply_to.id)
+          if (i < 0) continue
+          view.items[i] = { ...view.items[i], reply_count: (view.items[i].reply_count || 0) + 1 }
+          redrawIn(view, i)
+        }
+      })
+    }
   }
   // 长时间挂在群聊底部时只保留最近一段；更早的消息仍可通过原有 before 游标重新加载。
   const trimLive = (following) => {
@@ -8932,12 +8967,38 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     })
   }
   // 编辑 / 撤回 / 表情 / 回应 / 转帖 / 轮询 changed：同步原消息和引用它的摘要。
-  const update = (m) => {
+  const active = () => !st.destroyed && S.me?.id === userId
+  let deliveryRevision = 0
+  const messageVersions = new Map()
+  const actionTicket = () => ({ listRevision, deliveryRevision })
+  function latestMessage(m, cursor, started = deliveryRevision) {
+    const previous = messageVersions.get(m.id)
+    if (previous && (isChatCursor(cursor) ? previous.cursor > cursor : previous.revision > started)) return previous.message
+    if (isChatCursor(cursor)) {
+      messageVersions.delete(m.id)
+      messageVersions.set(m.id, { cursor, revision: deliveryRevision, message: m })
+      if (messageVersions.size > 1200) messageVersions.delete(messageVersions.keys().next().value)
+    }
+    return m
+  }
+  function mergeMessages(items, cursor, started) {
+    return items.map(raw => {
+      const m = latestMessage(raw, cursor, started)
+      const ref = messageVersions.get(m.reply_to?.id)
+      return ref?.revision > started || (ref && isChatCursor(cursor) && ref.cursor > cursor)
+        ? refreshMessageReference(m, ref.message) : m
+    })
+  }
+  const update = (m, ticket) => {
+    if (!active() || !m || (ticket && (ticket.listRevision !== listRevision || messageVersions.get(m.id)?.revision > ticket.deliveryRevision))) return
+    const current = mainView.find(m.id) || histView?.find(m.id)
+    if (current?.deleted && !m.deleted) return
     guessPanel?.signal([m])
     histView?.apply(m)
     updateReferences(mainView, m)
     if (histView) updateReferences(histView, m)
     if (st.reply?.id === m.id && m.group_id === g.id) setReply(m.deleted ? null : m, false)
+    if (m.deleted && st.editing?.id === m.id) setEdit(null, false)
     if (packetAffectsBagBadge(m)) refreshBagBadge(true)
     const i = st.items.findIndex((x) => x.id === m.id)
     if (i < 0) return
@@ -8945,10 +9006,15 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     redraw(i)
     redraw(i + 1)
   }
+  function updateFields(m, fields, ticket) {
+    const current = mainView.find(m.id) || histView?.find(m.id) || m
+    update({ ...current, ...fields }, ticket)
+  }
 
   async function older(manual = false) {
-    if (st.busy || !st.more || (st.olderFailed && !manual)) return
+    if (!active() || st.busy || !st.more || (st.olderFailed && !manual)) return
     st.busy = true
+    const revision = listRevision, started = deliveryRevision
     let loaded = false
     try {
       const initial = !st.first && !st.done
@@ -8957,11 +9023,10 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       const resume = saved && (!saved.bottom || (currentGroup.latest?.id || 0) > saved.tail) ? saved : null
       const around = initial && !st.forceLatest ? (resume?.id || (currentGroup.unread > 0 ? Math.max(1, currentGroup.last_read || 0) : 0)) : 0
       const d = await api(`/chat/groups/${g.id}/messages` + (st.first ? `?before=${st.first}` : around ? `?around=${around}` : ''))
-      if (st.destroyed) return
+      if (!active() || revision !== listRevision) return
       if (!scroller.isConnected && st.first) return
       if (!initial && membershipChanged(d.group)) {
-        st.busy = false
-        await reopenForMembership(d.group)
+        await reopenForMembership()
         return
       }
       if (initial) {
@@ -8979,13 +9044,13 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         if (st.after) st.last = Math.max(st.last, currentGroup.latest?.id || 0)
       }
       st.more = d.more
-      add(d.items, initial ? 'bottom' : 'top')
+      add(mergeMessages(d.items, d.realtime_cursor, started), initial ? 'bottom' : 'top')
       topSpin.replaceChildren(st.more ? h('div', { class: 'spinner' }) : h('div', { class: 'cm-begin' }, d.items.length || st.items.length ? `这是「${g.name}」你入群后可见的最早消息` : `「${g.name}」暂无入群后的消息`))
       if (!initial) trimHistory('older')
       if (initial) {
         // 导航插入 pane、手机紧凑头部和同步占位尺寸完成后再恢复，期间不标已读。
         await new Promise(resolve => requestAnimationFrame(resolve))
-        if (st.destroyed || !scroller.isConnected) return
+        if (!active() || revision !== listRevision || !scroller.isConnected) return
         const mark = list.querySelector('.cm-unread')
         const target = resume && (rows.get(resume.id) || rows.get(d.items.find(m => m.id >= resume.id)?.id) || rows.get(d.items.at(-1)?.id))
         const place = () => { if (st.userScrollIntent) return; if (target) {
@@ -8997,11 +9062,18 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         place()
         // 离屏占位首轮测量可能修正上方行高；在恢复阶段完成一次校准，之后不抢用户滚动。
         await new Promise(resolve => requestAnimationFrame(resolve))
-        if (st.destroyed || !scroller.isConnected) return
+        if (!active() || revision !== listRevision || !scroller.isConnected) return
         place()
         st.done = true
         st.restoring = false
         st.forceLatest = false
+        if (isChatCursor(d.realtime_cursor)) {
+          st.realtimeCursor = d.realtime_cursor
+          st.realtimeMode = d.realtime_mode === 'shadow' ? 'shadow' : 'live'
+          st.realtimeGeneration = d.realtime_generation || undefined
+          connectRealtime()
+        }
+        settleCommands(d.items)
         st.lastHeadScroll = scroller.scrollTop
         recount()
         drawLatest()
@@ -9015,103 +9087,244 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       loaded = d.items.length > 0
       st.olderFailed = false
     } catch (e) {
-      if (e.status === 403 && !st.first) { st.busy = false; return lost(e) }
+      if (!active() || revision !== listRevision) return
+      if (e.status === 401 || e.status === 403) return lost(e)
       st.olderFailed = true
       topSpin.replaceChildren(h('button', { class: 'btn-text', onclick: () => older(true) }, e.message + ' · 重试'))
     } finally {
-      finishChatPage()
+      finishChatPage(revision)
     }
     if (loaded && st.more && scroller.scrollTop < 300 && scroller.isConnected && scroller.clientHeight) requestAnimationFrame(() => older())
   }
 
   const membershipChanged = (group) => historySince !== group.history_since || historyFloor !== (group.history_floor || 0)
-  async function reopenForMembership(group) {
-    if (st.busy) return
-    historySince = group.history_since
-    historyFloor = group.history_floor || 0
+  function closeChatPacket() {
+    const dialog = doc.querySelector('.rpk-dialog[open]')
+    if (dialog && chatPacketOwner.get(dialog) === el) dialog.close()
+  }
+  async function reopenForMembership() {
     closeHist()
-    closePop()
+    closeChatPacket()
+    if (POP?.el.ownerDocument === doc) closePop()
     searchEl?.remove()
     searchEl = null
+    dropAway()
     if (st.reply) setReply(null, false)
-    await backToLatest()
+    if (st.editing) setEdit(null, false)
+    await backToLatest(true)
   }
 
-  async function poll() {
-    if (!st.done || st.polling) return
-    if (!scroller.isConnected) return destroy()
-    st.polling = true
-    const revision = listRevision
-    let more = false
-    try {
-      // 每轮最多追5页，其余短暂让出主线程后继续，不等下一次3秒轮询。
-      for (let batch = 0; batch < 5 && scroller.isConnected && st.done; batch++) {
-      const d = await loadChatPoll(`/chat/groups/${g.id}/messages?after=${st.last}&since=${st.since}&include_total=0`)
-      if (st.destroyed || !scroller.isConnected || revision !== listRevision) { more = false; return }
-      if (membershipChanged(d.group)) { more = false; await reopenForMembership(d.group); return }
-      more = !!d.more && d.items.length > 0
-      st.since = d.now
-      guessPanel?.signal(d.items)
-      const wasFollowing = st.stick && !st.followPaused
-      d.changed.forEach(update)
-      if (st.after) { more = false; return } // 在跳转窗口里，最新的消息等回到底部再拉
-      if (d.items.length) {
-        if (d.items.some(packetAffectsBagBadge)) refreshBagBadge(true)
-        const others = d.items.filter((m) => !m.mine && !m.deleted && !rows.has(m.id))
-        const gg = findGroup(g.id)
-        if (gg) {
-          const fresh = others.filter(m => m.id > Math.max(gg.last_read || 0, gg.latest?.id || 0))
-          gg.unread = Math.min(100, (gg.unread || 0) + fresh.length)
-          gg.at_me = Math.min(20, (gg.at_me || 0) + fresh.filter(m => meRe()?.test(stripQuotes(m.body || ''))).length)
-          const last = d.items.at(-1)
-          if (last.id > (gg.latest?.id || 0)) gg.latest = { id: last.id, at: last.created_at, by: last.user.name || last.user.username, text: previewText(last.body || '') }
-          CHAT.subs.forEach(fn => fn())
+  let transportRevision = 0
+  function setRealtimeLive(live) {
+    if (!!st.realtimeLive === live) return
+    st.realtimeLive = live
+    transportRevision++
+    clearTimeout(st.catchupT)
+  }
+  function stopRealtime() {
+    st.stopRealtime?.()
+    st.stopRealtime = null
+    setRealtimeLive(false)
+  }
+  function connectRealtime() {
+    if (st.stopRealtime || !active() || Date.now() < (st.realtimeRetryAt || 0)) return
+    st.stopRealtime = chatRealtime.watch(g.id, st.realtimeCursor, st.realtimeMode, st.realtimeGeneration, {
+      batch(frame) {
+        if (!active() || !st.done) return
+        st.realtimeCursor = frame.cursor
+        if (st.realtimeMode === 'shadow') {
+          shadowSample(frame, frame.state_cursor ?? frame.cursor, 'socket')
+          return
         }
-        const duringAway = others.filter((m) => !st.awayDismissed && st.hiddenAt && m.created_at >= Math.floor(st.hiddenAt / 1000) && (!st.awayEnd || m.created_at <= st.awayEnd))
-        const gone = others.length > 0 && (away() || duringAway.length > 0)
-        // 来新消息要不要跟着滚：在底部时跟（默认）/ 总是滚到最新 / 不自动滚（只出按钮）
-        const ap = chatAuto()
-        // 开着历史层：正在看旧消息，主列表也不动，只记数
-        const stick = !!scroller.clientHeight && !gone && !histEl && !st.followPaused && (ap === 'always' ? true : ap === 'off' ? false : wasFollowing)
-        // 人不在：从第一条没看的开始画「以下是新消息」（这次离开期间已经画过就不挪）
-        if (gone && !st.awayMark) {
-          list.querySelectorAll('.cm-unread').forEach((el) => el.remove())
-          st.unreadAt = others[0].id
-          st.awayMark = true
-          st.awayStart = st.hiddenAt || Date.now()
+        const stateCursor = frame.state_cursor ?? frame.cursor
+        if (frame.cursor === stateCursor) {
+          setRealtimeLive(true)
+          if (isChatCursor(frame.now)) st.since = Math.max(st.since, frame.now)
         }
-        if (duringAway.length) st.awayIds = [...new Set([...st.awayIds, ...duringAway.map((m) => m.id)])]
-        // 手机网络抖动时 POST 已经到了服务器、回包丢了：轮询拿到同内容的自己的消息，就把「发送中 / 没发出去」那条收掉
-        d.items.forEach((m) => m.mine && inflight.find((j) => !j.done && !j.tray && j.body === (m.body || '') && Number(j.reply?.id||0) === Number(m.reply_to?.id||0) && !(m.media?.length || m.image))?.settle(m))
-        add(d.items, 'live', true, d.changed.map((m) => m.id))
-        trimLive(stick)
-        if (stick && !st.followPaused) toBottom()
-        else {
-          st.stick = false // 图片晚加载也别把人拽到底
-          // 往上翻着看的时候来了新消息：一样出按钮（以前只在离开时才出）
-          st.newIds.push(...others.map((m) => m.id))
-          trimHistory('older')
-          recount()
-        }
+        applyDelivery(frame, stateCursor, true)
+      },
+      ready(now) {
+        if (!active() || !st.done || st.realtimeMode === 'shadow') return
+        setRealtimeLive(true)
+        if (isChatCursor(now)) st.since = Math.max(st.since, now)
+      },
+      fallback() {
+        setRealtimeLive(false)
+        if (!doc.hidden) void poll()
+      },
+      disabled() {
+        stopRealtime()
+        st.realtimeRetryAt = Date.now() + 10000
+        if (!doc.hidden) void poll()
+      },
+      reset() {
+        if (!active()) return
+        const now = Date.now()
+        if (now - (st.realtimeResetAt || 0) < 10000) st.realtimeRetryAt = now + 10000
+        st.realtimeResetAt = now
+        void reopenForMembership()
+      },
+      revoked() { if (active()) void reopenForMembership() }
+    })
+  }
+
+  // 只在两条路径确实读到同一群快照时比对；诊断事件仅包含计数。
+  const shadowSamples = new Map()
+  const shadowStats = { batches: 0, compared: 0, mismatch: 0 }
+  function shadowSample(data, cursor, source) {
+    if (!isChatCursor(cursor)) return
+    if (source === 'socket') shadowStats.batches++
+    for (const m of [...data.items, ...data.changed]) {
+      const key = cursor + ':' + m.id
+      const previous = shadowSamples.get(key)
+      if (previous?.source === source || previous?.compared) continue
+      const value = JSON.stringify([m.body, m.deleted, m.image, m.media, m.edited_at, m.reply_count, m.reactions, m.boosts, m.redpack, m.meme_id])
+      let hash = 2166136261
+      for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619)
+      if (previous) {
+        shadowStats.compared++
+        if (previous.hash !== hash) shadowStats.mismatch++
+        shadowSamples.set(key, { compared: true })
+      } else {
+        shadowSamples.set(key, { source, hash })
+        if (shadowSamples.size > 1200) shadowSamples.delete(shadowSamples.keys().next().value)
       }
-      if (d.changed.length) recount()
-      if ((d.items.length || d.changed.length) && !doc.hidden && (awayEl || st.backAt - st.hiddenAt > 60000)) showAway()
-      if (!more) break
-      }
-    } catch (e) { more = false; if (e.status === 403) lost(e) } finally {
-      st.polling = false
-      if (more && !st.destroyed && scroller.isConnected) { clearTimeout(st.catchupT); st.catchupT = setTimeout(poll, 250) }
+    }
+    window.dispatchEvent(new CustomEvent('chat-realtime-shadow', { detail: { ...shadowStats } }))
+  }
+
+  function settleCommands(items, allowLegacy = false) {
+    for (const m of items) {
+      if (!m.mine) continue
+      const job = m.command_id
+        ? inflight.find(j => !j.done && j.commandId === m.command_id)
+        : allowLegacy && inflight.find(j => !j.done && !j.tray && j.body === (m.body || '') &&
+          Number(j.reply?.id || 0) === Number(m.reply_to?.id || 0) && !(m.media?.length || m.image))
+      job?.settle(m)
     }
   }
-  // 群里待着的时候被移出 / 在别处退了群：停掉轮询，整块换成「群聊已临时关闭」那张卡
+
+  // HTTP 轮询和实时批次共用阅读状态与消息副作用；实时批次的回复数以服务端状态为准。
+  function applyDelivery({ items, changed }, cursor, realtime = false, started = deliveryRevision) {
+    deliveryRevision++
+    settleCommands(items, !isChatCursor(st.realtimeCursor))
+    settleCommands(changed)
+    changed = mergeMessages(changed, cursor, started)
+    items = mergeMessages(items, cursor, started)
+    const wasFollowing = st.stick && !st.followPaused
+    guessPanel?.signal(items)
+    changed.forEach(m => update(m))
+    if (items.length) {
+      if (items.some(packetAffectsBagBadge)) refreshBagBadge(true)
+      const isNew = m => !rows.has(m.id) && !(m.id < st.first && m.id <= st.last)
+      const others = items.filter(m => !m.mine && !m.deleted && isNew(m))
+      const gg = findGroup(g.id)
+      const last = items.at(-1)
+      if (gg && last.id > (gg.latest?.id || 0)) {
+        const fresh = others.filter(m => m.id > Math.max(gg.last_read || 0, gg.latest?.id || 0))
+        gg.unread = Math.min(100, (gg.unread || 0) + fresh.length)
+        gg.at_me = Math.min(20, (gg.at_me || 0) + fresh.filter(m => meRe()?.test(stripQuotes(m.body || ''))).length)
+        gg.latest = { id: last.id, at: last.created_at, by: last.user.name || last.user.username, text: previewText(last.body || '') }
+        trackGroupDelivery(gg)
+        CHAT.subs.forEach(fn => fn())
+      }
+      if (realtime) items.forEach(m => { if (rows.has(m.id) || histView?.rows.has(m.id)) update(m) })
+      if (st.after) return
+      const freshParents = changed.map(m => m.id)
+      if (!realtime && isChatCursor(cursor)) {
+        // 追赶期间两路都可能送来新回复，已读取同级或更新快照的父消息已有准确计数。
+        for (const m of items) {
+          const parent = messageVersions.get(m.reply_to?.id)
+          if (parent?.cursor >= cursor) freshParents.push(m.reply_to.id)
+        }
+      }
+      if (!items.some(isNew)) {
+        add(items, 'live', true, freshParents, realtime)
+        if (changed.length) recount()
+        return
+      }
+      const duringAway = others.filter(m => !st.awayDismissed && st.hiddenAt && m.created_at >= Math.floor(st.hiddenAt / 1000) && (!st.awayEnd || m.created_at <= st.awayEnd))
+      const gone = others.length > 0 && (away() || duringAway.length > 0)
+      // 离开页面或查看历史时保留视口，继续记下新消息。
+      const ap = chatAuto()
+      const stick = !!scroller.clientHeight && !gone && !histEl && !st.followPaused && (ap === 'always' || (ap !== 'off' && wasFollowing))
+      if (gone && !st.awayMark) {
+        list.querySelectorAll('.cm-unread').forEach(el => el.remove())
+        st.unreadAt = others[0].id
+        st.awayMark = true
+        st.awayStart = st.hiddenAt || Date.now()
+      }
+      if (duringAway.length) st.awayIds = [...new Set([...st.awayIds, ...duringAway.map(m => m.id)])]
+      add(items, 'live', true, freshParents, realtime)
+      trimLive(stick)
+      if (stick && !st.followPaused) toBottom()
+      else {
+        st.stick = false
+        st.newIds.push(...others.map(m => m.id))
+        trimHistory('older')
+        recount()
+      }
+    }
+    if (changed.length) recount()
+    if ((items.length || changed.length) && !doc.hidden && (awayEl || st.backAt - st.hiddenAt > 60000)) showAway()
+  }
+
+  async function poll(repair = false) {
+    if (!active() || !st.done || st.polling) return
+    if (!scroller.isConnected) return destroy()
+    if (st.realtimeLive && repair !== true) return
+    const run = st.polling = {}
+    const revision = listRevision, transport = transportRevision
+    let more = false
+    try {
+      // 每轮最多追 5 页，剩余消息稍后继续补拉。
+      for (let batch = 0; batch < 5 && scroller.isConnected && st.done; batch++) {
+        const started = deliveryRevision
+        const d = await loadChatPoll(`/chat/groups/${g.id}/messages?after=${st.last}&since=${st.since}&include_total=0`)
+        if (!active() || !scroller.isConnected || revision !== listRevision || transport !== transportRevision) { more = false; return }
+        if (membershipChanged(d.group) || (st.realtimeGeneration && d.realtime_generation && d.realtime_generation !== st.realtimeGeneration)) {
+          more = false
+          await reopenForMembership()
+          return
+        }
+        if (isChatCursor(d.realtime_cursor)) {
+          const mode = d.realtime_mode === 'shadow' ? 'shadow' : 'live'
+          if (typeof WebSocket === 'function' && (!isChatCursor(st.realtimeCursor) || st.realtimeMode !== mode)) {
+            more = false
+            await reopenForMembership()
+            return
+          }
+          if (mode === 'shadow') shadowSample(d, d.realtime_cursor, 'http')
+          connectRealtime()
+        } else if (isChatCursor(st.realtimeCursor)) {
+          stopRealtime()
+          st.realtimeCursor = null
+        }
+        more = !st.after && !!d.more && d.items.length > 0
+        st.since = Math.max(st.since, d.now)
+        applyDelivery(d, d.realtime_cursor, false, started)
+        if (!more) break
+      }
+    } catch (e) {
+      more = false
+      if (active() && revision === listRevision && transport === transportRevision && (e.status === 401 || e.status === 403)) void lost(e)
+    } finally {
+      if (st.polling === run) {
+        st.polling = false
+        if (more && active() && scroller.isConnected) { clearTimeout(st.catchupT); st.catchupT = setTimeout(() => poll(repair), 250) }
+      }
+    }
+  }
+  // 被移出或退出群聊时立即收起历史与输入框，等群列表确认后显示对应状态。
   async function lost(e) {
     if (st.lost) return
     st.lost = true
-    st.done = false
     destroy()
+    el.replaceChildren(h('div', { class: 'chat-empty' }, icon('chat'), h('p', null, e.message)))
     await loadGroups()
+    if (S.me?.id !== userId || !el.isConnected) return
     const x = findGone(g.id)
-    el.replaceChildren(x ? goneView(x) : h('div', { class: 'chat-empty' }, icon('chat'), h('p', null, e.message)))
+    if (x) el.replaceChildren(goneView(x))
   }
 
   // 跳到某条消息：不在已加载的范围里，就把中间的历史一次拉下来再跳
@@ -9135,8 +9348,8 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     }
     const hit = () => hitIn(histView) || hitIn(mainView)
     if (hit()) return
-    while (st.busy) await new Promise((r) => setTimeout(r, 80))
-    if (hit()) return
+    while (st.busy && active()) await new Promise((r) => setTimeout(r, 80))
+    if (!active() || hit()) return
     return historyView(id)
   }
   // 历史消息层：盖在消息列表上，前后各 25 条，要看更多点「更早 / 更晚」，不会无限往上翻
@@ -9187,10 +9400,12 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       if (!edge) return
       extending = true
       try {
+        const started = deliveryRevision
         const d = await api(`/chat/groups/${g.id}/messages?around=${edge}`)
-        if (histView !== hv) return
+        if (!active() || histView !== hv) return
+        if (membershipChanged(d.group)) { await reopenForMembership(); return }
         const have = new Set(hv.items.map((m) => m.id))
-        const fresh = d.items.filter((m) => !have.has(m.id))
+        const fresh = mergeMessages(d.items, d.realtime_cursor, started).filter(m => !have.has(m.id))
         const oldTop = hv.rows.get(edge)?.getBoundingClientRect().top
         if (dir === 'up') {
           hv.items = [...fresh.filter((m) => m.id < edge), ...hv.items]
@@ -9210,56 +9425,88 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         draw()
         const newTop = hv.rows.get(edge)?.getBoundingClientRect().top
         if (oldTop != null && newTop != null) box.scrollTop += newTop - oldTop
-      } catch (e) { toast(e.message, 'err') } finally { extending = false }
+      } catch (e) {
+        if (!active() || histView !== hv) return
+        if (e.status === 401 || e.status === 403) void lost(e)
+        else toast(e.message, 'err')
+      } finally { extending = false }
     }
     try {
+      const started = deliveryRevision
       const d = await api(`/chat/groups/${g.id}/messages?around=${id}`)
-      if (histView !== hv) return
-      hv.items = d.items
+      if (!active() || histView !== hv) return
+      if (membershipChanged(d.group)) { await reopenForMembership(); return }
+      hv.items = mergeMessages(d.items, d.realtime_cursor, started)
       hv.more = d.more
       hv.after = !!d.more_after
-      const t = d.items.find((m) => m.id === id)
+      const t = hv.items.find((m) => m.id === id)
       if (!t) { close(); return toast(id < (d.items[0]?.id || Infinity) ? '原消息早于你入群的时间，看不到原文' : '原消息找不到了') }
       title.textContent = '历史消息 · ' + fullDate(t.created_at)
       draw()
       const r = hv.rows.get(id)?.querySelector('.cm-msg')
       if(r)settleChatFocus(box,r)
       if (r) flashMsg(r, t)
-    } catch (e) { if (histView === hv) close(); toast(e.message, 'err') }
+    } catch (e) {
+      if (!active() || histView !== hv) return
+      if (e.status === 401 || e.status === 403) void lost(e)
+      else { close(); toast(e.message, 'err') }
+    }
   }
   // 跳转窗口：清空列表，只放 id 前后各 25 条
   const resetList = () => { listRevision++; rows.clear(); list.replaceChildren(); st.items = []; st.first = 0; st.last = 0; st.olderFailed = false; st.newIds = []; pill.hidden = true; st.unreadAt = -1 }
   async function openWindow(id) {
     st.busy = true
+    let revision = listRevision
+    const started = deliveryRevision
     try {
       const d = await api(`/chat/groups/${g.id}/messages?around=${id}`)
+      if (!active() || revision !== listRevision) return
+      if (membershipChanged(d.group)) { await reopenForMembership(); return }
       resetList()
+      revision = listRevision
       st.more = d.more
       st.after = d.more_after ? d.items[d.items.length - 1]?.id || 0 : 0
       st.last = Math.max(st.last, d.items[d.items.length - 1]?.id || 0)
-      add(d.items, 'bottom')
+      add(mergeMessages(d.items, d.realtime_cursor, started), 'bottom')
       topSpin.replaceChildren(st.more ? h('div', { class: 'spinner' }) : h('div', { class: 'cm-begin' }, `这是「${g.name}」你入群后可见的最早消息`))
       drawLatest()
-    } catch (e) { toast(e.message, 'err') } finally { finishChatPage() }
+    } catch (e) { if (active() && revision === listRevision) toast(e.message, 'err') } finally { finishChatPage(revision) }
   }
   // 跳转窗口里往下翻：接着要后面的
   async function newer() {
     if (!st.after || st.busy) return
     st.busy = true
+    const revision = listRevision, started = deliveryRevision
     try {
       const d = await api(`/chat/groups/${g.id}/messages?around=${st.after}`)
-      if (st.destroyed || !scroller.isConnected) return
-      const items = d.items.filter((m) => m.id > st.after)
+      if (!active() || revision !== listRevision || !scroller.isConnected) return
+      if (membershipChanged(d.group)) { await reopenForMembership(); return }
+      const items = mergeMessages(d.items, d.realtime_cursor, started).filter(m => m.id > st.after)
       add(items, 'bottom')
       st.newIds.push(...items.filter(m => m.id > st.sentRead && !m.mine && !m.deleted).map(m => m.id))
       st.after = d.more_after ? items[items.length - 1]?.id || 0 : 0
       trimHistory('newer')
       drawLatest()
       recount()
-    } catch {} finally { finishChatPage() }
+      if (!st.after && st.realtimeLive && started !== deliveryRevision) {
+        // 翻到最新一页的请求期间，订阅可能已收到更晚的消息。
+        st.last = st.items.at(-1)?.id || 0
+        void poll(true)
+      }
+    } catch (e) {
+      if (active() && revision === listRevision && (e.status === 401 || e.status === 403)) void lost(e)
+    } finally { finishChatPage(revision) }
   }
-  async function backToLatest() {
-    if (st.busy || st.destroyed) return
+  async function backToLatest(replacing = false) {
+    if (!active() || (st.busy && !replacing)) return
+    stopRealtime()
+    st.realtimeCursor = null
+    st.realtimeGeneration = null
+    st.busy = false
+    st.polling = false
+    clearTimeout(st.catchupT)
+    messageVersions.clear()
+    shadowSamples.clear()
     st.after = 0
     st.more = true
     resetList()
@@ -9280,7 +9527,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   function keepHistoricalReply(message, text = '回复已发送') {
     if (st.destroyed) return
     if (!st.after) {
-      add([message], 'live', false)
+      add([message], 'live', false, null, st.realtimeLive)
       if (!histEl) { st.newIds.push(message.id); recount() }
       else drawDown()
     } else drawLatest()
@@ -9329,12 +9576,18 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   async function refreshReads() {
     // 不只是自己发的：别人 @ 别人的，点也要跟着变绿
     const ids = st.items.filter((m) => m.at_read && Object.values(m.at_read).some((v) => !v) && Date.now() / 1000 - m.created_at < 7 * 86400).map((m) => m.id).slice(-100)
-    if (!ids.length || doc.hidden) return
+    if (!active() || !ids.length || doc.hidden) return
+    const ticket = actionTicket()
     try {
       const { reads } = await api(`/chat/groups/${g.id}/reads?ids=${ids.join(',')}`)
+      if (!active() || ticket.listRevision !== listRevision) return
       for (const [id, r] of Object.entries(reads)) {
         const m = st.items.find((x) => x.id === Number(id))
-        if (m) { m.at_read = r; paintReads(mainView, m) }
+        if (m?.at_read) {
+          // 已读只向前推进；保留推送期间已确认的读点，以及修改后仍存在的 @。
+          m.at_read = Object.fromEntries(Object.entries(m.at_read).map(([name, read]) => [name, read || !!r?.[name]]))
+          paintReads(mainView, m)
+        }
       }
     } catch {}
   }
@@ -9345,23 +9598,31 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (nk && b.textContent.startsWith('@')) b.textContent = `${nk}(${b.textContent})`
   })).catch(() => {})
   async function markRead() {
-    if (!S.me || !st.done || st.restoring || st.destroyed || st.followPaused || st.blur || scroller.ownerDocument.hidden || !scroller.offsetParent || histEl || st.after || !exactBottom() || st.reading) return
+    if (!userId || !active() || !st.done || st.restoring || st.followPaused || st.blur || doc.hidden || !scroller.offsetParent || histEl || st.after || !exactBottom() || st.reading) return
     const upto = st.items.at(-1)?.id || 0
     if (upto <= st.sentRead) return
+    const revision = listRevision
     st.reading = true
+    let read = false
     try {
       await api(`/chat/groups/${g.id}/read`, { method: 'POST', body: { id: upto } })
-      st.sentRead = upto
+      if (!active() || revision !== listRevision) return
+      st.sentRead = Math.max(st.sentRead, upto)
+      read = true
       const gg = findGroup(g.id)
-      if (gg) {
+      if (gg && upto >= (gg.last_read || 0)) {
         const left = st.items.filter((m) => !m.mine && !m.deleted && m.id > upto)
-        gg.last_read = Math.max(gg.last_read || 0, upto)
+        gg.last_read = upto
         gg.unread = left.length
         gg.at_me = left.filter((m) => meRe()?.test(stripQuotes(m.body || ''))).length
+        trackGroupDelivery(gg)
         CHAT.subs.forEach((fn) => fn())
       }
       chatNotifSeen(g.id, upto)
-    } catch {} finally { st.reading = false }
+    } catch {} finally {
+      st.reading = false
+      if (read && (st.items.at(-1)?.id || 0) > upto) queueMicrotask(markRead)
+    }
   }
   scroller.addEventListener('scroll', () => {
     if (!st.done || st.restoring || st.destroyed || !scroller.clientHeight) return
@@ -9410,7 +9671,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (focus && !COARSE) ta.focus()
   }
   // 编辑自己的消息：正文放进输入框，回车保存；Esc 或 × 取消，原来没发的草稿放回去
-  const setEdit = (m) => {
+  const setEdit = (m, focus = true) => {
     if (m) {
       if (!st.editing) st.draft = ta.value
       setReply(null)
@@ -9428,23 +9689,26 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       st.draft = ''
     }
     grow()
-    ta.focus()
-    ta.setSelectionRange(ta.value.length, ta.value.length)
+    if (focus) {
+      ta.focus()
+      ta.setSelectionRange(ta.value.length, ta.value.length)
+    }
   }
   async function saveEdit() {
     const m = st.editing
     const body = ta.value.trim()
     if (body === m.body.trim()) return setEdit(null)
     if (!body && !m.image && !m.media?.length) return toast('内容不能为空，不想要了可以撤回', 'err')
+    const ticket = actionTicket()
     try {
       const { message } = await api(`/chat/messages/${m.id}`, { method: 'PATCH', body: { body } })
-      setEdit(null)
-      update(message)
+      if (active() && st.editing === m && ta.value.trim() === body) setEdit(null)
+      update(message, ticket)
     } catch (e) { toast(e.message, 'err') }
   }
   // 撤回后把原文放回输入框，可以改完直接再发
   const recalled = (m) => {
-    if (!m.body) return
+    if (!active() || !m.body) return
     if (st.editing) setEdit(null)
     const cur = ta.value.trim()
     ta.value = cur ? cur + '\n' + m.body : m.body
@@ -9468,13 +9732,17 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       const tip = toast(`正在上传 ${f.name}…`)
       try {
         const r = await uploadFile(f, 'chat', 'file')
-        const { message } = await api(`/chat/groups/${g.id}/messages`, { method: 'POST', body: { body: '', reply_to: replyTarget?.id || 0, media: [{ key: r.key, name: f.name }] } })
+        if (!active()) return
+        const started = deliveryRevision
+        const { message: saved } = await api(`/chat/groups/${g.id}/messages`, { method: 'POST', body: { command_id: chatCommandId(), body: '', reply_to: replyTarget?.id || 0, media: [{ key: r.key, name: f.name }] } })
+        if (!active()) return
+        const message = latestMessage(saved, null, started)
         if((st.reply?.id||0)===(replyTarget?.id||0))setReply(null)
         if(!keepReplyPosition)closeHist()
         const follow = st.stick && !st.followPaused && nearBottom()
         if(keepReplyPosition)keepHistoricalReply(message)
         else if(fromHistory){fromHistory=false;await latestAfterSend()}
-        else {add([message], 'live', false);if (follow && !st.followPaused) toBottom();else drawDown()}
+        else {add([message], 'live', false, null, st.realtimeLive);if (follow && !st.followPaused) toBottom();else drawDown()}
       } catch (e) { toast(`「${f.name}」没发出去：${e.message}`, 'err') }
       void tip
     }
@@ -9494,7 +9762,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     const followSend = st.stick && !st.followPaused && nearBottom() && !histEl && !st.after
     // 回复或复读旧消息时都保留历史视图，不跳到最新；其余发送继续沿用原来的跳转行为。
     if (!keepReplyPosition) closeHist()
-    const job = { body, reply: st.reply, tray: !only && att.items.length ? att : null, done: false, tries: 0 }
+    const job = { commandId: chatCommandId(), body, reply: st.reply, tray: !only && att.items.length ? att : null, done: false, tries: 0 }
     const fake = { id: 0, user: { id: S.me.id, username: S.me.username, name: S.me.name, avatar: S.me.avatar, is_admin: S.me.is_admin, fancy: S.me.fancy },
       body, media: job.tray ? att.local() : null, created_at: Date.now() / 1000, reactions: [], mine: true,
       reply_to: job.reply ? { id: job.reply.id, username: job.reply.user.username, name: job.reply.user.name, avatar: job.reply.user.avatar,
@@ -9513,7 +9781,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       el.remove()
       job.tray?.clear()
       inflight.splice(inflight.indexOf(job) >>> 0, 1)
-      if (message && !st.destroyed) matchRedpackMessage(message, g, api_)
+      if (message && !message.deleted && active()) matchRedpackMessage(message, g, api_)
     }
     inflight.push(job)
     // 托盘交给这条消息，输入框换一个新的
@@ -9523,19 +9791,23 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (followSend && !st.followPaused) toBottom()
     else drawDown()
     const go = async () => {
-      if (job.done || job.busy) return
+      if (job.done || job.busy || !active()) return
       job.busy = true
       state.textContent = '发送中…'
       state.classList.remove('err')
       try {
-        const media = job.tray ? await job.tray.media() : undefined
-        // 第二次起带上 retry：服务器在 2 分钟内认出同一条，不会重复入库
-        const { message } = await api(`/chat/groups/${g.id}/messages`, { method: 'POST', body: { body, reply_to: job.reply?.id || 0, media, retry: job.tries++ > 0 || undefined } })
+        const media = job.tray ? (job.media ||= await job.tray.media()) : undefined
+        if (job.done || !active()) return
+        const started = deliveryRevision
+        // 重试复用这一条发送的标识。新发送即使内容相同，也使用独立标识。
+        const { message: saved } = await api(`/chat/groups/${g.id}/messages`, { method: 'POST', body: { command_id: job.commandId, body, reply_to: job.reply?.id || 0, media, retry: job.tries++ > 0 || undefined } })
+        if (!active()) return
+        const message = latestMessage(saved, null, started)
         if (!job.done) job.settle(message)
         const stick = followSend && st.stick && !st.followPaused && nearBottom()
         if(keepReplyPosition)keepHistoricalReply(message,repeat?'已复读':'回复已发送')
         else if(fromHistory)await latestAfterSend()
-        else {add([message], 'live', false);if (stick && !st.followPaused) toBottom();else drawDown()}
+        else {add([message], 'live', false, null, st.realtimeLive);if (stick && !st.followPaused) toBottom();else drawDown()}
       } catch (e) {
         if (job.done) return
         if (keepReplyPosition && histEl) toast((repeat ? '复读' : '回复') + '未发送，请回到当前聊天重试', 'err')
@@ -9596,11 +9868,13 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
       if(st.destroyed||!scroller.isConnected)throw Error('聊天窗口已关闭')
       job.prepared ||= await api(`/chat/favorites/${job.id}/prepare`,{method:'POST',body:{nonce:job.nonce}})
       if(st.destroyed||!scroller.isConnected)throw Error('聊天窗口已关闭')
-      const {message}=await api(`/chat/groups/${g.id}/messages`,{method:'POST',body:{...job.prepared,retry:job.tries++>0}})
+      const started = deliveryRevision
+      const {message:saved}=await api(`/chat/groups/${g.id}/messages`,{method:'POST',body:{...job.prepared,command_id:job.nonce,retry:job.tries++>0}})
       if(st.destroyed)return
+      const message = latestMessage(saved, null, started)
       const follow=st.stick&&!st.followPaused&&nearBottom()&&!histEl
       if(histEl||st.after){closeHist();await latestAfterSend()}
-      else {add([message],'live',false);if(follow)toBottom();else drawDown()}
+      else {add([message],'live',false,null,st.realtimeLive);if(follow)toBottom();else drawDown()}
     }})
   }
   const compose = S.me
@@ -9623,11 +9897,13 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
         }}), { key, cls: 'pop-stk', up: true }), { 'data-pop': key }),
         tb('image', '发图片 / 视频', () => att.pick()),
         tb('bookmark', '消息收藏', e => favoriteBoard(e.currentTarget.closest('.cm-compose')||e.currentTarget).catch(e=>toast(e.message,'err'))),
-        tb('redpack', '发红包', (e) => redpackDialog(e.currentTarget.getClientRects().length ? e.currentTarget : compose.querySelector('.cm-mobile-more'), { group: g, onSent: (message) => {
+        tb('redpack', '发红包', (e) => redpackDialog(e.currentTarget.getClientRects().length ? e.currentTarget : compose.querySelector('.cm-mobile-more'), { group: g, actionTicket, onSent: (saved, ticket) => {
+          if (!active() || (ticket && ticket.listRevision !== listRevision)) return
+          const message = latestMessage(saved, null, ticket?.deliveryRevision)
           const follow = st.stick && !st.followPaused && nearBottom() && !histEl, fromHistory=!!histEl||!!st.after
           closeHist()
           if(fromHistory)void latestAfterSend()
-          else {add([message], 'live', false);if (follow && !st.followPaused) toBottom();else drawDown()}
+          else {add([message], 'live', false, null, st.realtimeLive);if (follow && !st.followPaused) toBottom();else drawDown()}
         } }), { class: 'cm-ibtn cm-redpack-btn' }),
         tb('raffle', '抽卡', (e) => instantCardDialog(e.currentTarget)),
         
@@ -9708,7 +9984,36 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     input.focus()
     if (q0) { input.value = q0; run() }
   }
-  function destroy() { drawLifetime.abort(); savePosition(); st.destroyed = true; bottomResize.disconnect(); bubbleMotion.destroy(); histMotion?.destroy(); histMotion = null; aiPanel?.destroy(); guessPanel?.destroy(); huancaiPanel?.destroy(); gamePanel?.destroy(); vipPanel?.destroy(); st.done = false; CHAT.panes.delete(api_); clearTimeout(positionTimer); clearTimeout(awayT); clearTimeout(st.catchupT); st.stopOwnPoll?.(); clearInterval(st.readT); clearInterval(bagTimer); doc.removeEventListener('visibilitychange', onVis); doc.defaultView?.removeEventListener('pagehide', savePosition); win?.removeEventListener('blur', onBlur); win?.removeEventListener('focus', onFocus); doc.defaultView?.removeEventListener('title-raffle-update', refreshTitleRaffles); offNotice(); offUnread() }
+  function destroy() {
+    if (st.destroyed) return
+    drawLifetime.abort()
+    savePosition()
+    st.destroyed = true
+    st.done = false
+    stopRealtime()
+    closeChatPacket()
+    messageVersions.clear()
+    shadowSamples.clear()
+    bottomResize.disconnect()
+    bubbleMotion.destroy()
+    histMotion?.destroy()
+    histMotion = null
+    for (const panel of [aiPanel, guessPanel, huancaiPanel, gamePanel, vipPanel]) panel?.destroy()
+    CHAT.panes.delete(api_)
+    clearTimeout(positionTimer)
+    clearTimeout(awayT)
+    clearTimeout(st.catchupT)
+    st.stopOwnPoll?.()
+    clearInterval(st.readT)
+    clearInterval(bagTimer)
+    doc.removeEventListener('visibilitychange', onVis)
+    doc.defaultView?.removeEventListener('pagehide', savePosition)
+    win?.removeEventListener('blur', onBlur)
+    win?.removeEventListener('focus', onFocus)
+    doc.defaultView?.removeEventListener('title-raffle-update', refreshTitleRaffles)
+    offNotice()
+    offUnread()
+  }
 
   // 群公告：顶上一条，点 × 收起（记住这一版），右上角留个小「公告」随时再打开；公告改了会重新弹出来
   const noticeEl = h('div', { class: 'cm-notice-wrap' })
@@ -9764,7 +10069,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   pendingSlot()
   stage.append(pill, latestBtn)
   const guessOpen = h('button', { type:'button', class:'cm-guess-open', title:'猜词专区 / 分屏', 'aria-label':'猜词专区 / 分屏', 'aria-expanded':'false', onclick:()=>openGuess() }, h('img',{src:'/ai-avatar.svg',class:'cm-guess-icon',alt:'',width:24,height:24}), h('span',{class:'cm-guess-label'},'猜词'), h('span',{'aria-hidden':'true'},'↗'))
-  const bagOpen = h('button', {type:'button',class:'cm-bag-open',title:'群红包袋','aria-label':'群红包袋',onclick:e=>redpackDialog(e.currentTarget,{archiveGroup:g,onUpdate:update,onClose:()=>refreshBagBadge(true)})},
+  const bagOpen = h('button', {type:'button',class:'cm-bag-open',title:'群红包袋','aria-label':'群红包袋',onclick:e=>redpackDialog(e.currentTarget,{archiveGroup:g,onUpdate:update,actionTicket,onClose:()=>refreshBagBadge(true)})},
     icon('packetBag','i tiny'),h('span',null,'群红包袋'),h('span',{class:'cm-bag-alert','aria-hidden':'true'},'还有红包'))
   const updatesOpen=h('button',{type:'button',class:'cm-updates-open',title:'最近更新','aria-label':'最近更新',onclick:async e=>{
     const anchor=e.currentTarget;if(anchor.disabled)return;anchor.disabled=true
@@ -9815,7 +10120,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (before.endsWith('@' + username + ' ')) return ta.focus()
     insertAtCursor(ta, (/\S$/.test(before) ? ' ' : '') + '@' + username + ' ')
   }
-  const api_ = { el, poll, destroy, update, setReply, setEdit, recalled, quoteMsg, jumpTo, gallery, search, atUser, openGuess, send: (t) => send(t), focus: () => ta.focus(), group: g, st }
+  const api_ = { el, poll, destroy, update, updateFields, actionTicket, setReply, setEdit, recalled, quoteMsg, jumpTo, gallery, search, atUser, openGuess, send: (t) => send(t), focus: () => ta.focus(), group: g, st }
   mainView.pane = api_
   // 消息上的右键 / 左滑：委托在整个 pane 上（跟着 pane 进小窗 document），按消息所在列表找视图和消息。
   // 发送中的占位不在任何列表里，自然不管
@@ -9877,6 +10182,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
   el.addEventListener('touchend', swEnd)
   el.addEventListener('touchcancel', swEnd)
   CHAT.panes.add(api_)
+  onRemoval(el, destroy)
   older()
   return api_
 }
@@ -9936,7 +10242,20 @@ async function redpackDialog(anchor, options) {
   try {
     closePop()
     const { openRedpacket } = await import('/redpacket.js?v=472f7fbf')
-    if (anchor.isConnected) openRedpacket({ anchor, ...options, userId:S.me?.id, h, icon, api, bagReminderSettings:packetBagReminderSettings, uploadCover: async (file,signal) => {
+    const tickets = new WeakMap()
+    const packetApi = options.actionTicket ? async (path, opts) => {
+      const ticket = options.actionTicket()
+      const data = await api(path, opts)
+      if (data.message && typeof data.message === 'object') tickets.set(data.message, ticket)
+      return data
+    } : api
+    if (!anchor.isConnected) return
+    const doc = anchor.ownerDocument
+    if (doc.querySelector('.rpk-dialog')) return
+    openRedpacket({ anchor, ...options, userId:S.me?.id, h, icon, api:packetApi,
+      onUpdate: options.onUpdate && (message => options.onUpdate(message, tickets.get(message))),
+      onSent: options.onSent && (message => options.onSent(message, tickets.get(message))),
+      bagReminderSettings:packetBagReminderSettings, uploadCover: async (file,signal) => {
       const error=checkFile(file)
       if(error || isVid(file))throw Error(error || '封面请选择图片')
       const compact=await shrinkImage(file,{edge:1280,threshold:1024*1024,keepTall:false})
@@ -9945,6 +10264,9 @@ async function redpackDialog(anchor, options) {
       try {const size=await probeMedia(compact,url);if(!size.w || !size.h)throw Error('无法读取这张图片');if(signal?.aborted)throw Error('上传已取消');return await uploadFile(compact,'chat',undefined,signal)}
       finally {URL.revokeObjectURL(url)}
     }, uploadClue: file => uploadFile(file, 'chat') })
+    const dialog = doc.querySelector('.rpk-dialog')
+    const owner = anchor.closest('.cm-pane')
+    if (dialog && owner) chatPacketOwner.set(dialog, owner)
   } catch (e) { toast(e.message, 'err') }
 }
 async function instantCardDialog(anchor,initialTab='draw') {
@@ -9994,14 +10316,16 @@ async function titleRaffleDialog(anchor, packetId = null, raffleId = null, legac
 }
 const REDPACK_AUTO = { queue: [], active: false, seen: new Set(), timer: 0 }
 async function matchRedpackMessage(message,g,pane,attempt=0) {
-  const key=(S.me?.id || 0)+':'+message.id
+  const userId=S.me?.id
+  const key=userId+':'+message.id
   if(REDPACK_AUTO.seen.has(key))return
   REDPACK_AUTO.seen.add(key)
   if(REDPACK_AUTO.seen.size>200)REDPACK_AUTO.seen.delete(REDPACK_AUTO.seen.values().next().value)
   try {
     const d=await api(`/chat/groups/${g.id}/redpacks/matches?message_id=${message.id}`)
-    if(!pane.el.isConnected || !d.items.length)return
+    if(userId!==S.me?.id || pane.st.destroyed || !pane.el.isConnected || !d.items.length)return
     const enqueue=()=>{
+      if(userId!==S.me?.id || pane.st.destroyed)return
       let seen=[];try{seen=JSON.parse(localStorage.getItem('redpackAutoSeen') || '[]')}catch{}
       if(seen.includes(key))return
       let done=[];try{done=JSON.parse(localStorage.getItem('redpackAutoPackets') || '[]')}catch{}
@@ -10029,7 +10353,7 @@ function drainRedpackAuto() {
   if(doc.hidden || doc.querySelector('dialog[open]')){REDPACK_AUTO.timer=setTimeout(drainRedpackAuto,500);return}
   REDPACK_AUTO.queue.shift();REDPACK_AUTO.active=true
   const anchor=next.pane.el.querySelector('[aria-label="发红包"]') || next.pane.el
-  redpackDialog(anchor,{message:next.message,autoOpen:true,onUpdate:next.pane.update,onClose:()=>{REDPACK_AUTO.active=false;drainRedpackAuto()}})
+  redpackDialog(anchor,{message:next.message,autoOpen:true,onUpdate:next.pane.update,actionTicket:next.pane.actionTicket,onClose:()=>{REDPACK_AUTO.active=false;drainRedpackAuto()}})
     .then(()=>{if(!doc.querySelector('.rpk-dialog')){REDPACK_AUTO.active=false;drainRedpackAuto()}})
 }
 // 回应、回复数和装饰更新不重建未变化的播放器，避免轮询时中断视频。
@@ -10080,7 +10404,7 @@ function chatMsg(m, { cont, pane, pending } = {}) {
   if(m.system_kind==='ldc_game')return h('div',{class:'cm-welcome cm-redpack-due',role:'note'},h('span',{class:'cm-welcome-copy'},h('strong',null,m.body)),h('button',{class:'btn btn-ghost sm',type:'button',onclick:()=>pane?pane.jumpTo(Number(m.system_ref)):jumpMsg(Number(m.system_ref))},'对应发言'))
   if(['redpack_due','redpack_draw','redpack_result','ldc_winner','ldc_cancel','ldc_expired'].includes(m.system_kind))return h('div',{class:'cm-welcome cm-redpack-due',role:'note'},icon('redpack'),
     h('span',{class:'cm-welcome-copy'},h('strong',null,m.deleted?'红包提醒已撤回':m.system_kind!=='redpack_due'?m.body.split('\n答案释义：')[0]:'红包到点啦！'),!m.deleted&&m.body.includes('\n答案释义：')&&h('span',{class:'cm-answer-meaning'},'答案释义：'+m.body.split('\n答案释义：').slice(1).join('；')),!m.deleted&&m.system_kind==='redpack_due'&&h('span',null,m.body==='[红包到点提醒]'?'红包已到设定时间，打开查看当前结果':m.body)),
-    !m.deleted && h('button',{class:'btn btn-primary sm',type:'button',onclick:e=>redpackDialog(e.currentTarget,{message:{id:Number(m.system_ref)},onUpdate:fresh=>pane?.update(fresh)})},'去看看'))
+    !m.deleted && h('button',{class:'btn btn-primary sm',type:'button',onclick:e=>redpackDialog(e.currentTarget,{message:{id:Number(m.system_ref)},onUpdate:pane?.update,actionTicket:pane?.actionTicket})},'去看看'))
   if (m.system_kind === 'join') return h('div', { class: 'cm-welcome' + (m.deleted ? ' gone' : ''), role: 'note', 'aria-label': m.deleted ? '入群提醒已撤回' : `欢迎 ${who} 加入群聊` },
     m.deleted ? h('span', null, '入群提醒已撤回') : [
       h('span', { class: 'cm-welcome-star', 'aria-hidden': 'true' }, '✦'),
@@ -10109,7 +10433,7 @@ function chatMsg(m, { cont, pane, pending } = {}) {
     const edited = m.edited_at && h('span', { class: 'cm-edited', title: '编辑于 ' + new Date(m.edited_at * 1000).toLocaleString('zh-CN', { hour12: false }) }, '（已编辑）')
     if (m.road_id) body.push(h('a', { class: 'cm-road', href: `/road?item=${m.road_id}`, 'data-link': '' }, `已转到鞭打 #${m.road_id}`))
     if (m.redpack) body.push(h('button', { type: 'button', class: 'cm-redpack' + (m.redpack.solved ? ' is-open' : ''), 'aria-label': '打开红包',
-      onclick: (e) => pane && ['guess','clues'].includes(m.redpack.ldc_mode) ? pane.openGuess(m.id) : redpackDialog(e.currentTarget, { message: m, claimOnOpen:true, onUpdate: (fresh) => pane?.update(fresh) }) },
+      onclick: (e) => pane && ['guess','clues'].includes(m.redpack.ldc_mode) ? pane.openGuess(m.id) : redpackDialog(e.currentTarget, { message: m, claimOnOpen:true, onUpdate:pane?.update, actionTicket:pane?.actionTicket }) },
       m.redpack.cover && deferChatImage(h('img',{class:'cm-redpack-cover',alt:'红包封面',onerror:e=>{if(e.currentTarget.isConnected)e.currentTarget.remove()}}),m.redpack.cover),
       h('span', { class: 'cm-redpack-seal'+((m.redpack.provider==='coin52'||m.redpack.payment_provider==='coin52')?' is-dcoin':''), 'aria-hidden': 'true' }, (m.redpack.provider==='coin52'||m.redpack.payment_provider==='coin52')?dcoinIcon(h):icon('redpack')),
       h('span', { class: 'cm-redpack-copy' }, h('strong', null, m.redpack.prompt || (m.redpack.game==='free_guess'?'一起猜词吧':'给你一个红包')),
@@ -10348,9 +10672,10 @@ function whoReacted(anchor, path, key, focus) {
 const chatCopy = (m) => copyText(m.body || (m.media?.[0]?.u || m.image) && location.origin + (m.media?.[0]?.u || m.image) || '')
 async function chatDelete(m, pane) {
   if (!m.mine && !await window.siteConfirm(`删除 ${m.user.username} 的这条消息？`)) return
+  const ticket = pane.actionTicket()
   try {
     await api(`/chat/messages/${m.id}`, { method: 'DELETE' })
-    pane.update({ ...m, deleted: true, body: '', image: null, media: null, reactions: [], can_delete: false, can_edit: false })
+    pane.updateFields(m, { deleted: true, body: '', image: null, media: null, reactions: [], can_delete: false, can_edit: false }, ticket)
     if (m.mine) pane.recalled(m)
   } catch (e) { toast(e.message, 'err') }
 }
@@ -10446,9 +10771,10 @@ function chatToPost(m, pane, anchor, key, socialIndex) {
   let as = 'author'
   const go = async (tags) => {
     closePop()
+    const ticket = pane?.actionTicket()
     try {
       const r = await api(`/chat/messages/${m.id}/to-post`, { method: 'POST', body: { tags, as, social_index:socialIndex } })
-      pane?.update({ ...m, meme_id: r.id })
+      pane?.updateFields(m, { meme_id: r.id }, ticket)
       toast(r.existed ? `已经转过了：No.${r.id}` : `已发成帖子 No.${r.id}`, 'ok')
       S.bgKey = null
       S.wallFresh = true
@@ -10553,9 +10879,10 @@ function boostChoices(pick, current) {
 }
 async function chatBoost(m, pane, text) {
   if (!requireLogin()) return
+  const ticket = pane.actionTicket()
   try {
     const { message } = await api(`/chat/messages/${m.id}/boosts`, { method: 'POST', body: { text } })
-    pane.update(message)
+    pane.update(message, ticket)
     if (text.trim()) {
       try { localStorage.setItem('chatBoostRecent:' + S.me.id, JSON.stringify([text.trim(), ...recentBoosts()].filter((t, i, all) => all.indexOf(t) === i).slice(0, 4))) } catch {}
     }
@@ -10593,10 +10920,11 @@ function boostPrompt(m, pane, anchor) {
 }
 async function chatReact(m, emoji, pane) {
   if (!requireLogin()) return
+  const ticket = pane.actionTicket()
   try {
     const { message } = await api(`/chat/messages/${m.id}/reactions`, { method: 'POST', body: { emoji } })
     pushRecent(emoji)
-    pane.update(message)
+    pane.update(message, ticket)
   } catch (e) { toast(e.message, 'err') }
 }
 
@@ -11672,7 +12000,7 @@ async function forwardMeme(m, anchor) {
   const it = (g) => h('button', { class: 'menu-item', onclick: async () => {
     closePop()
     try {
-      await api(`/chat/groups/${g.id}/messages`, { method: 'POST', body: { body: `${m.title || '分享一张图'}\n${location.origin}/m/${m.id}` } })
+      await api(`/chat/groups/${g.id}/messages`, { method: 'POST', body: { command_id: chatCommandId(), body: `${m.title || '分享一张图'}\n${location.origin}/m/${m.id}` } })
       toast(`已转发到「${g.name}」`, 'ok')
       CHAT.panes.forEach((p) => p.group.id === g.id && p.poll())
     } catch (e) { toast(e.message, 'err') }
@@ -11763,7 +12091,7 @@ async function chatPopout(g0, { pip = false } = {}) {
   saveCp()
   bindMsgTools(doc)
   PIPS.add(win)
-  // 自己轮询：主页面在后台时浏览器会压它的计时器，小窗不受影响
+  // 实时订阅与主窗口共享，HTTP 回退保留小窗计时器，主页面隐藏时仍能刷新。
   pane.st.ownPoll = win.setInterval(() => {
     if (doc.hidden) return
     pane.poll()

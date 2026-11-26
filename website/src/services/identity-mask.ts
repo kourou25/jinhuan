@@ -92,15 +92,19 @@ const NAME_KEYS = ['username', 'name', 'nick', 'user_name', 'author', 'author_na
 const AVATAR_KEYS = ['avatar', 'author_avatar', 'user_avatar', 'author_deco']
 const isPerson = (o: Record<string, unknown>) => 'username' in o || 'avatar' in o || 'author_avatar' in o || 'user_avatar' in o
 // uniform：未登录访客用，所有人一律「鱼友」，不给每日化名（化名也能把同一作者的帖子串起来）
-export async function maskJsonPeople(env: Env, viewer: Viewer, data: unknown, depth = 0, parentTs: number | null = null, uniform = false): Promise<unknown> {
+export async function maskJsonPeople(env: Env, viewer: Viewer, data: unknown, depth = 0, parentTs: number | null = null, uniform = false, chatReference = false): Promise<unknown> {
   if (depth > 12 || data === null || typeof data !== 'object') return data
   if (Array.isArray(data)) return Promise.all(data.map((x) => maskJsonPeople(env, viewer, x, depth + 1, parentTs, uniform)))
   const o = data as Record<string, unknown>, out: Record<string, unknown> = {}
   const own = Number(o.created_at ?? o.at), ts = Number.isFinite(own) && own > 1e9 ? own : parentTs
-  for (const [k, v] of Object.entries(o)) out[k] = await maskJsonPeople(env, viewer, v, depth + 1, ts, uniform)
+  for (const [k, v] of Object.entries(o)) {
+    // 引用摘要的 ID 用于跳到原消息，用户名等字段继续做身份遮罩。
+    const reference = k === 'reply_to' && typeof o.group_id === 'number' && typeof o.id === 'number' && !!o.user
+    out[k] = await maskJsonPeople(env, viewer, v, depth + 1, ts, uniform, reference)
+  }
   if (!isPerson(o)) return out
   // `id` 只在真正的用户对象（带 username）上当作用户 id；梗图、评论等对象的 id 是它们自己的编号，不能动
-  const idKey = PERSON_ID_KEYS.filter((k) => k !== 'id' || 'username' in o)
+  const idKey = PERSON_ID_KEYS.filter((k) => k !== 'id' || (!chatReference && 'username' in o))
     .find((k) => o[k] !== null && o[k] !== '' && Number.isSafeInteger(Number(o[k])) && Number(o[k]) !== 0)
   const uid = idKey ? Number(o[idKey]) : 0
   if (viewer && uid === viewer.id) return out

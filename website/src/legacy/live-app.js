@@ -96,8 +96,11 @@ import { isRetiredAccountError } from '../services/account-ids'
 import { MERGE_RELATION_POLICY, assetsTables } from '../services/account-merge-eligibility'
 import { completeSignup } from '../services/accounts'
 import { authConfiguration, authRateLimit, authRequestGuard, requireAuthOpen } from '../services/auth-gate'
-import { canManage, canManageAi, isChatAdmin, isFancy, isOwner, needUser, ownerNames, rateOn } from '../services/auth'
+import { canManage, canManageAi, findSessionUser, isChatAdmin, isFancy, isOwner, needUser, ownerNames, rateOn } from '../services/auth'
 import { CHAT_HISTORY_FLOOR, assertCurrentAccess, needMember } from '../services/chat-access'
+import { chatActivationRequired } from '../services/chat-realtime-access'
+import { readChatReplyCounts } from '../services/chat-message-hydrate'
+import { beginChatCommand, chatCommandIds, chatCommandSharedPacket, findChatCommand, finishChatCommand, readChatCommand, readChatHistory } from '../services/chat-realtime-store'
 import { chatRankView } from '../services/chat-rank'
 import { canDeleteComment, deleteComment } from '../services/comments'
 import { settleContentRewards } from '../services/content-coin-rewards'
@@ -446,7 +449,7 @@ var farewellRelease = (() => {
   });
   async function mainAccessGate(c, next) {
     const path = c.req.path, host = new URL(c.req.url).hostname;
-    if (c.env.MAIN_ACTIVATION !== "required" || host === "cc.52dmeme.com" || c.get("user")?.main_activated_at) {
+    if (!chatActivationRequired(c.env, host) || c.get("user")?.main_activated_at) {
       await next();
       return;
     }
@@ -9914,9 +9917,10 @@ app.use("*", async (c, next) => {
 	const sid = (c.req.method === "GET" || c.req.method === "HEAD") && (c.req.path.startsWith("/img/") || c.req.path === "/ext") ? void 0 : getCookie(c, "sid");
 	if (sid) {
 		const sessionId = await sha256(sid);
-		const u = await c.env.DB.prepare("SELECT u.*,s.seen_at AS session_seen_at FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.expires_at > ? AND u.disabled = 0 AND u.kind = 'user'").bind(sessionId, now()).first();
+		const u = await findSessionUser(c.env.DB, sessionId);
 		if (u) {
 			c.set("user", u);
+			c.set("sessionId", sessionId);
 			const t = now();
 			const updates = [];
 			if (t - (u.last_seen ?? 0) > 120) updates.push(c.env.DB.prepare("UPDATE users SET last_seen=? WHERE id=?").bind(t, u.id));
@@ -12179,17 +12183,17 @@ async function atReads(c, rows) {
 	return out;
 }
 // 匿名群（chat/1）：除站长外，消息里的发言者、引用、回应名单一律换成化名（services/identity-mask.ts）
-async function decorateMsgs(c, rows) {
-	const out = await decorateMsgsRaw(c, rows), viewer = c.get("user");
+async function decorateMsgs(c, rows, shared) {
+	const out = await decorateMsgsRaw(c, rows, shared), viewer = c.get("user");
 	return seesAnonGroup(c.env, viewer) ? out : maskChatMessages(c.env, viewer, out);
 }
-async function decorateMsgsRaw(c, rows) {
+async function decorateMsgsRaw(c, rows, shared) {
 	if (!rows.length) return [];
 	const u = c.get("user");
 	const ids = JSON.stringify(rows.map((r) => r.id));
 	const refs = JSON.stringify([...new Set(rows.map((r) => r.reply_to).filter(Boolean))]);
 	const [reacts, quoted, boosts, reads, replied, road, packets] = await Promise.all([
-		c.env.DB.prepare(`SELECT r.message_id, r.emoji, COUNT(*) AS n, MAX(r.user_id = ?) AS mine,
+		shared?.decorations?.reacts ?? c.env.DB.prepare(`SELECT r.message_id, r.emoji, COUNT(*) AS n, MAX(r.user_id = ?) AS mine,
          (SELECT json_group_array(json_object('username', w.username, 'name', w.name, 'avatar', w.avatar))
           FROM (SELECT r2.user_id FROM chat_reactions r2 WHERE r2.message_id = r.message_id AND r2.emoji = r.emoji
                 ORDER BY r2.created_at LIMIT 3) t JOIN users w ON w.id = t.user_id) AS who
@@ -12198,15 +12202,13 @@ async function decorateMsgsRaw(c, rows) {
        FROM chat_messages x LEFT JOIN users u ON u.id = x.user_id
        WHERE x.id IN (SELECT value FROM json_each(?1))
        AND EXISTS(SELECT 1 FROM chat_members cm WHERE cm.group_id=x.group_id AND cm.user_id=?2 AND x.created_at>=cm.joined_at AND x.id>=${CHAT_HISTORY_FLOOR})
-       AND EXISTS(SELECT 1 FROM chat_messages source WHERE source.id IN (SELECT value FROM json_each(?3)) AND source.reply_to=x.id AND source.group_id=x.group_id)`).bind(refs, u?.id ?? 0, ids).all(),
-		c.env.DB.prepare(`SELECT b.message_id, b.text, b.user_id, b.created_at, b.ai_status, b.ai_score, u.kind, u.username, u.name, u.avatar, u.deco FROM chat_boosts b LEFT JOIN users u ON u.id = b.user_id
+       AND EXISTS(SELECT 1 FROM chat_messages source WHERE source.id IN (SELECT value FROM json_each(?3)) AND source.reply_to=x.id AND source.group_id=x.group_id)
+       ${shared ? "AND x.created_at>=?4" : ""}`).bind(refs, u?.id ?? 0, ids, ...shared ? [shared.joinedAt] : []).all(),
+		shared?.decorations?.boosts ?? c.env.DB.prepare(`SELECT b.message_id, b.text, b.user_id, b.created_at, b.ai_status, b.ai_score, u.kind, u.username, u.name, u.avatar, u.deco FROM chat_boosts b LEFT JOIN users u ON u.id = b.user_id
        WHERE b.message_id IN (SELECT value FROM json_each(?)) ORDER BY b.created_at`).bind(ids).all(),
-		atReads(c, rows),
-		c.env.DB.prepare(`SELECT x.reply_to AS id, COUNT(*) AS n FROM chat_messages x
-       JOIN chat_members cm ON cm.group_id=x.group_id AND cm.user_id=?2
-       WHERE x.reply_to IN (SELECT value FROM json_each(?1)) AND x.deleted=0
-         AND x.created_at>=cm.joined_at AND x.id>=${CHAT_HISTORY_FLOOR} GROUP BY x.reply_to`).bind(ids, u?.id ?? 0).all(),
-		c.env.DB.prepare("SELECT source_msg_id AS mid, id FROM road_items INDEXED BY idx_road_source_msg WHERE source_msg_id IN (SELECT value FROM json_each(?)) AND hidden = 0 AND source_hidden = 0").bind(ids).all(),
+		shared?.reads ?? atReads(c, rows),
+		readChatReplyCounts(c.env.DB, u?.id ?? 0, rows.map(r => r.id), shared),
+		shared?.decorations?.road ?? c.env.DB.prepare("SELECT source_msg_id AS mid, id FROM road_items INDEXED BY idx_road_source_msg WHERE source_msg_id IN (SELECT value FROM json_each(?)) AND hidden = 0 AND source_hidden = 0").bind(ids).all(),
 		rows.some((r) => !r.deleted && (r.redpack_id || sharedPacket(r.body))) ? c.env.DB.prepare(`SELECT p.message_id, p.mode, p.game, p.prompt, p.provider, p.notify_at, p.draw_data, COALESCE(lp.mode,fp.mode) AS ldc_mode, COALESCE(lp.room_revision,fp.room_revision) AS guess_revision, lp.total_cents AS ldc_total,lp.count AS ldc_count,lp.payment_provider AS payment_provider, COALESCE(lp.response_mode,fp.response_mode) AS ldc_response_mode, CASE WHEN COALESCE(lp.response_mode,fp.response_mode)='similarity' THEN COALESCE(lp.answer_length,fp.answer_length) ELSE NULL END AS ldc_answer_length, CASE WHEN cp.packet_id IS NOT NULL THEN json_object('state',CASE WHEN cp.expires_at<=unixepoch() THEN 'expired' WHEN cp.remaining_count=0 THEN 'exhausted' ELSE 'active' END,'claimed',EXISTS(SELECT 1 FROM coin52_packet_slots WHERE packet_id=p.id AND recipient_id=${u?.id ?? 0}),'remaining',cp.remaining_count,'total',cp.count,'claimed_count',cp.count-cp.remaining_count,'expires_at',cp.expires_at,'kind',cp.mode) ELSE v.data END AS snapshot, v.synced_at, o.solved_at,
        (SELECT COUNT(*) FROM chat_redpack_opens s WHERE s.packet_id=p.id AND s.solved_at IS NOT NULL) AS opened
        FROM chat_redpacks p LEFT JOIN chat_redpack_opens o ON o.packet_id=p.id AND o.user_id=?
@@ -12236,7 +12238,7 @@ async function decorateMsgsRaw(c, rows) {
 		opened: p.opened
 	}]));
 	const roadIds = new Map(road.results.map((r) => [r.mid, r.id]));
-	const rc = new Map(replied.results.map((r) => [r.id, r.n]));
+	const rc = new Map(replied.map((r) => [r.id, r.n]));
 	const bs = /* @__PURE__ */ new Map();
 	for (const b of boosts.results) {
 		const ai = b.kind === "bot" && !!b.ai_status;
@@ -12262,7 +12264,7 @@ async function decorateMsgsRaw(c, rows) {
 		rx.set(r.message_id, [...rx.get(r.message_id) ?? [], {
 			emoji: r.emoji,
 			count: r.n,
-			mine: !!r.mine,
+			mine: r.actors ? r.actors.has(u?.id) : !!r.mine,
 			who
 		}]);
 	}
@@ -12707,7 +12709,11 @@ app.get("/api/chat/groups/:id/files", async (c) => {
 	});
 });
 app.get("/api/chat/groups/:id/messages", async (c) => {
-	const { g } = await needMember(c, groupId(c));
+	const gid = groupId(c);
+	return c.json(await readChatHistory(c, gid, (scoped, realtime) => chatHistory(scoped, gid, realtime)));
+});
+async function chatHistory(c, gid, realtime) {
+	const { u, g } = await needMember(c, gid);
 	const MAX = Number.MAX_SAFE_INTEGER;
 	const after = intIn(c.req.query("after"), 0, MAX, 0);
 	const before = intIn(c.req.query("before"), 0, MAX, 0);
@@ -12760,11 +12766,14 @@ app.get("/api/chat/groups/:id/messages", async (c) => {
 	}
 	if (!pollBatched && updates) changed = (await updates.all()).results;
 	if (!pollBatched && totalQuery) stat = await totalQuery.first();
-	const items = (await decorateMsgs(c, rows)).map((m, i) => ({
+	const commandIds = realtime ? await chatCommandIds(db, u.id, [...rows, ...changed].filter(m => m.user_id === u.id).map(m => m.id)) : new Map();
+	const bounds = realtime ? { joinedAt: g.joined_at } : undefined;
+	const items = (await decorateMsgs(c, rows, bounds)).map((m, i) => ({
 		...m,
+		...commandIds.has(m.id) ? { command_id: commandIds.get(m.id) } : {},
 		floor: rows[i].seq
 	}));
-	return c.json({
+	return {
 		group: {
 			id: g.id,
 			name: g.name,
@@ -12773,14 +12782,15 @@ app.get("/api/chat/groups/:id/messages", async (c) => {
 			history_floor: g.history_floor
 		},
 		items,
-		changed: await decorateMsgs(c, changed),
+		changed: (await decorateMsgs(c, changed, bounds)).map(m => commandIds.has(m.id) ? { ...m, command_id: commandIds.get(m.id) } : m),
 		more,
 		...moreAfter !== void 0 ? { more_after: moreAfter } : {},
 		...!skipTotal ? { total: stat?.total ?? 0 } : {},
 		last_read: g.last_read,
-		now: now()
-	});
-});
+		now: now(),
+		...realtime
+	};
+}
 app.get("/api/chat/groups/:id/search", async (c) => {
 	const { g } = await needMember(c, groupId(c));
 	const q = (c.req.query("q") ?? "").trim().slice(0, 50);
@@ -12858,6 +12868,31 @@ async function chatDup(c, gid, uid, body, replyTo, img, retry, joinedAt) {
 }
 app.post("/api/chat/groups/:id/messages", async (c) => {
 	const { u, g } = await needMember(c, groupId(c));
+	const command = await readChatCommand(c, g.id, CHAT_BODY_MAX, MAX_UPLOAD);
+	if (!command) return createChatMessage(c, u, g, null);
+	await assertCurrentAccess(c, u.id, g.id);
+	const replay = async () => {
+		const id = await findChatCommand(c.env.DB, u.id, g.id, command);
+		if (!id) return null;
+		const currentUser = await findSessionUser(c.env.DB, command.sessionId);
+		if (!currentUser || currentUser.id !== u.id || (command.activationRequired && !currentUser.main_activated_at)) fail(403, "群聊访问权限已变化，请刷新后重试");
+		c.set("user", currentUser);
+		const { g: current } = await needMember(c, g.id);
+		await assertCurrentAccess(c, u.id, g.id);
+		return sentChatMessage(c, current, id, command, true);
+	};
+	const existing = await replay();
+	if (existing) return existing;
+	try {
+		return await createChatMessage(c, u, g, command);
+	} catch (error) {
+		const concurrent = await replay();
+		if (concurrent) return concurrent;
+		if (String(error).includes("NOT NULL constraint failed: chat_realtime_commands.command_id")) fail(403, "群聊发送权限已变化，请刷新后重试");
+		throw error;
+	}
+});
+async function createChatMessage(c, u, g, command) {
 	if (u.silenced) fail(403, "你在 linux.do 处于禁言状态");
 	await needNotLimited(c, u, "chat");
 	const db = c.env.DB;
@@ -12894,7 +12929,7 @@ app.post("/api/chat/groups/:id/messages", async (c) => {
 		replyTo = intIn(b.reply_to, 0, Number.MAX_SAFE_INTEGER, 0);
 		const m0 = Array.isArray(b.media) ? b.media[0] : void 0;
 		const img0 = m0 ? String(m0.poster || m0.key || "") || null : null;
-		const dup = await chatDup(c, g.id, u.id, body.replace(/\r/g, "").trim().slice(0, CHAT_BODY_MAX), replyTo, img0, !!b.retry, g.joined_at);
+		const dup = command ? null : await chatDup(c, g.id, u.id, body.replace(/\r/g, "").trim().slice(0, CHAT_BODY_MAX), replyTo, img0, !!b.retry, g.joined_at);
 		if (dup) return c.json({
 			message: dup,
 			dup: true
@@ -12944,33 +12979,46 @@ app.post("/api/chat/groups/:id/messages", async (c) => {
 		h: dims.h
 	}] : [];
 	const botEvent = botCommandInsert(db, g.id, body, t, !!c.env.CHAT_BOT_WEBHOOK_KEY);
+	const shared = sharedPacket(body);
+	const beforeMessage = [
+		...command ? [beginChatCommand(db, u.id, g, command, t)] : [],
+		...favoriteGuard ? [favoriteGuard] : []
+	];
 	const committed = await commitUploadContent(db, u.id, legacyUpload ? [legacyUpload] : mediaKeys(media), [
-		...favoriteGuard ? [favoriteGuard] : [],
+		...beforeMessage,
 		db.prepare(`INSERT INTO chat_messages (group_id, user_id, body, image_key, width, height, media, reply_to, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).bind(g.id, u.id, body, key, key ? dims.w || null : null, key ? dims.h || null : null, mediaJson, replyTo || null, t, t),
+		...command ? [finishChatCommand(db, u.id, command)] : [],
 		...botEvent ? [botEvent.statement] : [],
-		...chatRoadStatements(db, null, body, roadAttachments, t)
+		...chatRoadStatements(db, null, body, roadAttachments, t),
+		...command && shared ? [chatCommandSharedPacket(db, u.id, command, shared)] : [],
 	]).catch((error) => {
 		if (String(error).includes("favorite_source_changed")) fail(409, "来源消息已变化，请重新打开收藏");
 		throw error;
 	});
-	const id = committed[favoriteGuard ? 1 : 0].results[0].id;
-	if (botEvent && committed[favoriteGuard ? 2 : 1].results.length) c.executionCtx.waitUntil(deliverBotEvent(c.env, botEvent.id).catch(() => console.error("chat_bot_delivery_failed")));
-	const shared = sharedPacket(body);
-	if (shared) await db.batch(sharedPacketStatements(db, id, body, shared));
+	const id = committed[beforeMessage.length].results[0].id;
+	const botIndex = beforeMessage.length + (command ? 2 : 1);
+	if (botEvent && committed[botIndex].results.length) c.executionCtx.waitUntil(deliverBotEvent(c.env, botEvent.id).catch(() => console.error("chat_bot_delivery_failed")));
+	if (!command && shared) await db.batch(sharedPacketStatements(db, id, body, shared));
 	c.executionCtx.waitUntil(handleNativeGameMessage(c, {
 		id,
 		group_id: g.id,
 		reply_to: replyTo,
 		body
 	}, u).catch(() => console.error("ldc_chat_result_write_failed")));
-	const [full, floor] = await db.batch([db.prepare(`${CHAT_SELECT} WHERE x.id = ?`).bind(id), db.prepare("SELECT seq AS n FROM chat_messages WHERE id = ?").bind(id)]);
-	const [message] = await decorateMsgs(c, full.results);
+	return sentChatMessage(c, g, id, command);
+}
+async function sentChatMessage(c, g, id, command, dup = false) {
+	const row = await c.env.DB.prepare(`${CHAT_SELECT} WHERE x.id=? AND x.group_id=?`).bind(id, g.id).first();
+	if (!row) fail(404, "原消息不存在");
+	assertChatHistory(g, row.id, row.created_at);
+	const [message] = await decorateMsgs(c, [row], command ? { joinedAt: g.joined_at } : undefined);
 	return c.json({ message: {
 		...message,
-		floor: floor.results[0].n
-	} });
-});
+		floor: row.seq,
+		...command ? { command_id: command.id } : {}
+	}, ...dup ? { dup: true } : {} });
+}
 async function chatMessage(c) {
 	const u = needUser(c);
 	const id = intIn(c.req.param("id"), 0, Number.MAX_SAFE_INTEGER, 0);
@@ -38404,3 +38452,4 @@ if(b12OriginalScheduled)worker_entry_default.scheduled=function(event,env,ctx){s
 
 export default worker_entry_default
 export { b33Internal, farewellRelease, guessAdmissionSql, rejectPendingGuess, guessSubmissionSignals }
+export { atReads, CHAT_SELECT, decorateMsgs }

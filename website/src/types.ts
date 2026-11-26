@@ -40,6 +40,6 @@ export type Puzzle = {
   created_at: number
 }
 
-export type Ctx = { Bindings: Env; Variables: { user: User | null } }
+export type Ctx = { Bindings: Env; Variables: { user: User | null; sessionId?: string } }
 export type C = Context<Ctx>
 

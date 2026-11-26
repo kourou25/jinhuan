@@ -6,3 +6,10 @@ export const farewellRelease: { farmClosed(t: number): boolean; FARM_CLOSE_AT: n
 export function guessAdmissionSql(questions: string, uid: string | number, at: string | number, roomId?: string | number): string
 export function rejectPendingGuess(c: any, p: any, u: any, roomId?: number): Promise<void>
 export function guessSubmissionSignals(c: any): Promise<unknown>
+export const CHAT_SELECT: string
+export function atReads(c: { env: import('../env').Env }, rows: import('../services/chat-realtime-projection').ChatRealtimeRow[]): Promise<Map<number, Record<string, boolean>>>
+export function decorateMsgs(
+  c: { env: import('../env').Env; get(key: 'user'): Pick<import('../types').User, 'id' | 'is_admin' | 'role'> },
+  rows: import('../services/chat-realtime-projection').ChatRealtimeRow[],
+  shared: { decorations: import('../services/chat-message-hydrate').ChatDecorations; reads: Map<number, Record<string, boolean>>; joinedAt: number; historyFloor: number },
+): Promise<Array<{ id: number; [field: string]: unknown }>>
