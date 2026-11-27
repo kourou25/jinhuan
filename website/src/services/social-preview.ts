@@ -1,17 +1,36 @@
-import type {SocialLink} from '../../public/social-links.js'
+import {bilibiliLink,type BilibiliLink,type SocialLink} from '../../public/social-links.js'
 import {fetchXContent,type XContent} from './social-x'
 import {fetchDouyinContent} from './social-douyin'
 import {weiboObjectId,parseWeiboPage} from './social-weibo'
 import {fetchOfficialEmbed} from './social-embed'
 import {fetchInstagramContent} from './social-instagram'
-export type Preview=XContent & {embed?:{provider:'instagram'|'tiktok';url:string}}
+export type Preview=XContent & {embed?:{provider:'instagram'|'tiktok'|'bilibili';url:string}}
 const hosts={douyin:['www.douyin.com','douyin.com','v.douyin.com','www.iesdouyin.com','jingxuan.douyin.com'],weibo:['weibo.com','www.weibo.com','m.weibo.cn','m.weibo.com']}
 export function allowedRedirect(url:URL,provider:string){return url.protocol==='https:'&&!url.port&&!url.username&&!url.password&&(hosts[provider as keyof typeof hosts]||[]).includes(url.hostname)}
 export function previewImage(raw:string,base:string,provider:string){
  if(!raw)return null
  try{const u=new URL(raw,base),ends=provider==='weibo'?['sinaimg.cn']:['douyinpic.com','byteimg.com','douyin.com'];return u.protocol==='https:'&&!u.port&&!u.username&&!u.password&&ends.some(s=>u.hostname===s||u.hostname.endsWith('.'+s))?u.href:null}catch{return null}
 }
-export async function fetchPreview(link:SocialLink,request:typeof fetch=fetch):Promise<Preview>{
+async function fetchBilibiliPreview(link:BilibiliLink,request:typeof fetch):Promise<Preview>{
+ const empty={title:'B 站视频',description:'',image:null,available:false}
+ const signal=AbortSignal.timeout(5000)
+ let target=link
+ try{
+  for(let hop=0;hop<3&&target.short;hop++){
+   const response=await request(target.url,{redirect:'manual',signal})
+   const location=response.headers.get('location')
+   await response.body?.cancel()
+   if(![301,302,303,307,308].includes(response.status)||!location)return empty
+   const next=bilibiliLink(new URL(location,target.url).href)
+   if(!next)return empty
+   target=next
+  }
+  if(target.playerUrl)return {...empty,available:true,embed:{provider:'bilibili',url:target.url}}
+ }catch{/* 超时或格式异常时保留原分享链接。 */}
+ return empty
+}
+export async function fetchPreview(link:SocialLink|BilibiliLink,request:typeof fetch=fetch):Promise<Preview>{
+ if(link.provider==='bilibili')return fetchBilibiliPreview(link,request)
  if(link.provider==='instagram')return await fetchInstagramContent(link,request)||fetchOfficialEmbed(link,request)
  if(link.provider==='tiktok')return fetchOfficialEmbed(link,request)
  if(link.provider==='x')return fetchXContent(link.id,request)

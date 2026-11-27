@@ -5,3 +5,6 @@ export function socialMessageText(text?:string):string
 export function socialCaption(text?:string):string
 export function canSocialPost(provider:string):boolean
 export function isOfficialEmbed(provider:string):boolean
+export type BilibiliLink={provider:'bilibili';short:boolean;url:string;playerUrl:string|null}
+export function bilibiliLink(input:string):BilibiliLink|null
+export function bilibiliLinks(text:string):BilibiliLink[]

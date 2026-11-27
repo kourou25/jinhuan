@@ -1,27 +1,8 @@
-import {socialLinks,canSocialPost,socialCaption} from './social-links.js?v=472f7fbf'
+import {bilibiliLink,bilibiliLinks,socialLinks,canSocialPost,socialCaption} from './social-links.js?v=472f7fbf'
 
-function bilibiliChatCards(body, { h, onRemoval }, available) {
-  const cards = []
-  const seen = new Set()
-  for (const [address] of body.matchAll(/https:\/\/[^\s<>"'`）)\]，。！？]+/g)) {
-    if (cards.length >= available) break
-    let video
-    try { video = new URL(address) } catch { continue }
-    if (!['www.bilibili.com', 'm.bilibili.com', 'bilibili.com'].includes(video.hostname) ||
-        video.username || video.password || video.port) continue
-    const id = video.pathname.match(/^\/video\/(?:BV([A-Za-z0-9]{10})|av([1-9]\d{0,19}))\/?$/)
-    if (!id) continue
-
-    const params = new URLSearchParams({ autoplay: '0', poster: '1' })
-    if (id[1]) params.set('bvid', 'BV' + id[1])
-    else params.set('aid', id[2])
-    const part = video.searchParams.get('p')
-    if (/^[1-9]\d*$/.test(part || '') && part !== '1') params.set('p', part)
-    const playerUrl = 'https://player.bilibili.com/player.html?' + params
-    if (seen.has(playerUrl)) continue
-    seen.add(playerUrl)
-
-    const frame = h('iframe', {
+function bilibiliChatCards(message, { h, api, onRemoval }, available) {
+  return bilibiliLinks(message.body || '').slice(0, available).map((link, index) => {
+    const frame = playerUrl => h('iframe', {
       src: playerUrl,
       title: '哔哩哔哩视频播放器',
       loading: 'lazy',
@@ -30,12 +11,33 @@ function bilibiliChatCards(body, { h, onRemoval }, available) {
       sandbox: 'allow-scripts allow-same-origin allow-presentation',
       style: { aspectRatio: '16 / 9', height: 'auto' },
     })
-    const card = h('section', { class: 'cm-social', 'aria-label': '哔哩哔哩视频预览' },
-      h('div', { class: 'cm-social-area' }, frame))
-    onRemoval(card, () => frame.remove())
-    cards.push(card)
-  }
-  return cards
+    const area = h('div', { class: 'cm-social-area' })
+    const card = h('section', { class: 'cm-social', 'aria-label': '哔哩哔哩视频预览' }, area)
+    let observer, abort
+    if (link.playerUrl) {
+      area.append(frame(link.playerUrl))
+    } else {
+      const status = h('p', { class: 'cm-social-status', role: 'status' }, '正在读取 B 站视频…')
+      area.append(status)
+      const IO = card.ownerDocument.defaultView.IntersectionObserver || IntersectionObserver
+      observer = new IO(async entries => {
+        if (!entries.some(entry => entry.isIntersecting)) return
+        observer.disconnect()
+        abort = new AbortController()
+        try {
+          const data = await api(`/chat/messages/${message.id}/preview/bilibili?index=${index}`, { signal: abort.signal })
+          const resolved = data.embed?.provider === 'bilibili' ? bilibiliLink(data.embed.url) : null
+          if (!resolved?.playerUrl) throw new Error('B 站短链不可用')
+          if (!abort.signal.aborted && card.isConnected) area.replaceChildren(frame(resolved.playerUrl))
+        } catch {
+          if (!abort.signal.aborted) status.textContent = '暂时无法预览，仍可打开原链接。'
+        }
+      }, { rootMargin: '100px' })
+      observer.observe(card)
+    }
+    onRemoval(card, () => { observer?.disconnect(); abort?.abort(); area.replaceChildren() })
+    return card
+  })
 }
 
 const scripts=new WeakMap()
@@ -131,6 +133,6 @@ export function socialCards(message,{h,api,onRemoval,onPost,onOpenMedia,renderVi
   }
   onRemoval(shell,()=>{state='disposed';visibleObserver?.disconnect();clear()});return shell
  })
- if(!post)cards.push(...bilibiliChatCards(message.body||'', { h, onRemoval }, 2-cards.length))
+ if(!post)cards.push(...bilibiliChatCards(message, { h, api, onRemoval }, 2-cards.length))
  return cards
 }
