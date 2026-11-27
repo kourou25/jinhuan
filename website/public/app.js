@@ -57,7 +57,7 @@ import { stickerPreviews } from '/sticker-preview.js?v=472f7fbf'
 import { onRemoval, windowContent, wakeWindowContent, observeResourceDocument } from '/resource-memory.js?v=472f7fbf'
 import {focusChatBottom,focusChatMessage,captureChatScroll} from '/chat-scroll-anchor.js?v=472f7fbf'
 import {refreshMessageReference} from '/message-reference.js?v=472f7fbf'
-import {createChatReadQueue,createChatRealtime,isChatCursor} from '/chat-realtime.js?v=69059860'
+import {createChatReadQueue,createChatRealtime,createChatShadowSampler,isChatCursor} from '/chat-realtime.js?v=69059860'
 import { socialCards } from '/social-preview.js?v=472f7fbf'
 import { socialLink,socialLinks,socialMessageText,canSocialPost,isOfficialEmbed } from '/social-links.js?v=472f7fbf'
 import { PERSONAL_TITLES as LEGACY_PERSONAL_TITLES } from '/personal-catalog.js?v=472f7fbf'
@@ -9294,29 +9294,10 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     })
   }
 
-  // 只在两条路径确实读到同一群快照时比对；诊断事件仅包含计数。
-  const shadowSamples = new Map()
-  const shadowStats = { batches: 0, compared: 0, mismatch: 0 }
+  const shadowSampler = createChatShadowSampler()
   function shadowSample(data, cursor, source) {
-    if (!isChatCursor(cursor)) return
-    if (source === 'socket') shadowStats.batches++
-    for (const m of [...data.items, ...data.changed]) {
-      const key = cursor + ':' + m.id
-      const previous = shadowSamples.get(key)
-      if (previous?.source === source || previous?.compared) continue
-      const value = JSON.stringify([m.body, m.deleted, m.image, m.media, m.edited_at, m.reply_count, m.reactions, m.boosts, m.redpack, m.meme_id])
-      let hash = 2166136261
-      for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619)
-      if (previous) {
-        shadowStats.compared++
-        if (previous.hash !== hash) shadowStats.mismatch++
-        shadowSamples.set(key, { compared: true })
-      } else {
-        shadowSamples.set(key, { source, hash })
-        if (shadowSamples.size > 1200) shadowSamples.delete(shadowSamples.keys().next().value)
-      }
-    }
-    window.dispatchEvent(new CustomEvent('chat-realtime-shadow', { detail: { ...shadowStats } }))
+    const detail = shadowSampler.sample(data, cursor, source)
+    if (detail) window.dispatchEvent(new CustomEvent('chat-realtime-shadow', { detail }))
   }
 
   function settleCommands(items, allowLegacy = false) {
@@ -9672,7 +9653,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     st.polling = false
     clearTimeout(st.catchupT)
     messageVersions.clear()
-    shadowSamples.clear()
+    shadowSampler.clear()
     st.done = false
     st.restoring = false
     st.after = 0
@@ -10159,7 +10140,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     stopRealtime()
     closeChatPacket()
     messageVersions.clear()
-    shadowSamples.clear()
+    shadowSampler.clear()
     bottomResize.disconnect()
     bubbleMotion.destroy()
     histMotion?.destroy()

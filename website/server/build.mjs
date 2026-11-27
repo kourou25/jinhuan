@@ -4,9 +4,8 @@ import { build } from 'esbuild'
 import fs from 'node:fs'
 
 await build({
-  entryPoints: { app: 'src/worker.ts', 'chat-realtime': 'server/chat-realtime.mjs' },
-  outdir: 'server/dist',
-  outExtension: { '.js': '.mjs' },
+  entryPoints: ['server/entry.mjs'],
+  outfile: 'server/dist/app.mjs',
   bundle: true, platform: 'node', format: 'esm', target: 'node24',
   tsconfig: 'tsconfig.json',
   // 打包后的 CommonJS 依赖需要 require

@@ -4,8 +4,8 @@ import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 
 const schema = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8')
-const migration = readFileSync(new URL('../migrations/0202_chat_realtime.sql', import.meta.url), 'utf8')
-const audienceMigration = readFileSync(new URL('../migrations/0203_chat_realtime_packet_audience.sql', import.meta.url), 'utf8')
+const migration = readFileSync(new URL('../migrations/0231_chat_realtime.sql', import.meta.url), 'utf8')
+const audienceMigration = readFileSync(new URL('../migrations/0232_chat_realtime_packet_audience.sql', import.meta.url), 'utf8')
 
 function database(t) {
   const db = new DatabaseSync(':memory:')
@@ -38,22 +38,41 @@ function head(db) {
 test('空库与升级路径使用相同的实时数据库对象', (t) => {
   const fresh = database(t)
   const upgraded = database(t)
-  const objects = 'SELECT type,name,sql FROM sqlite_schema WHERE name LIKE \'%chat_realtime%\' ORDER BY type,name'
+  const objects = "SELECT type,name,sql FROM sqlite_schema WHERE name LIKE '%chat_realtime%' ORDER BY type,name"
   for (const {type, name} of upgraded.prepare(objects).all().reverse()) {
     if (type !== 'index') upgraded.exec(`DROP ${type} ${name}`)
   }
   upgraded.exec('ALTER TABLE chat_members DROP COLUMN realtime_epoch')
-  upgraded.exec('INSERT INTO chat_members(group_id,user_id,joined_at) VALUES (21,900001,1)')
+  const id = message(upgraded)
+  upgraded.prepare('INSERT INTO chat_members(group_id,user_id,joined_at,last_read) VALUES (21,900001,1,?)').run(id)
+  upgraded.prepare("INSERT INTO chat_redpacks(id,message_id,secret,mode) VALUES ('legacy-packet',?,'','open')").run(id)
+  upgraded.exec("INSERT INTO chat_redpack_external_views(packet_id,user_id,data,synced_at) VALUES('legacy-packet',900002,'{}',4)")
+  const legacyRows = () => ({
+    member: upgraded.prepare('SELECT group_id,user_id,joined_at,last_read,muted,last_read_at,away_from FROM chat_members').get(),
+    message: upgraded.prepare('SELECT * FROM chat_messages WHERE id=?').get(id),
+    packet: upgraded.prepare('SELECT * FROM chat_redpacks').get(),
+    view: upgraded.prepare('SELECT * FROM chat_redpack_external_views').get(),
+  })
+  const beforeRealtime = legacyRows()
   upgraded.exec(migration)
-  upgraded.exec("INSERT INTO chat_realtime_events(group_id,message_id,kind) VALUES (21,42,'update')")
+  assert.deepEqual(legacyRows(), beforeRealtime)
+  assert.equal(upgraded.prepare('SELECT realtime_epoch AS epoch FROM chat_members').get().epoch, null)
+  assert.equal(head(upgraded), 0)
+
+  const syncPacket = upgraded.prepare("UPDATE chat_redpack_external_views SET synced_at=? WHERE packet_id='legacy-packet'")
+  syncPacket.run(5)
+  assert.deepEqual(events(upgraded), [[id, 'update']])
+  const legacySeq = head(upgraded)
+  const beforeAudience = legacyRows()
   upgraded.exec(audienceMigration)
   assert.deepEqual(upgraded.prepare(objects).all(), fresh.prepare(objects).all())
   assert.deepEqual(upgraded.prepare('PRAGMA table_info(chat_members)').all(), fresh.prepare('PRAGMA table_info(chat_members)').all())
-  assert.equal(upgraded.prepare('SELECT realtime_epoch AS epoch FROM chat_members').get().epoch, null)
-  assert.deepEqual(events(upgraded), [[42, 'update']])
-  const row = upgraded.prepare('SELECT seq,audience_user_id FROM chat_realtime_events').get()
-  assert.equal(row.seq, 1)
-  assert.equal(row.audience_user_id, null)
+  assert.deepEqual(legacyRows(), beforeAudience)
+  const audienceEvents = () => upgraded.prepare('SELECT seq,message_id,kind,audience_user_id FROM chat_realtime_events ORDER BY seq')
+    .all().map(row => [row.seq, row.message_id, row.kind, row.audience_user_id])
+  assert.deepEqual(audienceEvents(), [[legacySeq, id, 'update', null]])
+  syncPacket.run(6)
+  assert.deepEqual(audienceEvents(), [[legacySeq, id, 'update', null], [legacySeq + 1, id, 'update', 900002]])
 })
 
 test('写入与旧楼层触发器兼容，撤回、物理删除和回复计数按顺序记录', (t) => {

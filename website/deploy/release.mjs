@@ -64,7 +64,7 @@ if (args.has('--static')) {
 }
 
 const commit = git('rev-parse', '--short', 'HEAD')
-const dirtyNow = () => git('status', '--porcelain', '--', 'src', 'web', 'public', 'server', 'migrations', 'wrangler.toml', 'package.json', 'package-lock.json', 'deploy/release.mjs')
+const dirtyNow = () => git('status', '--porcelain', '--', 'src', 'web', 'public', 'server', 'migrations', 'wrangler.toml')
 const dirty = dirtyNow()
 if (dirty && !args.has('--allow-dirty')) throw Error('有未提交的改动，先提交再发布：\n' + dirty)
 const id = new Date().toISOString().replace(/[-:]/g, '').slice(0, 13) + '-' + commit
@@ -78,9 +78,7 @@ step('打包 ' + id)
 const stage = path.join(WORK, 'stage-' + id); fs.rmSync(stage, { recursive: true, force: true }); fs.mkdirSync(stage, { recursive: true })
 fs.mkdirSync(path.join(stage, 'server', 'dist'), { recursive: true })
 for (const f of ['main.mjs', 'd1.mjs', 'r2.mjs', 'runtime.mjs', 'vars.json']) fs.copyFileSync(path.join('server', f), path.join(stage, 'server', f))
-for (const file of ['app.mjs', 'chat-realtime.mjs']) {
-  fs.copyFileSync(path.join('server', 'dist', file), path.join(stage, 'server', 'dist', file))
-}
+fs.copyFileSync('server/dist/app.mjs', path.join(stage, 'server', 'dist', 'app.mjs'))
 fs.cpSync('web/dist/client', path.join(stage, 'client'), { recursive: true, filter: (src) => !STATIC_DIRS.some((d) => path.resolve(src) === path.resolve('web/dist/client', d)) })
 fs.cpSync('migrations', path.join(stage, 'migrations'), { recursive: true })
 fs.writeFileSync(path.join(stage, 'RELEASE'), JSON.stringify({ id, commit, at: new Date().toISOString() }) + '\n')

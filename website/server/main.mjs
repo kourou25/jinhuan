@@ -9,7 +9,6 @@ import { fileURLToPath } from 'node:url'
 import { D1Database, dumpSlowQueries } from './d1.mjs'
 import { R2Bucket } from './r2.mjs'
 import { Assets, DiskCache, RateLimiter, HTMLRewriter } from './runtime.mjs'
-import { attachChatRealtime, createChatRealtime } from './dist/chat-realtime.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = process.env.MEME_ROOT || '/meme'
@@ -48,7 +47,7 @@ const env = {
 }
 
 const app = await import(pathToApp())
-const { default: worker } = app
+const { default: worker, createChatRealtime, attachChatRealtime } = app
 function pathToApp() { return new URL('./dist/app.mjs', import.meta.url).href }
 
 const realtime = createChatRealtime(process.env.CHAT_REALTIME_GROUPS ?? secrets.CHAT_REALTIME_GROUPS,

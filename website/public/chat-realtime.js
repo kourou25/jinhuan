@@ -1,5 +1,50 @@
 export const isChatCursor = (value) => Number.isSafeInteger(value) && value >= 0
 
+function orderedJson(_key, value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  return Object.fromEntries(Object.keys(value).sort().map(key => [key, value[key]]))
+}
+
+function shadowMessageHash(message) {
+  // 已读进度可独立变化，回执里的用户名仍参与身份遮罩比对。
+  const projection = { ...message, at_read: Object.keys(message.at_read ?? {}).sort() }
+  // HTTP 更新批次可能省略 floor，command_id 用于发送命令对账。
+  delete projection.floor
+  delete projection.command_id
+  const value = JSON.stringify(projection, orderedJson)
+  let hash = 2166136261
+  for (let i = 0; i < value.length; i++) hash = Math.imul(hash ^ value.charCodeAt(i), 16777619)
+  return hash
+}
+
+export function createChatShadowSampler() {
+  const samples = new Map()
+  const stats = { batches: 0, compared: 0, mismatch: 0 }
+  return {
+    sample(data, cursor, source) {
+      if (!isChatCursor(cursor)) return
+      if (source === 'socket') stats.batches++
+      // 只比对同一群快照下的同一条消息，待配对的数据在内存中只存摘要。
+      for (const m of [...data.items, ...data.changed]) {
+        const key = cursor + ':' + m.id
+        const previous = samples.get(key)
+        if (previous?.source === source || previous?.compared) continue
+        const hash = shadowMessageHash(m)
+        if (previous) {
+          stats.compared++
+          if (previous.hash !== hash) stats.mismatch++
+          samples.set(key, { compared: true })
+        } else {
+          samples.set(key, { source, hash })
+          if (samples.size > 1200) samples.delete(samples.keys().next().value)
+        }
+      }
+      return { ...stats }
+    },
+    clear() { samples.clear() },
+  }
+}
+
 export function createChatReadQueue({ getUser, send, onConfirmed, delay = 800, retryDelay = 1000 }) {
   const groups = new Map()
   let userId
