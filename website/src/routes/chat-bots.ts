@@ -7,7 +7,7 @@ import { isChatAdmin } from '../services/auth'
 import { isAnonGroup, tagMembers } from '../services/anon-identity'
 import { assertCurrentAccess, needMember } from '../services/chat-access'
 import { NEXT_ACCOUNT_ID_SQL } from '../services/account-ids'
-import { BOT_COMMAND, BOT_GROUP_LIMIT, BOT_TEXT_LIMIT, botCallbackUrl, botMaintainerActive, botSigningSecret } from '../services/chat-bots'
+import { BOT_COMMAND, BOT_GROUP_LIMIT, BOT_TEXT_LIMIT, botCallbackUrl, botMaintainerActive, botSigningSecret, chatReplyCurrent, chatReplyStatements } from '../services/chat-bots'
 import { mediaKeys, prepareMedia } from '../services/content-media'
 import { cleanMedia, sniffImage, sniffVideo } from '../services/media-format'
 import { commitUploadContent, storeUpload } from '../services/upload-operations'
@@ -85,8 +85,8 @@ chatBots.get(managePath, async c => {
       WHERE i.group_id=?1 ORDER BY i.created_at,i.id`).bind(gid,u.id).all<{
         commands:string;command_descriptions:string;enabled:number;own:number;gallery_access:number;chat_name:string|null;active_owner:number;maintainer_id:number;maintainer:string
       }>(),
-    db.prepare(`SELECT b.username,b.name,doc_post_id FROM chat_group_bot_identity identity JOIN users b ON b.id=identity.bot_id
-      WHERE group_id=?`).bind(gid).first<{doc_post_id:number|null;username:string;name:string}>(),
+    db.prepare(`SELECT b.username,b.name,doc_post_id,chat_round_limit,chat_end_marker,chat_end_mode,chat_end_text FROM chat_group_bot_identity identity JOIN users b ON b.id=identity.bot_id
+      WHERE group_id=?`).bind(gid).first<{doc_post_id:number|null;username:string;name:string;chat_round_limit:number;chat_end_marker:string;chat_end_mode:string;chat_end_text:string}>(),
   ])
   const anonymous = new Map<number,string>()
   if (isAnonGroup(gid)) {
@@ -100,6 +100,42 @@ chatBots.get(managePath, async c => {
     commands: JSON.parse(bot.commands), descriptions: JSON.parse(command_descriptions), own: !!bot.own,
     enabled: !!bot.enabled, active_owner: !!bot.active_owner, gallery_access: !!bot.gallery_access, chat_name:bot.chat_name,
   })) })
+})
+
+function ensureGroupBot(db:D1Database,gid:number) {
+  const username = 'bot_' + randHex(6), t = now()
+  return [
+    db.prepare(`INSERT INTO users(id,username,name,kind,created_at,updated_at)
+      SELECT (${NEXT_ACCOUNT_ID_SQL}),?1,'群机器人','bot',?2,?2
+      WHERE NOT EXISTS(SELECT 1 FROM chat_group_bot_identity WHERE group_id=?3)`).bind(username,t,gid),
+    db.prepare(`INSERT INTO chat_group_bot_identity(group_id,bot_id)
+      SELECT ?,id FROM users WHERE username=? AND id=last_insert_rowid() AND changes()=1`).bind(gid,username),
+  ]
+}
+
+chatBots.put(managePath + '/conversation', async c => {
+  sameOrigin(c)
+  const {gid,u} = await manage(c)
+  if (!isChatAdmin(u)) fail(403,'只有群管能设置本群对话规则')
+  const body = await boundedJson(c,12000)
+  const limit=body.round_limit, mode=body.end_mode
+  const marker=typeof body.end_marker==='string' ? body.end_marker.trim() : ''
+  const text=typeof body.end_text==='string' ? body.end_text.replace(/\r/g,'').trim() : ''
+  if (typeof limit!=='number' || !Number.isSafeInteger(limit) || limit<0) return fail(400,'轮次上限需为非负整数，0 表示不限')
+  if (mode!=='system' && mode!=='callback') return fail(400,'请选择由站点或回调方结束会话')
+  if (!marker || marker.length>1000 || /[\p{Cc}\p{Cf}]/u.test(marker) || marker.startsWith('/')
+    || marker==='切换身份' || /^选择[ \t]/.test(marker)) return fail(400,'请填写单行结束口令，避免使用身份选择命令')
+  if (!text || text.length>BOT_TEXT_LIMIT) return fail(400,'请填写有效的站点结束语')
+  const db=c.env.DB
+  await db.batch([
+    ...ensureGroupBot(db,gid),
+    db.prepare(`UPDATE chat_group_bot_identity SET chat_round_limit=?,chat_end_marker=?,chat_end_mode=?,chat_end_text=?
+      WHERE group_id=?`).bind(limit,marker,mode,text,gid),
+    ...(limit>0 ? [db.prepare(`UPDATE chat_bot_persona_choices SET installation_id=NULL,session_id=NULL,completed_rounds=0,
+        pending_message_id=NULL,pending_text=NULL,needs_selection=1
+      WHERE group_id=? AND completed_rounds>=?`).bind(gid,limit)] : []),
+  ])
+  return c.json({ok:true})
 })
 
 chatBots.put(managePath + '/doc', async c => {
@@ -121,13 +157,8 @@ chatBots.put(managePath + '/doc', async c => {
   }
   const db = c.env.DB
   if (id) {
-    const username = 'bot_' + randHex(6), t = now()
     await db.batch([
-      db.prepare(`INSERT INTO users(id,username,name,kind,created_at,updated_at)
-        SELECT (${NEXT_ACCOUNT_ID_SQL}),?1,'群机器人','bot',?2,?2
-        WHERE NOT EXISTS(SELECT 1 FROM chat_group_bot_identity WHERE group_id=?3)`).bind(username,t,gid),
-      db.prepare(`INSERT INTO chat_group_bot_identity(group_id,bot_id)
-        SELECT ?,id FROM users WHERE username=? AND id=last_insert_rowid() AND changes()=1`).bind(gid,username),
+      ...ensureGroupBot(db,gid),
       db.prepare('UPDATE chat_group_bot_identity SET doc_post_id=? WHERE group_id=?').bind(id,gid),
     ])
   } else {
@@ -291,6 +322,9 @@ chatBots.post(pushPath, async c => {
   if ((!text && !(raw as unknown[]).length) || text.length > BOT_TEXT_LIMIT) fail(400, `请发送附件或 1–${BOT_TEXT_LIMIT} 字的文本`)
   const event = body.reply_event_id == null ? null : String(body.reply_event_id)
   if (event !== null && !uuid.test(event)) fail(400, '回复事件编号无效')
+  if (body.end_conversation !== undefined && typeof body.end_conversation!=='boolean') fail(400,'会话结束标志需为布尔值')
+  const end = body.end_conversation === true
+  if (end && !event) fail(400,'结束会话需要引用回调事件')
   const key = c.req.header('idempotency-key')
   if (key !== undefined && !/^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/.test(key)) fail(400, '幂等键无效')
   const ref = id + ':' + (event ? 'reply:' + event : key ? await sha256(key) : crypto.randomUUID())
@@ -318,13 +352,15 @@ chatBots.post(pushPath, async c => {
     JOIN users shared ON shared.id=identity.bot_id AND shared.disabled=0
     LEFT JOIN chat_bot_events e ON e.id=?6 AND e.installation_id=i.id AND e.state IN('delivering','delivered')
     LEFT JOIN chat_messages m ON m.id=e.message_id AND m.group_id=i.group_id AND m.deleted=0
-    WHERE i.id=?1 AND i.token_hash=?2 AND i.enabled=1 AND (?6 IS NULL OR m.id IS NOT NULL)
+    WHERE i.id=?1 AND i.token_hash=?2 AND i.enabled=1 AND (?6 IS NULL OR (m.id IS NOT NULL AND ${chatReplyCurrent('?4')}))
+      AND (?11=0 OR (e.chat_session_id IS NOT NULL AND (identity.chat_end_mode='callback' OR e.chat_end_requested=1)))
       AND ${botMaintainerActive}
       AND (SELECT COUNT(*) FROM chat_messages x WHERE x.user_id=identity.bot_id AND x.created_at>?4-60)<30
-    RETURNING id`).bind(id,hash,text,t,ref,event,cover?.p ?? cover?.k ?? null,cover?.w ?? null,cover?.h ?? null,media)
+    RETURNING id`).bind(id,hash,text,t,ref,event,cover?.p ?? cover?.k ?? null,cover?.w ?? null,cover?.h ?? null,media,end?1:0)
   try {
     const [result] = await commitUploadContent(db,install.bot_id,mediaKeys(attachments),[
       write, db.prepare("SELECT json(CASE WHEN changes()=1 THEN 'true' ELSE 'bot_message_not_inserted' END)"),
+      ...(event ? chatReplyStatements(db,event,end,t) : []),
     ])
     const saved = result.results[0] as {id:number}
     return c.json({message_id:saved.id,group_id:install.group_id},201)
@@ -335,6 +371,9 @@ chatBots.post(pushPath, async c => {
     if (!(err instanceof Error && /malformed JSON/i.test(err.message))) throw err
   }
   if (event && !await db.prepare(`SELECT 1 FROM chat_bot_events e JOIN chat_messages m ON m.id=e.message_id AND m.deleted=0
-    WHERE e.id=? AND e.installation_id=? AND e.state IN('delivering','delivered')`).bind(event, id).first()) fail(404, '回复事件不存在或已失效')
+    JOIN chat_group_bot_identity identity ON identity.group_id=m.group_id
+    WHERE e.id=? AND e.installation_id=? AND e.state IN('delivering','delivered') AND ${chatReplyCurrent('unixepoch()')}`)
+    .bind(event,id).first()) fail(404, '回复事件不存在或会话已结束')
+  if (end) fail(409,'此会话由站点管理结束')
   fail(429, '发送太快或机器人状态已变化，请刷新后重试')
 })

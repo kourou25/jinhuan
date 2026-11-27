@@ -76,6 +76,26 @@ export function groupChatBots({ h, api, groupId, onChange }) {
         event.preventDefault()
         change(async () => { await api(path + '/doc', { method: 'PUT', body: { url: doc.value } }); return '对接说明已保存' })
       } }, field('/doc 站内帖子链接', doc), h('button', { class: 'btn sm', type: 'submit' }, '保存链接')))
+
+      const limit = h('input', {class:'input',type:'number',min:0,step:1,required:true,value:identity?.chat_round_limit ?? 0})
+      const marker = h('input', {class:'input',required:true,value:identity?.chat_end_marker ?? '结束会话'})
+      const mode = h('select',{class:'input'},h('option',{value:'system'},'站点直接结束'),h('option',{value:'callback'},'交给当前回调'))
+      mode.value = identity?.chat_end_mode ?? 'system'
+      const ending = h('textarea',{class:'input',rows:2,required:true},
+        identity?.chat_end_text ?? '本次会话已结束。再次艾特机器人可以重新选择身份。')
+      configuration.append(h('form',{class:'gp-bot-form',onsubmit:event=>{
+        event.preventDefault()
+        change(async()=>{
+          await api(path+'/conversation',{method:'PUT',body:{
+            round_limit:limit.valueAsNumber,end_marker:marker.value,end_mode:mode.value,end_text:ending.value,
+          }})
+          return '对话规则已保存'
+        })
+      }},
+        field('每次会话的轮次上限（0 表示不限）',limit),field('结束口令',marker),field('结束口令处理方式',mode),
+        field('站点结束语',ending),
+        h('p',{class:'gp-note muted'},'发送「@机器人 结束口令」即可结束。达到轮次上限时，站点也可用这段结束语收尾。'),
+        h('button',{class:'btn sm',type:'submit'},'保存对话规则')))
     }
     list.replaceChildren(...(bots.length ? bots.map(botRow) : [h('p', { class: 'gp-empty muted' }, '本群还没有回调')]))
     loaded = true
