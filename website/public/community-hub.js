@@ -2,8 +2,9 @@ import { communityClass, communitySkinCatalog, installCommunitySkinStyles, loadC
 
 const SITE_REPO = 'https://github.com/kourou25/jinhuan'
 const SKIN_REPO = 'https://github.com/kourou25/meme-hall-skins'
+const SITE_UPDATES_SOURCE = './recent-updates-data.js?v=472f7fbf'
 const PARTS = { bubble: '气泡', title: '称号', badge: '徽章', reply: '回应框', frame: '头像框' }
-const KINDS = { feature: '新功能', fix: '修复', polish: '体验优化', art: '美术', community: '社区' }
+const LEGACY_KINDS = { feature: '功能', fix: '修复', polish: '优化', community: '社区共建' }
 const SKIN_CHANGES = { added: '上新', updated: '更新', renamed: '更名', removed: '下架' }
 const STARLIGHT = 'shiratori-starlight'
 const PAGE_SIZE = 12
@@ -14,7 +15,9 @@ const dateFormat = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'l
 const gitLogin = value => typeof value === 'string' && /^[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$/i.test(value)
 const skinId = value => typeof value === 'string' && /^[a-z0-9][a-z0-9-]{2,47}$/.test(value)
 const gitSha = value => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value)
-const positiveIssue = value => /^[1-9][0-9]*$/.test(String(value)) && Number.isSafeInteger(Number(value)) ? Number(value) : null
+const positiveIssue = value => (typeof value === 'number' || typeof value === 'string') &&
+  /^[1-9][0-9]*$/.test(String(value)) && Number.isSafeInteger(Number(value)) ? Number(value) : null
+let siteUpdatesSource = SITE_UPDATES_SOURCE
 
 function el(tag, props, ...children) {
   const { dataset, labelledBy, ...assign } = props || {}
@@ -249,54 +252,63 @@ function updateDate(value) {
     el('time', { dateTime: typeof value === 'string' ? value : date.toISOString() }, dateFormat.format(date)) : null
 }
 
-function updateCard(update, highlighted, syncAvailable) {
-  const label = Object.hasOwn(KINDS, update.kind) ? KINDS[update.kind] : ''
-  return el('li', { className: 'ch-update' + (highlighted ? ' ch-update-target' : ''), id: 'ch-issue-' + update.issue },
+function updateCard(update, kind, highlighted, syncAvailable) {
+  const issue = positiveIssue(update.issue)
+  const groups = kind && !highlighted ? update.groups.filter(([label]) => label === kind) : update.groups
+  return el('li', {
+    className: 'ch-update' + (highlighted ? ' ch-update-target' : ''),
+    ...(issue ? { id: 'ch-issue-' + issue } : {}),
+  },
     el('article', null,
-      el('header', null, label ? el('span', { className: 'ch-label' }, label) : null, el('h4', null, update.title)),
-      el('p', null, update.body),
-      el('div', { className: 'ch-meta' }, updateDate(update.date),
-        gitLogin(update.author) ? externalLink('@' + update.author, 'https://github.com/' + update.author) : null,
-        externalLink('需求 #' + update.issue, `${SITE_REPO}/issues/${update.issue}`),
-        syncAvailable ? internalLink('查看关联反馈', roadLink('feedback', { issue: update.issue }), 'ch-link') : null)))
+      el('header', null, el('h4', null, update.title), el('div', { className: 'ch-meta' }, updateDate(update.date))),
+      ...groups.map(([label, items]) => el('section', { className: 'ch-update-group' },
+        el('h5', { className: 'ch-label' }, label),
+        el('ul', null, ...items.map(item => el('li', null, item))))),
+      issue ? el('div', { className: 'ch-meta' },
+        externalLink('需求 #' + issue, `${SITE_REPO}/issues/${issue}`),
+        syncAvailable ? internalLink('查看关联反馈', roadLink('feedback', { issue }), 'ch-link') : null) : null))
 }
 
 function issueBacklink(issue) {
-  const targetText = el('span')
-  const node = el('p', { className: 'ch-notice' }, targetText, ' ',
-    externalLink('打开 GitHub Issue', `${SITE_REPO}/issues/${issue}`))
-  targetText.textContent = `来自需求 #${issue}。`
+  const text = el('span', null, `需求 #${issue}。`)
   return {
-    node,
-    show(found) { targetText.textContent = found ? `已定位需求 #${issue}。` : `更新记录里暂时没有需求 #${issue}。` },
+    node: el('p', { className: 'ch-notice' }, text, ' ', externalLink('打开 GitHub Issue', `${SITE_REPO}/issues/${issue}`)),
+    show(found) { text.textContent = found ? `已定位需求 #${issue}。` : `更新记录里暂时没有需求 #${issue}。` },
   }
 }
 
-function drawSiteUpdates(content, { updates, stale }, { kind, issue, skin, syncAvailable }, backlink, retry) {
-  const records = updates.filter(item => positiveIssue(item?.issue) && typeof item.title === 'string' && typeof item.body === 'string').reverse()
+async function readSiteUpdates(retry) {
+  // 浏览器可能保留模块加载失败的结果，重试时换一个模块 URL。
+  if (retry) siteUpdatesSource = `${SITE_UPDATES_SOURCE}&retry=${Date.now()}`
+  const { RECENT_UPDATES } = await import(siteUpdatesSource)
+  return RECENT_UPDATES
+}
+
+function drawSiteUpdates(content, records, { kind, issue, skin, syncAvailable }, backlink) {
   const counts = new Map()
-  for (const record of records) if (Object.hasOwn(KINDS, record.kind)) counts.set(record.kind, (counts.get(record.kind) || 0) + 1)
-  const selected = counts.has(kind) ? kind : ''
-  const target = issue ? records.find(record => Number(record.issue) === issue) : null
+  for (const record of records) {
+    for (const label of new Set(record.groups.map(([label]) => label))) counts.set(label, (counts.get(label) || 0) + 1)
+  }
+  const category = Object.hasOwn(LEGACY_KINDS, kind) ? LEGACY_KINDS[kind] : kind
+  const selected = counts.has(category) ? category : ''
+  const target = issue ? records.find(record => positiveIssue(record.issue) === issue) : null
   const query = { ...(issue ? { issue } : {}), ...(skin ? { skin } : {}) }
   const filters = el('nav', { className: 'ch-filters', ariaLabel: '按更新分类筛选' })
-  for (const [value, label, count] of [['', '全部', records.length], ...Object.entries(KINDS).filter(([value]) => counts.has(value)).map(([value, label]) => [value, label, counts.get(value)])]) {
+  for (const [value, count] of [['', records.length], ...counts]) {
+    const label = value || '全部'
     const link = internalLink(el('span', null, label, ' ', el('small', null, String(count))), roadLink('updates', value ? { ...query, kind: value } : query), 'ch-filter')
     if (value === selected) link.ariaCurrent = 'true'
     filters.append(link)
   }
+  const filterPanel = el('details', { className: 'ch-filter-panel' },
+    el('summary', null, '更新分类 · ', selected || '全部'), filters)
+  const shown = selected ? records.filter(record => record.groups.some(([label]) => label === selected)) : records
+  const ordered = target ? [target, ...shown.filter(record => record !== target)] : shown
   const list = el('ol', { className: 'ch-timeline' })
-  const shown = selected ? records.filter(item => item.kind === selected) : records
-  const ordered = target ? [target, ...shown.filter(item => item !== target)] : shown
-  const more = appendPaged(list, ordered, record => updateCard(record, record === target, syncAvailable))
+  const more = appendPaged(list, ordered, record => updateCard(record, selected, record === target, syncAvailable))
   backlink?.show(Boolean(target))
-  const children = [
-    stale ? el('div', { className: 'ch-notice ch-notice-actions', role: 'status' }, el('span', null, 'GitHub 暂时连不上，下面是最近一次读到的内容。'), button('重新读取', retry, 'btn btn-ghost sm')) : null,
-    counts.size ? filters : null,
-    ordered.length ? list : state('还没有更新记录。'),
-    ordered.length ? more : null,
-  ]
-  content.replaceChildren(...children.filter(Boolean))
+  const sections = [counts.size ? filterPanel : null, ordered.length ? list : state('还没有更新记录。'), ordered.length ? more : null]
+  content.replaceChildren(...sections.filter(Boolean))
 }
 
 function skinUpdateCard(update, pending) {
@@ -326,12 +338,12 @@ function drawSkinUpdates(content, { updates, pending, pending_source_available }
   content.replaceChildren(...sections.filter(Boolean))
 }
 
-async function drawFeed(content, path, label, draw, force = false) {
+async function drawFeed(content, label, read, draw, force = false) {
   content.setAttribute('aria-busy', 'true')
   content.replaceChildren(state(`正在读取${label}…`))
-  const retry = () => void drawFeed(content, path, label, draw, true)
+  const retry = () => void drawFeed(content, label, read, draw, true)
   try {
-    draw(await readFeed(path, force), retry)
+    draw(await read(force))
   } catch {
     content.replaceChildren(state(`${label}暂时无法读取。`, button('重新读取', retry, 'btn btn-ghost sm')))
   } finally {
@@ -352,8 +364,8 @@ async function renderUpdates(root, { kind, issue, skin, syncAvailable }) {
       syncAvailable ? null : submissions))
   const siteSection = el('section', { className: 'ch-updates', labelledBy: 'ch-features-title' },
     el('h3', { id: 'ch-features-title' }, '站点更新'), backlink?.node, features)
-  const loadSiteUpdates = () => drawFeed(features, '/api/community-updates', '站点更新',
-    (data, retry) => drawSiteUpdates(features, data, { kind, issue: issueNumber, skin: syncAvailable ? selectedSkin : '', syncAvailable }, backlink, retry))
+  const loadSiteUpdates = () => drawFeed(features, '站点更新', readSiteUpdates,
+    records => drawSiteUpdates(features, records, { kind, issue: issueNumber, skin: selectedSkin, syncAvailable }, backlink))
   if (!syncAvailable) {
     root.append(header)
     if (selectedSkin) root.append(el('p', { className: 'ch-notice' }, '当前站点暂未提供作品更新记录。', ' ',
@@ -362,7 +374,7 @@ async function renderUpdates(root, { kind, issue, skin, syncAvailable }) {
     return loadSiteUpdates()
   }
   const commits = el('div', null)
-  const restoreQuery = { ...(Object.hasOwn(KINDS, kind) ? { kind } : {}), ...(issueNumber ? { issue: issueNumber } : {}) }
+  const restoreQuery = { ...(kind ? { kind } : {}), ...(issueNumber ? { issue: issueNumber } : {}) }
   const skinSection = el('aside', { className: 'ch-catalog', labelledBy: 'ch-changes-title' },
     el('h3', { id: 'ch-changes-title' }, '装扮变更'),
     selectedSkin ? el('p', { className: 'ch-notice' }, '正在查看这件作品的变更。', ' ',
@@ -373,7 +385,8 @@ async function renderUpdates(root, { kind, issue, skin, syncAvailable }) {
     el('div', { className: 'ch-layout' }, ...(selectedSkin ? [skinSection, siteSection] : [siteSection, skinSection])))
   await Promise.all([
     loadSiteUpdates(),
-    drawFeed(commits, '/api/community-skins/updates', '装扮变更', data => drawSkinUpdates(commits, data, selectedSkin)),
+    drawFeed(commits, '装扮变更', force => readFeed('/api/community-skins/updates', force),
+      data => drawSkinUpdates(commits, data, selectedSkin)),
   ])
 }
 

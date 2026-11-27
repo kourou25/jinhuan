@@ -2,6 +2,7 @@
 """使用本机 Chromium 验收社区共建的公开入口、装扮预览和反馈流程。"""
 
 import argparse
+import json
 import re
 import shutil
 from pathlib import Path
@@ -15,6 +16,8 @@ SKIN = "shiratori-starlight"
 TITLE = "浏览器验收星光票根反馈"
 BODY = "站内作品详情仅供反馈"
 PUBLIC_BODY = "这段公开说明可同步"
+GITHUB_REPO = "https://github.com/kourou25/jinhuan"
+SKIN_UPDATES = "**/api/community-skins/updates"
 
 
 def target_params(url):
@@ -42,32 +45,69 @@ def assert_no_visible_null(section):
     assert not visible_null, "站点更新出现了可见的裸文本 null"
 
 
+def expect_site_updates(page, args, only_fix=False):
+    site = page.get_by_role("region", name="站点更新", exact=True)
+    if not args.release_data:
+        expect(site.get_by_role("heading", name=args.fix_title, exact=True)).to_be_visible(timeout=TIMEOUT)
+        expect(site.get_by_role("heading", name=args.feature_title, exact=True)).to_have_count(0 if only_fix else 1)
+        return site
+    release = args.release_data[1 if only_fix else 0]
+    title = page.get_by_role("heading", name=release["title"], exact=True)
+    card = site.get_by_role("article").filter(has=title)
+    expect(card).to_be_visible(timeout=TIMEOUT)
+    expect(card.locator("time")).to_have_attribute("datetime", release["date"])
+    groups = [(name, items) for name, items in release["groups"] if not only_fix or name == "修复"]
+    expect(card.locator("section").get_by_role("heading")).to_have_text([name for name, _ in groups])
+    for name, items in groups:
+        group = card.locator("section").filter(has=page.get_by_role("heading", name=name, exact=True))
+        expect(group.get_by_role("listitem")).to_have_text(items)
+    return site
+
+
 def updates(page, args):
-    page.goto(args.origin + "/road", wait_until="networkidle")
+    updates_path = "/road?tab=updates" if args.release_data else "/road"
+    page.goto(args.origin + updates_path, wait_until="networkidle")
     tab(page, "更新记录", selected=True)
-    expect(page.get_by_role("heading", name=args.fix_title, exact=True)).to_be_visible(timeout=TIMEOUT)
-    expect(page.get_by_role("heading", name=args.feature_title, exact=True)).to_be_visible()
-    assert_no_visible_null(page.get_by_role("region", name="站点更新", exact=True))
+    site = expect_site_updates(page, args)
+    assert_no_visible_null(site)
+    if args.release_data:
+        expect(page.get_by_role("link", name="在 GitHub 提需求", exact=True)).to_have_attribute(
+            "href", GITHUB_REPO + "/issues/new/choose")
     if args.backend == "sync":
+        changes = page.get_by_role("complementary", name="装扮变更", exact=True)
         expect(page.get_by_role("heading", name="已上线", exact=True)).to_be_visible()
         expect(page.get_by_role("heading", name="待主站同步", exact=True)).to_be_visible()
-        expect(page.get_by_role("complementary", name="装扮变更", exact=True).get_by_role(
-            "link", name=args.other_skin_title, exact=True)).to_be_visible()
+        expect(changes.get_by_role("link", name=args.other_skin_title, exact=True)).to_be_visible()
         expect(page.get_by_text("等待同步的夹具票根", exact=True)).to_be_visible()
     else:
         expect(page.get_by_role("heading", name="待主站同步", exact=True)).to_have_count(0)
 
-    page.goto(args.origin + "/community-updates.html?kind=fix", wait_until="networkidle")
-    page.wait_for_url("**/road?tab=updates&kind=fix")
-    expect(page.get_by_role("heading", name=args.fix_title, exact=True)).to_be_visible(timeout=TIMEOUT)
-    expect(page.get_by_role("heading", name=args.feature_title, exact=True)).to_have_count(0)
-    expect(page.get_by_role("link", name=re.compile("^修复")).filter(has_text="修复")).to_have_attribute("aria-current", "true")
+    if args.release_data and args.backend == "sync":
+        page.route(SKIN_UPDATES, lambda route: route.fulfill(status=503, json={"error": "夹具暂时不可用"}), times=1)
+        with page.expect_response(SKIN_UPDATES) as failed:
+            page.goto(args.origin + "/road?tab=updates&kind=fix", wait_until="networkidle")
+        assert failed.value.status == 503, "未触发独立的装扮变更请求失败"
+        expect_site_updates(page, args, only_fix=True)
+        expect(changes.get_by_role("status")).to_contain_text("装扮变更暂时无法读取。")
+        with page.expect_response(SKIN_UPDATES) as retried:
+            changes.get_by_role("button", name="重新读取", exact=True).click()
+        assert retried.value.ok, "重试后未读到真实装扮变更"
+        expect(changes.get_by_role("link", name=args.other_skin_title, exact=True)).to_be_visible()
+        expect_site_updates(page, args, only_fix=True)
+    elif args.release_data:
+        page.goto(args.origin + "/road?tab=updates&kind=fix", wait_until="networkidle")
+        expect_site_updates(page, args, only_fix=True)
+    else:
+        page.goto(args.origin + "/community-updates.html?kind=fix", wait_until="networkidle")
+        page.wait_for_url("**/road?tab=updates&kind=fix")
+        expect_site_updates(page, args, only_fix=True)
+        expect(page.get_by_role("link", name=re.compile("^修复")).filter(has_text="修复")).to_have_attribute("aria-current", "true")
 
     tab(page, "鞭打反馈").click()
     tab(page, "鞭打反馈", selected=True)
     expect(page.get_by_role("link", name="登录查看", exact=True)).to_be_visible(timeout=TIMEOUT)
     expect(page.locator(".rd-card")).to_have_count(0)
-    print("通过游客站点更新、旧更新链接及反馈登录门槛验收。")
+    print("通过游客更新记录、修复分类及反馈登录门槛验收。")
 
 
 def skin_history(page, args):
@@ -75,14 +115,12 @@ def skin_history(page, args):
     page.wait_for_url(f"**/road?tab=updates&skin={SKIN}")
     tab(page, "更新记录", selected=True)
     changes = page.get_by_role("complementary", name="装扮变更", exact=True)
-    site = page.get_by_role("region", name="站点更新", exact=True)
     published = changes.get_by_role("link", name="星光票根", exact=True)
     expect(changes.get_by_role("heading", name="已上线", exact=True)).to_be_visible(timeout=TIMEOUT)
     expect(published).to_have_attribute("href", f"/road?tab=skins&skin={SKIN}")
     expect(changes.get_by_text(args.other_skin_title, exact=True)).to_have_count(0)
     expect(changes.get_by_text("等待同步的夹具票根", exact=True)).to_have_count(0)
-    expect(site.get_by_role("heading", name=args.fix_title, exact=True)).to_be_visible()
-    expect(site.get_by_role("heading", name=args.feature_title, exact=True)).to_be_visible()
+    expect_site_updates(page, args)
 
     changes.get_by_role("link", name="查看全部装扮变更", exact=True).click()
     page.wait_for_url("**/road?tab=updates")
@@ -100,8 +138,7 @@ def legacy_skin_history(page, args):
     tab(page, "更新记录", selected=True)
     back = page.get_by_role("link", name="返回作品", exact=True)
     expect(page.locator("p").filter(has=back)).to_contain_text("当前站点暂未提供作品更新记录。", timeout=TIMEOUT)
-    expect(page.get_by_role("heading", name=args.fix_title, exact=True)).to_be_visible()
-    expect(page.get_by_role("heading", name=args.feature_title, exact=True)).to_be_visible()
+    expect_site_updates(page, args)
     expect(back).to_have_attribute("href", f"/road?tab=skins&skin={SKIN}")
     back.click()
     page.wait_for_url(f"**/road?tab=skins&skin={SKIN}")
@@ -257,18 +294,30 @@ def feedback(page, args, return_to):
         "href", f"https://github.com/kourou25/jinhuan/issues/{args.issue}")
     card.get_by_role("link", name="查看关联更新", exact=True).click()
     page.wait_for_url(f"**/road?tab=updates&issue={args.issue}")
-    update = page.locator(f"#ch-issue-{args.issue}.ch-update-target")
-    expect(update).to_contain_text(args.fix_title, timeout=TIMEOUT)
+    if args.release_data:
+        site = expect_site_updates(page, args)
+        issue_url = f"{GITHUB_REPO}/issues/{args.issue}"
+        feedback_url = f"/road?tab=feedback&issue={args.issue}"
+        issue_link = page.get_by_role("link", name="打开 GitHub Issue", exact=True)
+        expect(site.locator("p").filter(has=issue_link)).to_contain_text(f"更新记录里暂时没有需求 #{args.issue}。")
+        expect(issue_link).to_have_attribute("href", issue_url)
+        expect(site.get_by_role("article").locator(f'a[href="{issue_url}"], a[href="{feedback_url}"]')).to_have_count(0)
+    else:
+        update = page.locator(f"#ch-issue-{args.issue}.ch-update-target")
+        expect(update).to_contain_text(args.fix_title, timeout=TIMEOUT)
     with page.expect_response(lambda response: response.ok and response.request.method == "GET" and
                               urlsplit(response.url).path == "/api/road" and
                               target_params(response.url).get("issue") == str(args.issue)) as filtered:
-        update.get_by_role("link", name="查看关联反馈", exact=True).click()
+        if args.release_data:
+            page.goto(f"{args.origin}/road?tab=feedback&issue={args.issue}", wait_until="networkidle")
+        else:
+            update.get_by_role("link", name="查看关联反馈", exact=True).click()
     page.wait_for_url(f"**/road?tab=feedback&issue={args.issue}")
     titles = {entry["title"] for entry in filtered.value.json()["items"]}
     assert titles == {TITLE, "兼容历史群聊反馈"}, f"Issue 回链包含未关联或隐藏反馈 {titles}"
     expect(page.locator("article.rd-card")).to_have_count(2, timeout=TIMEOUT)
     expect(card.get_by_role("heading", name=TITLE, exact=True)).to_be_visible()
-    print("通过作品反馈先保存、公开字段分离、失败后旧链接回读、已有 Issue 关联和更新双向回链验收。")
+    print("通过作品反馈先保存、公开字段分离、已有 Issue 关联、更新页 GitHub 入口及反馈筛选验收。")
 
 
 def invalid_issue_deeplinks(page, args, requests):
@@ -294,6 +343,7 @@ def main():
     parser.add_argument("--other-skin-title", required=True)
     parser.add_argument("--issue", required=True, type=int)
     parser.add_argument("--denied-title", required=True)
+    parser.add_argument("--release-data", type=json.loads, default=())
     args = parser.parse_args()
     origin = urlsplit(args.origin)
     if origin.scheme != "http" or origin.hostname != "127.0.0.1" or origin.path or not origin.port:
@@ -317,6 +367,9 @@ def main():
             else:
                 legacy_feedback(page, args, return_to)
             invalid_issue_deeplinks(page, args, requests)
+            if args.release_data:
+                retired = {"/api/community-updates", "/community-updates.html"}
+                assert not any(urlsplit(url).path in retired for url in requests), "更新页面请求了已下线的地址"
             if args.backend == "legacy":
                 unsupported = [url.geturl() for url in map(urlsplit, requests) if (
                     url.path == "/api/community-skins/updates"

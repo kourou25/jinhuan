@@ -67,7 +67,9 @@
 .ch-state .btn { margin-top: 8px; }
 .ch-more { align-self: start; margin-top: 8px; }
 
-.ch-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 14px; }
+.ch-filter-panel { margin-bottom: 10px; }
+.ch-filter-panel > summary { color: var(--primary); cursor: pointer; }
+.ch-filters { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0 4px; }
 .ch-filter {
   display: inline-flex; align-items: center; min-height: 36px; padding: 0 10px; border: 1px solid var(--line);
   border-radius: 999px; color: var(--text-2); font-size: 13px;
@@ -76,7 +78,6 @@
 .ch-filter:hover { background: var(--surface-2); }
 .ch-filter[aria-current] { border-color: var(--primary); background: var(--primary-soft); color: var(--text); font-weight: 650; }
 .ch-notice { margin: 0 0 12px; padding: 9px 12px; border-radius: var(--r-sm); background: var(--surface-2); color: var(--text-2); font-size: 13px; }
-.ch-notice-actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; }
 .ch-timeline { margin: 0 0 0 6px; padding: 0 0 0 15px; border-left: 1px solid var(--line); list-style: none; }
 .ch-update { position: relative; }
 .ch-update + .ch-update { margin-top: 10px; }
@@ -88,7 +89,9 @@
 .ch-update-target > article { border-color: var(--primary); box-shadow: inset 0 0 0 1px var(--primary); }
 .ch-update header, .ch-skin-change-head { display: flex; flex-wrap: wrap; align-items: center; gap: 5px 9px; }
 .ch-update h4 { margin: 0; font-size: 16px; }
-.ch-update p { margin: 6px 0 8px; color: var(--text-2); }
+.ch-update-group { margin: 9px 0; }
+.ch-update-group h5 { margin: 0; }
+.ch-update-group ul { margin: 4px 0 0; padding-inline-start: 1.4em; color: var(--text-2); }
 .ch-label {
   display: inline-block; padding: 1px 7px; border-radius: 5px; color: var(--text); background: var(--primary-soft);
   white-space: nowrap; font-size: 12px; font-weight: 650;
