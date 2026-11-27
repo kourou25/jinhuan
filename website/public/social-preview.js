@@ -1,4 +1,43 @@
 import {socialLinks,canSocialPost,socialCaption} from './social-links.js?v=472f7fbf'
+
+function bilibiliChatCards(body, { h, onRemoval }, available) {
+  const cards = []
+  const seen = new Set()
+  for (const [address] of body.matchAll(/https:\/\/[^\s<>"'`）)\]，。！？]+/g)) {
+    if (cards.length >= available) break
+    let video
+    try { video = new URL(address) } catch { continue }
+    if (!['www.bilibili.com', 'm.bilibili.com', 'bilibili.com'].includes(video.hostname) ||
+        video.username || video.password || video.port) continue
+    const id = video.pathname.match(/^\/video\/(?:BV([A-Za-z0-9]{10})|av([1-9]\d{0,19}))\/?$/)
+    if (!id) continue
+
+    const params = new URLSearchParams({ autoplay: '0', poster: '1' })
+    if (id[1]) params.set('bvid', 'BV' + id[1])
+    else params.set('aid', id[2])
+    const part = video.searchParams.get('p')
+    if (/^[1-9]\d*$/.test(part || '') && part !== '1') params.set('p', part)
+    const playerUrl = 'https://player.bilibili.com/player.html?' + params
+    if (seen.has(playerUrl)) continue
+    seen.add(playerUrl)
+
+    const frame = h('iframe', {
+      src: playerUrl,
+      title: '哔哩哔哩视频播放器',
+      loading: 'lazy',
+      allowfullscreen: true,
+      referrerpolicy: 'no-referrer',
+      sandbox: 'allow-scripts allow-same-origin allow-presentation',
+      style: { aspectRatio: '16 / 9', height: 'auto' },
+    })
+    const card = h('section', { class: 'cm-social', 'aria-label': '哔哩哔哩视频预览' },
+      h('div', { class: 'cm-social-area' }, frame))
+    onRemoval(card, () => frame.remove())
+    cards.push(card)
+  }
+  return cards
+}
+
 const scripts=new WeakMap()
 function loadScript(doc,provider){
  let cache=scripts.get(doc);if(!cache){cache=new Map();scripts.set(doc,cache)}
@@ -14,7 +53,7 @@ function loadScript(doc,provider){
 }
 export function socialCards(message,{h,api,onRemoval,onPost,onOpenMedia,renderVideo,post=false}){
  if(message.redpack||!message.id||message.deleted)return []
- return socialLinks(message.body||'').map((link,index)=>{
+ const cards=socialLinks(message.body||'').map((link,index)=>{
   const shell=h('section',{class:'cm-social'+(post?' social-post':''),'aria-label':'分享内容预览'})
   const status=h('p',{class:'cm-social-status',role:'status'},'进入视野后加载内容')
   const origin=h('a',{href:link.url,target:'_blank',rel:'noopener noreferrer',hidden:true},'打开原链接 ↗')
@@ -92,4 +131,6 @@ export function socialCards(message,{h,api,onRemoval,onPost,onOpenMedia,renderVi
   }
   onRemoval(shell,()=>{state='disposed';visibleObserver?.disconnect();clear()});return shell
  })
+ if(!post)cards.push(...bilibiliChatCards(message.body||'', { h, onRemoval }, 2-cards.length))
+ return cards
 }
