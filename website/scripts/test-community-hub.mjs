@@ -46,12 +46,13 @@ const skinId = 'shiratori-starlight'
 const pendingId = 'fixture-pending-skin'
 const otherId = 'fixture-other-skin'
 const otherSkinTitle = '本地验收另一套票根'
+const publicationTime = 1_790_000_000
 const database = join(root, 'data/db/meme-hall.sqlite')
 const envFile = join(root, 'config/.env')
 const mockFile = fileURLToPath(new URL('./test-community-hub-fetch.mjs', import.meta.url))
 const postsFile = join(root, 'github.ndjson')
 const browserFile = fileURLToPath(new URL('./test-community-hub-browser.py', import.meta.url))
-let server, origin, db
+let server, origin, db, skinOrder = []
 
 async function seedCatalog(skinRoot, backend) {
   const manifest = JSON.parse(readFileSync(join(skinRoot, 'manifest.json'), 'utf8'))
@@ -83,8 +84,21 @@ async function seedCatalog(skinRoot, backend) {
     }
   }
   const catalog = { schemaVersion: 1, revision: 1, source, entries: [entry, other], archived: [] }
+  if (mainlineSnapshot) {
+    entry.updated_at = publicationTime
+    other.updated_at = publicationTime + 86_400
+    const synthetic = Array.from({ length: 96 }, (_, index) => {
+      const number = String(index).padStart(2, '0')
+      const updatedAt = index % 11 === 0 ? undefined : publicationTime - (index % 16) * 86_400
+      return { id: `fixture-catalog-${number}`, name: `分页装扮 ${number}`, components: {}, updated_at: updatedAt }
+    })
+    // 倒置来源顺序，让同时间和缺时间的稳定排序都能被验收。
+    catalog.entries = [...synthetic.reverse(), other, entry]
+    skinOrder = catalog.entries.map(({ id, name, updated_at }) => ({ id, name, updated_at }))
+      .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0) || a.id.localeCompare(b.id))
+  }
   if (backend === 'sync') {
-    catalog.recentUpdates = catalog.entries.map(skin => ({ source, id: skin.id, name: skin.name, kind: 'added', published_at: 1_790_000_000 }))
+    catalog.recentUpdates = [entry, other].map(skin => ({ source, id: skin.id, name: skin.name, kind: 'added', published_at: publicationTime }))
     writeFileSync(join(root, 'pending-catalog.json'), JSON.stringify({
       schemaVersion: catalog.schemaVersion, source: pendingSource, revision: 2,
       entries: [...catalog.entries, { ...entry, id: pendingId, name: '等待同步的夹具票根' }],
@@ -300,7 +314,8 @@ async function verifyBrowser(backend) {
   // 在隔离目录内使用相对临时路径，避免 Chromium 的 Unix socket 地址超长。
   const browser = spawn(process.env.PYTHON || 'python3', [browserFile, '--origin', origin, '--env-file', envFile, '--backend', backend,
     '--skin-source', source, '--fix-title', fix.title, '--feature-title', feature.title, '--other-skin-title', otherSkinTitle,
-    '--issue', String(fix.issue), '--denied-title', deniedTitle, '--release-data', JSON.stringify(releaseData)], {
+    '--issue', String(fix.issue), '--denied-title', deniedTitle, '--release-data', JSON.stringify(releaseData),
+    '--skin-order', JSON.stringify(skinOrder)], {
     cwd: scratch, env: { ...process.env, TMPDIR: '.', PYTHONUNBUFFERED: '1' }, stdio: 'inherit',
   })
   const [code] = await once(browser, 'exit')

@@ -4108,7 +4108,8 @@ function renderCommunityHub() {
   const nav = h('nav', { class: 'community-hub-tabs', 'aria-label': '社区共建' }, COMMUNITY_TABS.map(([key, label]) =>
     h('a', { class: 'seg' + (key === tab ? ' on' : ''), href: communityHref(key), 'data-link': '', 'aria-current': key === tab ? 'page' : null }, label)))
   const panel = h('div', { class: 'community-hub-panel' })
-  main.replaceChildren(h('div', { class: 'community-hub' },
+  const directory = tab === 'skins' && !p.get('skin')
+  main.replaceChildren(h('div', { class: directory ? 'community-hub community-hub--skin-directory' : 'community-hub' },
     pageHead('社区共建', null, links), nav, panel))
   if (tab === 'feedback') { renderRoad(panel, p); return }
   async function showPanel() {
@@ -4118,6 +4119,7 @@ function renderCommunityHub() {
       if (!panel.isConnected) return
       await renderCommunityPanel(panel, {
         tab, skin: p.get('skin'), kind: p.get('kind'), issue: issueNumber(p.get('issue')), syncAvailable: S.communityHubSync,
+        catalogAnchor: p.get('anchor'), catalogFocus: history.state?.workshopFocus, navigate, onPageLeave,
         onFeedback(skinId, source) {
           if (!panel.isConnected) return
           const work = feedbackWork(skinId, source)
@@ -13266,10 +13268,10 @@ const ROUTES = [
   [/^\/t\/(.+)$/, (m) => renderWall({ tag: decodeURIComponent(m[1]) })],
 ]
 
-function navigate(path, { replace = false } = {}) {
+function navigate(path, { replace = false, state } = {}) {
   // 点当前页面的链接（如「回到最新」、再点一次「图廊」）：重新从头显示
   if (!replace && path === location.pathname + location.search) { S.wallFresh = true; S.bgKey = null }
-  history[replace ? 'replaceState' : 'pushState']({ inApp: true }, '', path)
+  history[replace ? 'replaceState' : 'pushState']({ ...state, inApp: true }, '', path)
   route()
 }
 

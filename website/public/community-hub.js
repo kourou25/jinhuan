@@ -6,7 +6,6 @@ const SITE_UPDATES_SOURCE = './recent-updates-data.js?v=472f7fbf'
 const PARTS = { bubble: '气泡', title: '称号', badge: '徽章', reply: '回应框', frame: '头像框' }
 const LEGACY_KINDS = { feature: '功能', fix: '修复', polish: '优化', community: '社区共建' }
 const SKIN_CHANGES = { added: '上新', updated: '更新', renamed: '更名', removed: '下架' }
-const STARLIGHT = 'shiratori-starlight'
 const PAGE_SIZE = 12
 const SHORT_SAMPLE = '晚安，明天见！'
 const LONG_SAMPLE = '今晚的流星来得比平时晚一些。我在窗边多等了一会儿，发现楼下的灯一盏盏亮了起来。要是明天放晴，我们就一起去河边散步吧。'
@@ -182,39 +181,174 @@ function skinDetail(skin, { archived, source, onFeedback, onWear, syncAvailable 
       skin.components?.bubble ? el('p', { className: 'ch-note' }, '气泡需先在限定气泡池获得。套装中其他部件可在装扮设置佩戴。') : null)
 }
 
-function skinList(entries, selectedId) {
-  const list = el('ul', { className: 'ch-skin-list' })
-  const selectedIndex = entries.findIndex(item => item.id === selectedId)
-  const shown = selectedIndex >= PAGE_SIZE ? [entries[selectedIndex], ...entries.filter(item => item.id !== selectedId)] : entries
-  const more = appendPaged(list, shown, skin => {
-    const label = partsOf(skin).map(kind => PARTS[kind]).join('、')
-    const link = internalLink(el('span', { className: 'ch-skin-row' },
-      el('strong', null, skin.name), el('small', null, [skin.author, label].filter(Boolean).join(' · '))),
-    roadLink('skins', { skin: skin.id }), 'ch-skin-link')
-    if (selectedId === skin.id) link.ariaCurrent = 'true'
-    return el('li', null, link)
-  })
-  return el('aside', { className: 'ch-catalog', labelledBy: 'ch-catalog-title' },
-    el('h3', { id: 'ch-catalog-title' }, '已发布作品'), list, more)
+function catalogHref(anchor) {
+  return roadLink('skins', anchor ? { anchor } : {})
 }
 
-async function renderSkins(root, { skin, onFeedback, onWear, syncAvailable }) {
+function workshopLink(label, href, className, action) {
+  const link = internalLink(label, href, className)
+  if (action) {
+    delete link.dataset.link
+    link.onclick = event => {
+      if (event.defaultPrevented || event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return
+      event.preventDefault()
+      action()
+    }
+  }
+  return link
+}
+
+function skinTimestamp(skin) {
+  const time = skin.updated_at
+  return Number.isSafeInteger(time) && time > 0 && Number.isFinite(new Date(time * 1000).getTime()) ? time : 0
+}
+
+function skinTile({ skin, updated }, navigate) {
+  const href = roadLink('skins', { skin: skin.id })
+  const date = updated ? new Date(updated * 1000) : null
+  const dateLabel = date ? dateFormat.format(date) : '更新时间未知'
+  const labels = [
+    el('strong', null, skin.name),
+    date ? el('time', { dateTime: date.toISOString() }, dateLabel) : el('span', null, dateLabel),
+  ]
+  if (!navigate) return el('span', { className: 'ch-skin-link' }, ...labels)
+  const link = workshopLink(null, href, 'ch-skin-link', () => {
+    // 让浏览器返回的是被点作品所在页，旋转屏幕后也能重新定位。
+    history.replaceState({ ...history.state, workshopFocus: 'card' }, '', catalogHref(skin.id))
+    navigate(href, { state: { workshopReturn: skin.id } })
+  })
+  link.append(...labels)
+  link.ariaLabel = skin.name
+  link.ariaDescription = date ? '更新于 ' + dateLabel : dateLabel
+  link.dataset.skin = skin.id
+  link.title = skin.name
+  return link
+}
+
+function skinCatalogBack(skin, navigate) {
+  const href = catalogHref(skin)
+  return workshopLink('返回作品目录', href, 'btn btn-ghost sm ch-skin-back', navigate && (() => {
+    if (history.state?.workshopReturn === skin) history.back()
+    else navigate(href, { state: { workshopFocus: 'card' } })
+  }))
+}
+
+function renderSkinCatalog(content, entries, { catalogAnchor, navigate, onPageLeave, catalogFocus }) {
+  const records = entries.map(skin => ({ skin, updated: skinTimestamp(skin) }))
+  records.sort((a, b) => {
+    if (a.updated !== b.updated) return b.updated - a.updated
+    if (a.skin.id === b.skin.id) return 0
+    return a.skin.id < b.skin.id ? -1 : 1
+  })
+  const anchorIndex = Math.max(0, records.findIndex(item => item.skin.id === catalogAnchor))
+  const go = navigate || (href => location.assign(href))
+  const list = el('ul', { className: 'ch-skin-list', ariaLabel: '已发布作品' })
+  const counter = el('span', { className: 'ch-skin-page-count', tabIndex: -1, role: 'status' }, '第 1 / 1 页')
+  let page = -1
+  let perPage = 0
+  const turn = (step, focus) => go(catalogHref(records[(page + step) * perPage].skin.id), { state: { workshopFocus: focus } })
+  const prev = button('上一页', () => turn(-1, 'prev'), 'btn btn-ghost sm')
+  const next = button('下一页', () => turn(1, 'next'), 'btn btn-ghost sm')
+  prev.disabled = next.disabled = true
+  const pager = el('nav', { className: 'ch-skin-pager', ariaLabel: '作品分页' }, prev, counter, next)
+  const probe = el('div', { className: 'ch-skin-probe', ariaHidden: 'true' }, skinTile(records[0]))
+  content.replaceChildren(el('div', { className: 'ch-skin-directory' }, pager, list, probe))
+  const directory = list.parentElement
+  const mobileNav = document.querySelector('.mobile-nav')
+  const viewport = window.visualViewport
+  let dock
+
+  function measure() {
+    const width = directory.getBoundingClientRect().width
+    const visibleWidth = Math.min(width, viewport?.width || width)
+    list.style.maxInlineSize = visibleWidth < width ? visibleWidth + 'px' : ''
+    const { top, left, right } = list.getBoundingClientRect()
+    const tile = probe.getBoundingClientRect()
+    if (!tile.width || !tile.height) return
+    const styles = getComputedStyle(list)
+    const colGap = parseFloat(styles.columnGap) || 0
+    const rowGap = parseFloat(styles.rowGap) || 0
+    const cols = Math.max(1, Math.floor((visibleWidth + colGap) / (tile.width + colGap)))
+    const viewportTop = viewport?.offsetTop || 0
+    const height = viewport?.height || document.documentElement.clientHeight
+    const currentDock = document.querySelector('.chat-dock')
+    if (currentDock !== dock) {
+      if (dock) observer.unobserve(dock)
+      if (currentDock) observer.observe(currentDock)
+      dock = currentDock
+    }
+    const bottom = [mobileNav, dock].filter(Boolean).reduce((edge, bar) => {
+      const bounds = bar.getBoundingClientRect()
+      const overlaps = bounds.height && bounds.right > left && bounds.left < right && bounds.bottom > viewportTop
+      return overlaps && !bar.matches('.open, .split') && getComputedStyle(bar).visibility === 'visible' ?
+        Math.max(0, Math.min(edge, bounds.top - viewportTop)) : edge
+    }, height)
+    const space = bottom - (top + window.scrollY)
+    const rows = Math.floor((space + rowGap) / (tile.height + rowGap))
+    // 连一行也放不下时保留一行，靠页面自然滚动抵达被全站底栏占用的区域。
+    directory.style.setProperty('--ch-skin-short-clearance', rows < 1 ? (height - bottom) + 'px' : '0px')
+    list.style.setProperty('--ch-skin-columns', cols)
+    const capacity = cols * Math.max(1, rows)
+    if (capacity === perPage) return
+    const focus = document.activeElement?.dataset.skin
+    const restore = perPage === 0 ? catalogFocus : focus ? 'card' : ''
+    perPage = capacity
+    page = Math.floor(anchorIndex / perPage)
+    const pages = Math.ceil(records.length / perPage)
+    const shown = records.slice(page * perPage, (page + 1) * perPage)
+    list.replaceChildren(...shown.map(record => el('li', null, skinTile(record, go))))
+    prev.disabled = page === 0
+    next.disabled = page + 1 === pages
+    counter.textContent = `第 ${page + 1} / ${pages} 页`
+    if (restore) {
+      const card = restore === 'card' ? [...list.querySelectorAll('[data-skin]')].find(link => link.dataset.skin === (focus || catalogAnchor)) : null
+      const target = restore === 'prev' && !prev.disabled ? prev : restore === 'next' && !next.disabled ? next : card || counter
+      target.focus({ preventScroll: true })
+    }
+  }
+
+  let frame = 0
+  const queueMeasure = () => { if (!frame) frame = requestAnimationFrame(() => { frame = 0; measure() }) }
+  const observer = new ResizeObserver(queueMeasure)
+  const hub = directory.closest('.community-hub')
+  for (const node of [directory, probe, pager, document.querySelector('.topbar'), hub?.querySelector('.page-head'), hub?.querySelector('.community-hub-tabs'), mobileNav]) {
+    if (node) observer.observe(node)
+  }
+  window.addEventListener('resize', queueMeasure)
+  viewport?.addEventListener('resize', queueMeasure)
+  onPageLeave?.(() => {
+    observer.disconnect()
+    cancelAnimationFrame(frame)
+    window.removeEventListener('resize', queueMeasure)
+    viewport?.removeEventListener('resize', queueMeasure)
+  })
+  measure()
+}
+
+async function renderSkins(root, options) {
+  const { skin, onFeedback, onWear, syncAvailable, navigate } = options
   const content = el('div', null)
-  root.append(el('header', { className: 'ch-head' },
-    el('div', null, el('h2', null, '装扮工坊'), el('p', null, '试穿群友创作的聊天装扮，也可以投稿自己的作品。')),
+  root.append(el('header', { className: 'ch-head ch-skins-head' },
+    skin ? skinCatalogBack(skin, navigate) : el('h2', null, '装扮工坊'),
     externalLink('去投稿', SKIN_REPO, 'btn btn-primary')), content)
   const load = async (force = false) => {
     content.setAttribute('aria-busy', 'true')
     content.replaceChildren(state('正在读取装扮目录…'))
     try {
       await loadCommunitySkins(force)
+      if (!content.isConnected) return
       const { entries, archived, source } = communitySkinCatalog()
-      const activeSkin = skin ? entries.find(item => item.id === skin) : entries.find(item => item.id === STARLIGHT) || entries[0]
-      const archivedSkin = !activeSkin && skin ? archived.find(item => item.id === skin) : null
+      if (!skin) {
+        if (entries.length) renderSkinCatalog(content, entries, options)
+        else content.replaceChildren(state('现在还没有已发布的装扮。'))
+        return
+      }
+      const activeSkin = entries.find(item => item.id === skin)
+      const archivedSkin = !activeSkin ? archived.find(item => item.id === skin) : null
       const selected = activeSkin || archivedSkin
       const detail = selected ? skinDetail(selected, { archived: Boolean(archivedSkin), source: activeSkin ? source : '', onFeedback, onWear, syncAvailable }) :
-        skin ? state('这套装扮不在已发布目录中。', internalLink('查看装扮工坊', roadLink('skins'), 'btn btn-ghost')) : state('现在还没有已发布的装扮。')
-      content.replaceChildren(el('div', { className: 'ch-layout' }, detail, entries.length ? skinList(entries, selected?.id) : null))
+        state('这套装扮不在已发布目录中。')
+      content.replaceChildren(detail)
     } catch {
       content.replaceChildren(state('装扮目录暂时无法读取。', button('重新读取', () => void load(true))))
     } finally {

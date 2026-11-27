@@ -5,8 +5,11 @@ import argparse
 import json
 import re
 import shutil
+from datetime import datetime
+from math import ceil
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from zoneinfo import ZoneInfo
 
 from playwright.sync_api import expect, sync_playwright
 
@@ -147,10 +150,141 @@ def legacy_skin_history(page, args):
     print("通过旧服务的作品更新深链降级、保留站点更新和返回对应作品验收。")
 
 
-def skin_preview(page, args):
-    tab(page, "装扮工坊").click()
+def directory_geometry(catalog):
+    return catalog.evaluate("""list => {
+        const cards = [...list.querySelectorAll('a[href*="skin="]')];
+        const boxes = cards.map(card => card.getBoundingClientRect());
+        const pager = document.querySelector('nav[aria-label="作品分页"]');
+        const controls = [...pager.querySelectorAll('button')].map(button => button.getBoundingClientRect());
+        const footer = document.querySelector('.mobile-nav')?.getBoundingClientRect();
+        const bottom = footer?.height ? Math.min(innerHeight, footer.top) : innerHeight;
+        const cols = new Set(boxes.map(box => Math.round(box.left))).size;
+        const rows = new Set(boxes.map(box => Math.round(box.top))).size;
+        const rowStep = Math.max(...boxes.map(box => box.height)) +
+            (parseFloat(getComputedStyle(list).rowGap) || 0);
+        const content = [...boxes, ...controls, pager.getBoundingClientRect()];
+        const lastBottom = Math.max(...content.map(box => box.bottom));
+        const visible = content.every(box => box.width > 0 && box.height > 0 &&
+            box.left >= -0.5 && box.right <= innerWidth + 0.5 && box.top >= -0.5 && box.bottom <= bottom + 0.5);
+        return {visible, rows, cols, rowStep, bottom, lastBottom, scroll: scrollY,
+            ids: cards.map(card => new URL(card.href).searchParams.get('skin'))};
+    }""")
+
+
+def skin_directory(page, args):
+    entries = args.skin_order
+    path = "/road?tab=skins"
+    page.goto(args.origin + path, wait_until="networkidle")
     tab(page, "装扮工坊", selected=True)
-    expect(page.get_by_role("heading", name="装扮工坊", exact=True)).to_be_visible(timeout=TIMEOUT)
+    expect(page.get_by_role("heading", name="装扮工坊", exact=True)).to_be_visible()
+    catalog = page.get_by_role("list", name="已发布作品", exact=True)
+    pager = page.get_by_role("navigation", name="作品分页", exact=True)
+    previous = pager.get_by_role("button", name="上一页", exact=True)
+    next_page = pager.get_by_role("button", name="下一页", exact=True)
+    expect(pager).to_be_visible(timeout=TIMEOUT)
+    expect(page.get_by_role("heading", name="星光票根", exact=True)).to_have_count(0)
+
+    def geometry(full=False):
+        result = directory_geometry(catalog)
+        assert result["visible"] and abs(result["scroll"]) < 1, f"一屏目录被遮挡或需滚动 {result}"
+        if full:
+            assert len(result["ids"]) == result["rows"] * result["cols"], f"满页应由整行组成 {result}"
+            assert result["lastBottom"] + result["rowStep"] > result["bottom"] + 0.5, f"本屏仍可放入另一整行 {result}"
+        return result
+
+    def resize(width, height, full=True):
+        page.set_viewport_size({"width": width, "height": height})
+        page.evaluate("() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))")
+        return geometry(full=full)
+
+    phone = resize(375, 820)
+    wide = resize(1280, 820)
+    short = resize(1280, 390)
+    desktop = resize(1280, 920)
+    assert phone["cols"] >= 2, "窄手机仍应显示多列作品目录"
+    assert wide["cols"] > phone["cols"] and len(wide["ids"]) > len(phone["ids"]), "加宽没有容纳更多列及作品"
+    assert desktop["rows"] > short["rows"] and len(desktop["ids"]) > len(short["ids"]), "加高没有容纳更多行及作品"
+    for layout in (phone, short, wide, desktop):
+        assert layout["ids"] == [entry["id"] for entry in entries[:len(layout["ids"])]], f"调整尺寸后首页作品错位 {layout}"
+
+    size = len(desktop["ids"])
+    assert 0 < size < len(entries), "夹具的作品数量必须超过单页容量"
+    pages = ceil(len(entries) / size)
+    seen = []
+    for index in range(pages):
+        start = index * size
+        expect(pager).to_contain_text(f"第 {index + 1} / {pages} 页")
+        current = geometry()
+        expected = entries[start:start + size]
+        assert current["ids"] == [entry["id"] for entry in expected], f"第 {index + 1} 页作品顺序或范围有误 {current}"
+        seen.extend(current["ids"])
+        for sample in (expected[0], expected[-1]):
+            link = page.get_by_role("link", name=sample["name"], exact=True)
+            card = catalog.get_by_role("listitem").filter(has=link)
+            if "updated_at" in sample:
+                date = datetime.fromtimestamp(sample["updated_at"], ZoneInfo("Asia/Shanghai"))
+                expect(card.locator("time")).to_have_text(f"{date.year}年{date.month}月{date.day}日")
+            else:
+                expect(card.get_by_text("更新时间未知", exact=True)).to_be_visible()
+        if index == 0:
+            expect(previous).to_be_disabled()
+        else:
+            expect(previous).to_be_enabled()
+        if index + 1 == pages:
+            expect(next_page).to_be_disabled()
+        else:
+            expect(next_page).to_be_enabled()
+            next_page.click()
+            page.wait_for_url(f"**{path}&anchor={entries[start + size]['id']}")
+    assert seen == [entry["id"] for entry in entries], "翻页后作品有重复或缺失"
+
+    previous.click()
+    prior_start = (pages - 2) * size
+    page.wait_for_url(f"**{path}&anchor={entries[prior_start]['id']}")
+    expect(pager).to_contain_text(f"第 {pages - 1} / {pages} 页")
+    assert geometry()["ids"] == [entry["id"] for entry in entries[prior_start:prior_start + size]], "上一页作品范围有误"
+    next_page.click()
+    recent_start = (pages - 1) * size
+    page.wait_for_url(f"**{path}&anchor={entries[recent_start]['id']}")
+    expect(pager).to_contain_text(f"第 {pages} / {pages} 页")
+    selected = entries[min(recent_start + 1, len(entries) - 1)]
+    detail_url = f"{path}&skin={selected['id']}"
+    anchored_url = f"{path}&anchor={selected['id']}"
+    recent_ids = [entry["id"] for entry in entries[recent_start:]]
+    catalog.get_by_role("link", name=selected["name"], exact=True).click()
+    page.wait_for_url(f"**{detail_url}")
+    expect(page.get_by_role("heading", name=selected["name"], exact=True)).to_be_visible()
+    expect(pager).to_have_count(0)
+    page.go_back()
+    page.wait_for_url(f"**{anchored_url}")
+    expect(pager).to_contain_text(f"第 {pages} / {pages} 页")
+    assert geometry()["ids"] == recent_ids, "浏览器后退没有恢复原目录页"
+    page.go_forward()
+    page.wait_for_url(f"**{detail_url}")
+    back = page.get_by_role("link", name="返回作品目录", exact=True)
+    expect(back).to_have_attribute("href", anchored_url)
+    back.click()
+    page.wait_for_url(f"**{anchored_url}")
+    expect(pager).to_contain_text(f"第 {pages} / {pages} 页")
+    assert geometry()["ids"] == recent_ids, "返回后没有恢复原目录页"
+    assert selected["id"] in resize(375, 820, full=False)["ids"], "缩窄非首页后丢失当前作品锚点"
+    assert resize(1280, 920, full=False)["ids"] == recent_ids, "恢复宽高后丢失当前目录页"
+
+    page.goto(args.origin + detail_url, wait_until="networkidle")
+    expect(page.get_by_role("heading", name=selected["name"], exact=True)).to_be_visible()
+    back.click()
+    expect(pager).to_be_visible()
+    assert selected["id"] in geometry()["ids"], "直接打开作品深链后，返回目录时找不到该作品"
+    print(f"通过装扮目录日期排序、分页与返回验收，窄手机 {len(phone['ids'])} 件，桌面矮屏 {len(short['ids'])} 件，桌面 {size} 件。")
+
+
+def skin_preview(page, args):
+    if args.skin_order:
+        page.goto(f"{args.origin}/road?tab=skins&skin={SKIN}", wait_until="networkidle")
+    else:
+        tab(page, "装扮工坊").click()
+        expect(page.get_by_role("heading", name="装扮工坊", exact=True)).to_be_visible(timeout=TIMEOUT)
+    tab(page, "装扮工坊", selected=True)
     expect(page.get_by_role("heading", name="星光票根", exact=True)).to_be_visible()
     frame = page.frame_locator("iframe.ch-preview")
     bubble = frame.locator(f".ch-stage-bubble.cskin-bubble-{SKIN}")
@@ -344,6 +478,7 @@ def main():
     parser.add_argument("--issue", required=True, type=int)
     parser.add_argument("--denied-title", required=True)
     parser.add_argument("--release-data", type=json.loads, default=())
+    parser.add_argument("--skin-order", type=json.loads, default=())
     args = parser.parse_args()
     origin = urlsplit(args.origin)
     if origin.scheme != "http" or origin.hostname != "127.0.0.1" or origin.path or not origin.port:
@@ -361,6 +496,9 @@ def main():
             page.on("request", lambda request: requests.append(request.url))
             page.set_default_timeout(TIMEOUT)
             updates(page, args)
+            if args.skin_order:
+                skin_directory(page, args)
+                page.set_viewport_size({"width": 1100, "height": 900})
             return_to = skin_preview(page, args)
             if args.backend == "sync":
                 feedback(page, args, return_to)
