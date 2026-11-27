@@ -2,7 +2,7 @@ const statusText = {
   pending: '等待投递', delivering: '投递中', delivered: '已送达', failed: '投递失败', cancelled: '已取消',
 }
 
-export function groupChatBots({ h, api, groupId, onChange }) {
+export function groupChatBots({ h, api, avatar, groupId, onChange }) {
   const path = '/chat/groups/' + groupId + '/bots'
   const status = h('p', { class: 'gp-note muted', role: 'status' })
   const secrets = h('div', { class: 'gp-sec', hidden: true })
@@ -61,6 +61,41 @@ export function groupChatBots({ h, api, groupId, onChange }) {
       button('收起并清除凭证', () => { secrets.replaceChildren(); secrets.hidden = true }))
   }
 
+  function appearanceForm(identity) {
+    const defaultName = identity?.name || '群机器人'
+    const displayName = identity?.nick || defaultName
+    const nick = h('input', { class: 'input', value: identity?.nick || '', placeholder: defaultName, maxlength: 24 })
+    const title = h('input', { class: 'input', value: identity?.deco?.t || '', placeholder: '留空不显示', maxlength: 8 })
+    const bubble = h('select', { class:'input', 'aria-label':'气泡样式' }, h('option', { value:'' }, '默认'), h('option', { value:'aurora' }, '极光流转'))
+    bubble.value = identity?.deco?.bb || ''
+    const file = h('input', { type:'file', accept:'image/jpeg,image/png,image/gif,image/webp' })
+    const remove = h('input', { type:'checkbox' })
+    file.onchange = () => { if (file.files?.length) remove.checked = false }
+    remove.onchange = () => { if (remove.checked) file.value = '' }
+    const save = h('button', { class:'btn sm', type:'submit' }, '保存机器人外观')
+    return h('form', { class:'gp-bot-form', onsubmit:event => {
+      event.preventDefault()
+      change(async () => {
+        save.disabled = true
+        const data = new FormData()
+        data.set('nickname', nick.value)
+        data.set('title', title.value)
+        data.set('bubble', bubble.value)
+        if (file.files?.[0]) data.set('avatar', file.files[0])
+        if (remove.checked) data.set('remove_avatar', '1')
+        try {
+          await api(path + '/appearance', { method:'PUT', body:data })
+          return '机器人外观已保存'
+        } finally { save.disabled = false }
+      })
+    } }, h('strong', null, '机器人外观'),
+    h('div', { class:'gp-inline' }, avatar(identity?.avatar, displayName, 40), displayName),
+    field('机器人头像（最大 5 MiB）', file),
+    identity?.avatar && h('label', { class:'gp-inline' }, remove, '恢复默认头像'),
+    field('机器人昵称', nick), field('气泡称号', title), field('气泡样式', bubble),
+    h('p', { class:'gp-note muted' }, '外观对本群所有回调共用，昵称留空恢复默认，不影响 @账号和回调凭证。'), save)
+  }
+
   async function load() {
     const { bots, identity, can_edit_doc } = await api(path)
     if (!element.isConnected) return
@@ -70,6 +105,7 @@ export function groupChatBots({ h, api, groupId, onChange }) {
     if (identity?.doc_post_id) configuration.append(h('p', { class: 'gp-note' },
         h('a', { href: '/m/' + identity.doc_post_id, 'data-link': '' }, '查看对接说明')))
     if (can_edit_doc) {
+      configuration.append(appearanceForm(identity))
       const doc = h('input', { class: 'input', type: 'url', placeholder: location.origin + '/m/123',
         value: identity?.doc_post_id ? location.origin + '/m/' + identity.doc_post_id : '' })
       configuration.append(h('form', { class: 'gp-bot-form', onsubmit: event => {

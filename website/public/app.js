@@ -10369,7 +10369,7 @@ function chatMsg(m, { cont, pane, pending } = {}) {
       const choose = m.system_ref?.startsWith('persona-menu:') && pane?.send &&
         (m.reply_to?.me ?? m.reply_to?.username === S.me?.username)
       const [heading, ...options] = m.body.split('\n')
-      body.push(h('div', { class: 'cm-text cm-bot-text' }, choose
+      body.push(h('div', bubbleView(m.user, 'cm-text cm-bot-text', 'chat', false, m.id), choose
         ? [heading, h('div', {class:'cm-bot-personas'}, ...options.map(command =>
           h('button', {class:'btn sm', type:'button', onclick:()=>pane.send(command)}, command.slice('/chat 选择 '.length))))]
         : linkify(m.body)))
@@ -11679,9 +11679,9 @@ async function groupPanel(g, { outside, section, memberSort = 'online' } = {}) {
   async function openBots() {
     if (botPanel || !current()) return
     try {
-      const { groupChatBots } = await import('/group-chat-bots.js?v=472f7fbf')
+      const { groupChatBots } = await import('/group-chat-bots.js?v=bot-appearance-v1')
       if (!current() || botPanel) return
-      botPanel = groupChatBots({ h, api, groupId: g.id, onChange: () => MEMBERS.delete(g.id) })
+      botPanel = groupChatBots({ h, api, avatar, groupId: g.id, onChange: () => MEMBERS.delete(g.id) })
       botSection.replaceChildren(botPanel.element)
       await botPanel.open()
     } catch (error) {
@@ -11936,7 +11936,7 @@ async function groupPanel(g, { outside, section, memberSort = 'online' } = {}) {
     const categories=settingsSections({h,label:'群设置分类',onSelect:id=>{if(id==='bots')openBots()},sections:[
       {id:'members',label:'群成员',keywords:'人员 搜索 昵称 用户名 拉人 限制 移出 发言 活跃',nodes:[add,h('div',{class:'gp-mhead'},h('h4',{class:'gp-h'},'成员',count),msort,msearch),listBox,admin&&memberPages,partial]},
       {id:'info',label:'群资料',keywords:'群名 改名 群头像 头像 公告 群规 引用 申请 开放 通道',nodes:[...(findGroup(g.id)?.owner_ctl?[b33ApplyToggle(g)]:[]),rename,avatarSec,noticeSec()]},
-      {id:'bots',label:'群机器人',keywords:'机器人 推送 回调 指令',nodes:[botSection]},
+      {id:'bots',label:'群机器人',keywords:'机器人 推送 回调 指令 头像 昵称 气泡 称号',nodes:[botSection]},
       {id:'requests',label:'移出与申请',keywords:'审批 同意 拒绝 退出 移出 拉回 申请',available:()=>admin,nodes:[outsideBox]},
       {id:'resources',label:'水群榜',keywords:'水群 早起 夜聊 排名 榜单',nodes:[h('button',{class:'btn sm',type:'button',onclick:()=>chatRankPanel(g)},'水群榜 · 消息 / 早起 / 夜聊')]},
       {id:'anon',label:'匿名身份',keywords:'匿名 角色 系列 真名 实名 头像',available:()=>!!findGroup(g.id)?.anon,nodes:[anonSec]},

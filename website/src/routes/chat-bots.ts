@@ -1,4 +1,5 @@
 import { Hono } from 'hono'
+import { bodyLimit } from 'hono/body-limit'
 import type { C, Ctx, User } from '../types'
 import { boundedJson, fail, sameOrigin } from '../lib/http'
 import { randHex, sha256 } from '../lib/crypto'
@@ -11,6 +12,7 @@ import { BOT_COMMAND, BOT_GROUP_LIMIT, BOT_TEXT_LIMIT, botCallbackUrl, botMainta
 import { mediaKeys, prepareMedia } from '../services/content-media'
 import { cleanMedia, sniffImage, sniffVideo } from '../services/media-format'
 import { commitUploadContent, storeUpload } from '../services/upload-operations'
+import { cleanDeco, decoOf } from '../shared/deco'
 
 export const chatBots = new Hono<Ctx>()
 const managePath = '/api/chat/groups/:gid/bots'
@@ -18,6 +20,8 @@ const nativePath = '/api/chat-bots/:id'
 const pushPath = nativePath + '/messages'
 const uuid = /^[a-f0-9]{8}-(?:[a-f0-9]{4}-){3}[a-f0-9]{12}$/
 const maxUpload = 20 * 1024 * 1024
+const maxBotAvatar = 5 * 1024 * 1024
+const botAvatarKey = /^a\/\d{4}\/\d{2}\/[a-f0-9]{24}\.(?:png|jpg|gif|webp)$/
 
 async function manage(c: C) {
   const gid = Number(c.req.param('gid'))
@@ -85,8 +89,9 @@ chatBots.get(managePath, async c => {
       WHERE i.group_id=?1 ORDER BY i.created_at,i.id`).bind(gid,u.id).all<{
         commands:string;command_descriptions:string;enabled:number;own:number;gallery_access:number;chat_name:string|null;active_owner:number;maintainer_id:number;maintainer:string
       }>(),
-    db.prepare(`SELECT b.username,b.name,doc_post_id,chat_round_limit,chat_end_marker,chat_end_mode,chat_end_text FROM chat_group_bot_identity identity JOIN users b ON b.id=identity.bot_id
-      WHERE group_id=?`).bind(gid).first<{doc_post_id:number|null;username:string;name:string;chat_round_limit:number;chat_end_marker:string;chat_end_mode:string;chat_end_text:string}>(),
+    db.prepare(`SELECT b.username,b.name,b.nick,b.avatar,b.deco,doc_post_id,chat_round_limit,chat_end_marker,chat_end_mode,chat_end_text
+      FROM chat_group_bot_identity identity JOIN users b ON b.id=identity.bot_id WHERE group_id=?`).bind(gid)
+      .first<{doc_post_id:number|null;username:string;name:string;nick:string|null;avatar:string|null;deco:string|null;chat_round_limit:number;chat_end_marker:string;chat_end_mode:string;chat_end_text:string}>(),
   ])
   const anonymous = new Map<number,string>()
   if (isAnonGroup(gid)) {
@@ -95,7 +100,7 @@ chatBots.get(managePath, async c => {
     const publicOwners = await tagMembers(c,gid,owners.results.map(row=>({id:row.user_id,username:'匿名维护者'})),true)
     publicOwners.forEach((owner,index) => anonymous.set(owners.results[index].user_id,owner.anon?.name ?? '匿名维护者'))
   }
-  return c.json({ identity, can_edit_doc: isChatAdmin(u), bots: results.map(({ command_descriptions, maintainer_id, ...bot }) => ({
+  return c.json({ identity: identity && { ...identity, deco: decoOf(identity.deco) }, can_edit_doc: isChatAdmin(u), bots: results.map(({ command_descriptions, maintainer_id, ...bot }) => ({
     ...bot, maintainer:anonymous.get(maintainer_id) ?? bot.maintainer,
     commands: JSON.parse(bot.commands), descriptions: JSON.parse(command_descriptions), own: !!bot.own,
     enabled: !!bot.enabled, active_owner: !!bot.active_owner, gallery_access: !!bot.gallery_access, chat_name:bot.chat_name,
@@ -112,6 +117,70 @@ function ensureGroupBot(db:D1Database,gid:number) {
       SELECT ?,id FROM users WHERE username=? AND id=last_insert_rowid() AND changes()=1`).bind(gid,username),
   ]
 }
+
+function appearanceText(value: unknown, max: number, label: string) {
+  if (typeof value !== 'string' || /[\p{Cc}\p{Cf}]/u.test(value) || [...value.trim()].length > max) {
+    return fail(400, `${label}须为单行，最多 ${max} 个字符`)
+  }
+  return value.trim()
+}
+
+chatBots.put(managePath + '/appearance', bodyLimit({
+  maxSize: maxBotAvatar + 64 * 1024,
+  onError: () => fail(413, '头像不能超过 5 MiB'),
+}), async c => {
+  sameOrigin(c)
+  const { gid, u } = await manage(c)
+  if (!isChatAdmin(u)) fail(403, '只有群管能设置本群机器人外观')
+  if (!/^multipart\/form-data(?:;|$)/i.test(c.req.header('content-type') || '')) fail(415, '请使用机器人外观表单')
+  const form = await c.req.formData().catch(() => fail(400, '机器人外观表单无效'))
+  const nick = appearanceText(form.get('nickname'), 24, '机器人昵称')
+  const title = appearanceText(form.get('title'), 8, '气泡称号')
+  const bubble = form.get('bubble')
+  if (bubble !== '' && bubble !== 'aurora') fail(400, '气泡样式无效')
+  const file = form.get('avatar'), remove = form.get('remove_avatar') === '1'
+  let image: {bytes:Uint8Array;mime:string;ext:string} | undefined
+  if (file !== null) {
+    if (remove || !(file instanceof File) || !file.size) return fail(400, '请选择一张头像，或恢复默认头像')
+    if (file.size > maxBotAvatar) fail(413, '头像不能超过 5 MiB')
+    const bytes = new Uint8Array(await file.arrayBuffer())
+    const kind = sniffImage(bytes)
+    if (!kind) return fail(415, '头像只支持 JPG、PNG、GIF 或 WebP')
+    image = { bytes: cleanMedia(bytes, kind[0]), mime: kind[0], ext: kind[1] }
+  }
+
+  const db = c.env.DB, t = now()
+  const findBot = () => db.prepare(`SELECT b.id,b.avatar FROM chat_group_bot_identity i JOIN users b ON b.id=i.bot_id
+    WHERE i.group_id=? AND b.kind='bot' AND b.disabled=0`).bind(gid).first<{id:number;avatar:string|null}>()
+  let current = await findBot()
+  if (!current) {
+    await db.batch(ensureGroupBot(db,gid))
+    current = await findBot()
+  }
+  if (!current) return fail(409, '本群机器人不可用')
+  // Attribute the upload to the shared bot so a different group admin can replace it safely.
+  const receipt = image ? await storeUpload(db, c.env.BUCKET, {
+    ...image, uid:current.id, nonce:undefined, purpose:'avatar', asFile:false, limited:true, t,
+  }) : null
+  const avatar = receipt ? receipt.url : remove ? null : current.avatar
+  const deco = (title || bubble) ? cleanDeco({ t:title, bb:bubble, sc:'chat' }) : null
+  const update = db.prepare(`UPDATE users SET nick=?,avatar=?,avatar_custom=?,deco=?,updated_at=?
+    WHERE id=? AND kind='bot' AND disabled=0 AND avatar IS ?`).bind(
+    nick || null, avatar, avatar ? 1 : 0, deco ? JSON.stringify(deco) : null, t, current.id, current.avatar)
+  const writes = [update, db.prepare("SELECT json(CASE WHEN changes()=1 THEN 'true' ELSE 'bot_avatar_changed' END)")]
+  const oldKey = current.avatar?.startsWith('/img/') ? current.avatar.slice(5).split('#')[0] : ''
+  if (avatar !== current.avatar && botAvatarKey.test(oldKey)) {
+    writes.push(db.prepare('UPDATE uploads SET used=0,created_at=? WHERE key=? AND user_id=?').bind(t,oldKey,current.id),
+      db.prepare('UPDATE upload_operations SET cleanup_after=? WHERE key=? AND user_id=?').bind(t+86400,oldKey,current.id))
+  }
+  try {
+    await commitUploadContent(db, current.id, receipt ? [receipt.key] : [], writes)
+  } catch (error) {
+    if (error instanceof Error && /malformed JSON/i.test(error.message)) fail(409, '机器人头像已在另一处更新，请刷新后重试')
+    throw error
+  }
+  return c.json({ ok:true })
+})
 
 chatBots.put(managePath + '/conversation', async c => {
   sameOrigin(c)

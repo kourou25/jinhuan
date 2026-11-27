@@ -12132,7 +12132,7 @@ app.delete("/api/comments/:id", async (c) => {
 });
 var CHAT_PAGE = 40;
 var CHAT_BODY_MAX = 2e3;
-var CHAT_FIELDS = `x.*, u.username, u.name, u.avatar, u.trust_level, u.is_admin, u.fancy, u.deco`;
+var CHAT_FIELDS = `x.*, u.username, CASE WHEN x.system_kind='chat_bot' THEN COALESCE(u.nick,u.name) ELSE u.name END AS name, u.avatar, u.trust_level, u.is_admin, u.fancy, u.deco`;
 var CHAT_SELECT = `SELECT ${CHAT_FIELDS}
   FROM chat_messages x LEFT JOIN users u ON u.id = x.user_id`;
 var CHAT_UPDATES_SELECT = `SELECT ${CHAT_FIELDS}
@@ -12227,7 +12227,7 @@ async function decorateMsgsRaw(c, rows) {
           FROM (SELECT r2.user_id FROM chat_reactions r2 WHERE r2.message_id = r.message_id AND r2.emoji = r.emoji
                 ORDER BY r2.created_at LIMIT 3) t JOIN users w ON w.id = t.user_id) AS who
        FROM chat_reactions r WHERE r.message_id IN (SELECT value FROM json_each(?)) GROUP BY r.message_id, r.emoji ORDER BY MIN(r.created_at)`).bind(u?.id ?? -1, ids).all(),
-		refs === "[]" ? { results: [] } : c.env.DB.prepare(`SELECT x.id, x.group_id, x.user_id, x.system_kind, x.body, x.image_key, x.media, x.created_at, x.deleted, u.username, u.name, u.avatar, u.is_admin, u.trust_level, u.fancy, u.deco
+		refs === "[]" ? { results: [] } : c.env.DB.prepare(`SELECT x.id, x.group_id, x.user_id, x.system_kind, x.body, x.image_key, x.media, x.created_at, x.deleted, u.username, CASE WHEN x.system_kind='chat_bot' THEN COALESCE(u.nick,u.name) ELSE u.name END AS name, u.avatar, u.is_admin, u.trust_level, u.fancy, u.deco
        FROM chat_messages x LEFT JOIN users u ON u.id = x.user_id
        WHERE x.id IN (SELECT value FROM json_each(?1))
        AND EXISTS(SELECT 1 FROM chat_members cm WHERE cm.group_id=x.group_id AND cm.user_id=?2 AND x.created_at>=cm.joined_at AND x.id>=${CHAT_HISTORY_FLOOR})
@@ -12370,7 +12370,7 @@ app.get("/api/chat/groups", async (c) => {
        (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m INDEXED BY idx_chat_msg_at_unread WHERE m.group_id = g.id AND m.id > MAX(cm.last_read,${CHAT_HISTORY_FLOOR}-1) AND m.deleted = 0 AND m.user_id != ?1
           AND m.created_at>=cm.joined_at AND instr(m.body,'@') > 0 AND (m.body LIKE ?2 ESCAPE '\\' OR EXISTS(SELECT 1 FROM anon_mentions am WHERE am.message_id=m.id AND am.user_id=?1)) LIMIT 20)) AS at_me,
        l.id AS last_id, l.body AS last_body, l.image_key AS last_image, l.deleted AS last_deleted, l.created_at AS last_at,
-       lu.username AS last_by, lu.name AS last_by_name
+       lu.username AS last_by, CASE WHEN l.system_kind='chat_bot' THEN COALESCE(lu.nick,lu.name) ELSE lu.name END AS last_by_name
      FROM chat_members cm JOIN chat_groups g ON g.id = cm.group_id
      LEFT JOIN chat_messages l ON l.id = (SELECT MAX(id) FROM chat_messages WHERE group_id = g.id) AND l.created_at>=cm.joined_at AND l.id>=${CHAT_HISTORY_FLOOR}
      LEFT JOIN users lu ON lu.id = l.user_id
@@ -12544,7 +12544,7 @@ app.get("/api/chat/groups/:id/members", async (c) => {
 	// 匿名群：除站长外只给对外身份，没有入群时间、在线状态，也不能按真名搜
 	if (anonGroup && !seesAnonGroup(c.env, viewer)) {
 		const list = await anonRoster(c, g.id), q = (c.req.query("q") ?? "").trim().toLowerCase();
-		const bots = c.req.query("view") === "mention" ? (await c.env.DB.prepare(`SELECT u.username,u.name,u.avatar FROM chat_group_bot_identity identity
+		const bots = c.req.query("view") === "mention" ? (await c.env.DB.prepare(`SELECT u.username,COALESCE(u.nick,u.name) AS name,u.avatar FROM chat_group_bot_identity identity
       JOIN users u ON u.id=identity.bot_id AND u.kind='bot' AND u.disabled=0 WHERE identity.group_id=?
       AND EXISTS(SELECT 1 FROM chat_bot_installations i WHERE i.group_id=identity.group_id AND i.enabled=1)`).bind(g.id).all()).results.map((b) => ({ ...b, anon: null })) : [];
 		const total = (await c.env.DB.prepare("SELECT member_count-(SELECT COUNT(*) FROM chat_members bm JOIN users bu ON bu.id=bm.user_id WHERE bm.group_id=g.id AND bu.kind='bot') AS n FROM chat_groups g WHERE id=?").bind(g.id).first())?.n ?? list.length;
@@ -12553,7 +12553,7 @@ app.get("/api/chat/groups/:id/members", async (c) => {
 	if (c.req.query("view") === "mention") {
 		const [members, bots] = await c.env.DB.batch([c.env.DB.prepare(`SELECT u.id, u.username, u.name, u.avatar FROM chat_members cm
        JOIN users u ON u.id = cm.user_id WHERE cm.group_id = ? AND u.kind='user'
-       ORDER BY (u.last_seen > ?) DESC, cm.joined_at ASC, cm.rowid ASC LIMIT 300`).bind(g.id, t - 180), c.env.DB.prepare(`SELECT u.username,u.name,u.avatar FROM chat_group_bot_identity identity
+       ORDER BY (u.last_seen > ?) DESC, cm.joined_at ASC, cm.rowid ASC LIMIT 300`).bind(g.id, t - 180), c.env.DB.prepare(`SELECT u.username,COALESCE(u.nick,u.name) AS name,u.avatar FROM chat_group_bot_identity identity
       JOIN users u ON u.id=identity.bot_id AND u.kind='bot' AND u.disabled=0 WHERE identity.group_id=?
       AND EXISTS(SELECT 1 FROM chat_bot_installations i WHERE i.group_id=identity.group_id AND i.enabled=1)`).bind(g.id)]);
 		return c.json({ members: [...bots.results, ...(anonGroup ? await tagMembers(c, g.id, members.results, true) : members.results.map(({ id, ...m }) => m))] });
