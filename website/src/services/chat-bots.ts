@@ -26,7 +26,7 @@ export function botCallbackUrl(env: Env, value: string) {
     const url = new URL(value)
     const local = env.DEV_LOGIN_KEY && url.protocol === 'http:' && url.hostname === '127.0.0.1'
     if ((!local && url.protocol !== 'https:') || url.username || url.password || url.hash || url.search) return null
-    if (!local && (url.port && url.port !== '443' || OWN_HOSTS.test(url.hostname) || privateAddress(url.hostname) || /^\d+$/.test(url.hostname))) return null
+    if (!local && (url.port && url.port !== '443' || OWN_HOSTS.test(url.hostname.replace(/\.$/,'')) || privateAddress(url.hostname) || /^\d+$/.test(url.hostname))) return null
     return url.href
   } catch { return null }
 }
@@ -46,22 +46,69 @@ export function botSigningSecret(key: string, id: string, version: string) {
 
 export const BOT_GROUP_LIMIT = 10
 export const BOT_TEXT_LIMIT = 2000
-export const BOT_COMMAND = /^[a-z][a-z0-9_-]{0,31}$/
+export const BOT_COMMAND = /^[a-z\p{Script=Han}][a-z0-9_\p{Script=Han}-]{0,31}$/u
+export const botMaintainerActive = `EXISTS(SELECT 1 FROM chat_members cm JOIN users owner ON owner.id=cm.user_id
+  WHERE cm.group_id=i.group_id AND owner.id=i.created_by AND owner.kind='user' AND owner.disabled=0 AND owner.silenced=0)
+  AND NOT EXISTS(SELECT 1 FROM chat_bans ban WHERE ban.group_id=i.group_id AND ban.user_id=i.created_by)`
 
-// A single exact mention at the start of a human message can produce an event.
-export function botCommandInsert(db: D1Database, groupId: number, body: string, at: number, webhookReady: boolean) {
+function groupHelpInsert(db: D1Database, groupId: number, at: number, doc: boolean, origin: string) {
+  return db.prepare(`INSERT OR IGNORE INTO chat_messages(group_id,user_id,body,reply_to,created_at,updated_at,system_kind,system_ref)
+    SELECT identity.group_id,identity.bot_id,
+      CASE WHEN ?3=1 THEN COALESCE((SELECT '接入说明 '||?4||'/m/'||post.id
+        FROM memes post WHERE post.id=identity.doc_post_id AND post.hidden=0),'本群还没有设置对接说明帖子。')
+      ELSE '本群机器人命令'||char(10)||'/help · 查看命令列表'||char(10)||'/doc · 对接说明'||char(10)||COALESCE((SELECT group_concat(line,char(10)) FROM (
+        SELECT '/'||commands.value||COALESCE(' · '||group_concat(DISTINCT NULLIF(descriptions.value,'')),'') AS line
+        FROM chat_bot_installations i JOIN users receiver ON receiver.id=i.bot_id AND receiver.disabled=0
+        JOIN json_each(i.commands) commands
+        LEFT JOIN json_each(i.command_descriptions) descriptions ON descriptions.key=commands.value
+        WHERE i.group_id=?1 AND i.enabled=1 AND i.callback_url IS NOT NULL AND commands.value NOT IN('help','doc') AND ${botMaintainerActive}
+        GROUP BY commands.value ORDER BY commands.value
+      )), '暂无已启用的回调命令') END,m.id,?2,?2,'chat_bot','group-help:'||m.id
+    FROM chat_group_bot_identity identity
+    JOIN users b ON b.id=identity.bot_id AND b.disabled=0
+    JOIN chat_messages m ON m.id=last_insert_rowid() AND m.group_id=identity.group_id
+    WHERE identity.group_id=?1 AND (identity.doc_post_id IS NOT NULL OR EXISTS(SELECT 1 FROM chat_bot_installations i
+      JOIN users receiver ON receiver.id=i.bot_id AND receiver.disabled=0 WHERE i.group_id=?1 AND i.enabled=1 AND ${botMaintainerActive}))
+      AND (SELECT COUNT(*) FROM chat_messages q WHERE q.user_id=identity.bot_id AND q.created_at>?2-60)<30
+    RETURNING id`).bind(groupId, at, doc ? 1 : 0, origin)
+}
+
+// Bare commands require a unique enabled receiver. The old explicit address still works.
+export function botCommandInsert(db: D1Database, groupId: number, body: string, at: number, webhookReady: boolean, origin: string) {
+  const command = /^(?:@(bot_[a-f0-9]{12})[ \t]+)?\/([^\s/]+)(?:[ \t]+([^\r\n]*))?$/i.exec(body)
+  let name = '', target: string|null, args: string
+  if (command && command[0] === body && BOT_COMMAND.test(command[2].toLowerCase()) && (command[3]?.length ?? 0) <= 1000) {
+    name = command[2].toLowerCase()
+    target = command[1]?.toLowerCase() ?? null
+    args = command[3]?.trim() ?? ''
+  } else {
+    const mention = /^@(bot_[a-f0-9]{12})[ \t]+([\s\S]+)$/i.exec(body)
+    if (!mention) return null
+    target = mention[1].toLowerCase()
+    args = mention[2].trim()
+    if (!args || args.startsWith('/') || args.length > BOT_TEXT_LIMIT) return null
+  }
+  if (!target && (name === 'help' || name === 'doc') && !args) {
+    return { id: null, statement: groupHelpInsert(db, groupId, at, name === 'doc', origin) }
+  }
   if (!webhookReady) return null
-  const command = /^@(bot_[a-f0-9]{12})[ \t]+\/([a-z][a-z0-9_-]{0,31})(?:[ \t]+([^\r\n]*))?$/i.exec(body)
-  if (!command || (command[3]?.length ?? 0) > 1000) return null
   const id = crypto.randomUUID()
-  const statement = db.prepare(`INSERT INTO chat_bot_events(id,installation_id,message_id,command,args,source_body,next_at,created_at)
-    SELECT ?1,i.id,m.id,?2,?3,m.body,?4,?4 FROM chat_bot_installations i
-    JOIN users b ON b.id=i.bot_id AND b.kind='bot' AND b.disabled=0
-    JOIN chat_messages m ON m.id=last_insert_rowid() AND m.group_id=i.group_id
-    WHERE i.group_id=?5 AND b.username=?6 AND i.enabled=1 AND i.callback_url IS NOT NULL
-      AND EXISTS(SELECT 1 FROM json_each(i.commands) WHERE value=?2)
-      AND (SELECT COUNT(*) FROM chat_bot_events e WHERE e.installation_id=i.id AND e.created_at>?4-60)<30
-    RETURNING id`).bind(id, command[2].toLowerCase(), command[3]?.trim() ?? '', at, groupId, command[1].toLowerCase())
+  const statement = db.prepare(`WITH receivers AS MATERIALIZED (
+    SELECT i.id FROM chat_bot_installations i JOIN users b ON b.id=i.bot_id AND b.kind='bot' AND b.disabled=0
+    LEFT JOIN chat_group_bot_identity identity ON identity.group_id=i.group_id
+    LEFT JOIN users shared ON shared.id=identity.bot_id
+    WHERE i.group_id=?5
+      AND i.enabled=1 AND i.callback_url IS NOT NULL
+      AND ${botMaintainerActive}
+      AND CASE WHEN ?2='' THEN i.accept_mentions=1 AND shared.username=?6 ELSE
+        (?6 IS NULL OR b.username=?6 OR shared.username=?6) AND EXISTS(SELECT 1 FROM json_each(i.commands) WHERE value=?2)
+      END
+  ) INSERT INTO chat_bot_events(id,installation_id,message_id,command,args,source_body,next_at,created_at)
+    SELECT ?1,r.id,m.id,?2,?3,m.body,?4,?4 FROM receivers r
+    JOIN chat_messages m ON m.id=last_insert_rowid() AND m.group_id=?5
+    WHERE (SELECT COUNT(*) FROM receivers)=1
+      AND (SELECT COUNT(*) FROM chat_bot_events e WHERE e.installation_id=r.id AND e.created_at>?4-60)<30
+    RETURNING id`).bind(id, name, args, at, groupId, target)
   return { id, statement }
 }
 
@@ -81,13 +128,17 @@ export async function deliverBotEvent(env: Env, id: string) {
   if (!claimed) return
 
   const event = await db.prepare(`SELECT e.installation_id,e.message_id,e.command,e.args,e.created_at,
-      i.group_id,i.callback_url,i.key_version,b.username,u.id sender_id,u.username sender_username
+      i.group_id,i.callback_url,i.key_version,COALESCE(shared.username,b.username) AS username,u.id sender_id,u.username sender_username
     FROM chat_bot_events e JOIN chat_bot_installations i ON i.id=e.installation_id AND i.enabled=1
     JOIN users b ON b.id=i.bot_id AND b.kind='bot' AND b.disabled=0
+    LEFT JOIN chat_group_bot_identity identity ON identity.group_id=i.group_id
+    LEFT JOIN users shared ON shared.id=identity.bot_id
     JOIN chat_messages m ON m.id=e.message_id AND m.group_id=i.group_id AND m.deleted=0 AND m.body=e.source_body
     JOIN users u ON u.id=m.user_id AND u.kind='user' AND u.disabled=0 AND u.silenced=0
     JOIN chat_members cm ON cm.group_id=m.group_id AND cm.user_id=u.id
     WHERE e.id=? AND e.lease=? AND i.callback_url IS NOT NULL
+      AND ${botMaintainerActive}
+      AND (e.command!='' OR i.accept_mentions=1)
       AND m.created_at>=cm.joined_at AND m.id>=${CHAT_HISTORY_FLOOR}
       AND NOT EXISTS(SELECT 1 FROM chat_bans WHERE group_id=m.group_id AND user_id=u.id)
       AND NOT EXISTS(SELECT 1 FROM user_limits WHERE user_id=u.id AND u.is_admin=0 AND kind='chat' AND (until=0 OR until>unixepoch()))`)
@@ -103,23 +154,27 @@ export async function deliverBotEvent(env: Env, id: string) {
         event.sender_id = Number(p?.id ?? -1); event.sender_username = String(p?.username ?? '鱼友')
       }
       const payload = JSON.stringify({
-        type: 'chat.command', event_id: id, installation_id: event.installation_id,
+        type: event.command ? 'chat.command' : 'chat.mention', event_id: id, installation_id: event.installation_id,
         group_id: event.group_id, message_id: event.message_id,
         bot_username: event.username, sender_id: event.sender_id, sender_username: event.sender_username,
-        command: event.command, args: event.args, created_at: event.created_at,
+        ...(event.command ? { command:event.command, args:event.args } : { text:event.args }),
+        created_at: event.created_at,
       })
       const timestamp = String(now())
       const secret = await botSigningSecret(key, event.installation_id, event.key_version)
       const signature = await hmacHex(secret, timestamp + '.' + payload)
-      if (!(env.DEV_LOGIN_KEY && new URL(url).hostname === '127.0.0.1') && await resolvesPrivate(new URL(url).hostname)) error = '回调地址解析到内网或无法解析，已拒绝'
+      const local = env.DEV_LOGIN_KEY && new URL(url).hostname === '127.0.0.1'
+      const transport = local ? null : env.PUBLIC_BOT_CALLBACK
+      if (!local && !transport && await resolvesPrivate(new URL(url).hostname)) error = '回调地址解析到内网或无法解析，已拒绝'
       else try {
-        const response = await fetch(url, {
-          method: 'POST', body: payload, redirect: 'manual', signal: AbortSignal.timeout(5000),
+        const options = {
+          method: 'POST', body: payload, signal: AbortSignal.timeout(5000),
           headers: {
             'content-type': 'application/json', 'x-jinhuan-event': id,
             'x-jinhuan-timestamp': timestamp, 'x-jinhuan-signature': 'sha256=' + signature,
           },
-        })
+        }
+        const response = transport ? await transport(url,options) : await fetch(url,{...options,redirect:'manual'})
         if (!response.ok) error = 'HTTP ' + response.status
         await response.body?.cancel().catch(() => {})
       } catch { error = '回调连接失败或超时' }

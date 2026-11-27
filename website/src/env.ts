@@ -3,6 +3,7 @@ export interface Env {
   BOTTLE_APP_ID?: string
   DB: D1Database
   CHAT_BOT_WEBHOOK_KEY?: string
+  PUBLIC_BOT_CALLBACK?: (url: string, opts: {method: string; signal: AbortSignal; headers: Record<string,string>; body: string}) => Promise<Response>
   MUSIC_ORIGIN?: string
   MUSIC_TOKEN?: string
   PUSH_VAPID_PUBLIC_KEY?: string

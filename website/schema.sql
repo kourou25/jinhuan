@@ -2119,8 +2119,18 @@ CREATE TABLE chat_bot_installations (
  callback_url TEXT,
  commands TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(commands) AND json_type(commands)='array'),
  enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN(0,1)),
- created_at INTEGER NOT NULL
+ created_at INTEGER NOT NULL,
+ gallery_access INTEGER NOT NULL DEFAULT 0 CHECK(gallery_access IN(0,1)),
+ command_descriptions TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(command_descriptions) AND json_type(command_descriptions)='object'),
+ accept_mentions INTEGER NOT NULL DEFAULT 0 CHECK(accept_mentions IN(0,1))
 ) WITHOUT ROWID;
+CREATE UNIQUE INDEX idx_chat_bot_group_mentions ON chat_bot_installations(group_id) WHERE accept_mentions=1;
+
+CREATE TABLE chat_group_bot_identity (
+ group_id INTEGER PRIMARY KEY REFERENCES chat_groups(id) ON DELETE CASCADE,
+ bot_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+ doc_post_id INTEGER REFERENCES memes(id) ON DELETE SET NULL
+);
 
 CREATE TABLE chat_bot_events (
  id TEXT PRIMARY KEY,

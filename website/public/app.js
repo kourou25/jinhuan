@@ -10365,7 +10365,7 @@ function chatMsg(m, { cont, pane, pending } = {}) {
       h('span', { class: 'cm-redpack-foot' }, m.redpack.game==='free_guess'?'进入猜词专区':m.redpack.snapshot?.claimed ? '已领取' : ({exhausted:'被抢光啦',expired:'已过期',cancelled:'已取消',registered:'等待开奖',drawing:'正在开奖',not_won:'未中奖',payment_pending:'等待发放',simulation:'模拟奖励',draft:'尚未开放',unconfirmed:'结果待核对'})[m.redpack.snapshot?.state] || (m.redpack.draw?.kind==='lottery'?'参与 / 查看抽奖':m.redpack.provider && m.redpack.provider!=='native' || m.redpack.solved ? '查看红包' : '戳我拆开'), h('span', null, (m.redpack.provider==='coin52'||m.redpack.payment_provider==='coin52')?dcoinIcon(h):m.redpack.game==='free_guess'?'猜词游戏':m.redpack.game==='ldc'||m.redpack.provider && m.redpack.provider!=='native'?'LDC 红包':m.redpack.ldc_count!=null?`${m.redpack.ldc_count} 份奖励 · ${m.redpack.opened} 人拆封`:`${m.redpack.opened} 人拆过`))))
     const displayBody=excerpt?m.body:m.redpack?m.body:socialMessageText(m.body||'')
     if(excerpt)body.push(h('div',{class:'cm-text cm-novel-outer'},novelExcerptCard(excerpt,h),edited))
-    if (botMessage) body.push(h('div', { class: 'cm-text cm-bot-text' }, m.body))
+    if (botMessage && m.body) body.push(h('div', { class: 'cm-text cm-bot-text' }, linkify(m.body)))
     else if (!excerpt && (!m.redpack || m.redpack.shared) && displayBody && !lnk?.only) body.push(h('div', stkOnly(displayBody) ? { class:'cm-text stk-only' } : bubbleView(m.user, 'cm-text','chat',false,m.id),
       (raffleOf(m.user)||personalOf(m.user,'chat')) ? h('span', { class:'ds-copy rt-copy' }, richBody(displayBody, { md:'lite' }), edited) : [richBody(displayBody, { md: 'lite' }), edited]))
     if (lnk) body.push(linkImg(lnk.url, lnk.only && edited))
@@ -11669,7 +11669,7 @@ async function groupPanel(g, { outside, section, memberSort = 'online' } = {}) {
   const botSection = h('div')
   let botPanel
   async function openBots() {
-    if (!admin || botPanel || !current()) return
+    if (botPanel || !current()) return
     try {
       const { groupChatBots } = await import('/group-chat-bots.js?v=472f7fbf')
       if (!current() || botPanel) return
@@ -11928,7 +11928,7 @@ async function groupPanel(g, { outside, section, memberSort = 'online' } = {}) {
     const categories=settingsSections({h,label:'群设置分类',onSelect:id=>{if(id==='bots')openBots()},sections:[
       {id:'members',label:'群成员',keywords:'人员 搜索 昵称 用户名 拉人 限制 移出 发言 活跃',nodes:[add,h('div',{class:'gp-mhead'},h('h4',{class:'gp-h'},'成员',count),msort,msearch),listBox,admin&&memberPages,partial]},
       {id:'info',label:'群资料',keywords:'群名 改名 群头像 头像 公告 群规 引用 申请 开放 通道',nodes:[...(findGroup(g.id)?.owner_ctl?[b33ApplyToggle(g)]:[]),rename,avatarSec,noticeSec()]},
-      {id:'bots',label:'群机器人',keywords:'机器人 推送 回调 指令',available:()=>admin,nodes:[botSection]},
+      {id:'bots',label:'群机器人',keywords:'机器人 推送 回调 指令',nodes:[botSection]},
       {id:'requests',label:'移出与申请',keywords:'审批 同意 拒绝 退出 移出 拉回 申请',available:()=>admin,nodes:[outsideBox]},
       {id:'resources',label:'水群榜',keywords:'水群 早起 夜聊 排名 榜单',nodes:[h('button',{class:'btn sm',type:'button',onclick:()=>chatRankPanel(g)},'水群榜 · 消息 / 早起 / 夜聊')]},
       {id:'anon',label:'匿名身份',keywords:'匿名 角色 系列 真名 实名 头像',available:()=>!!findGroup(g.id)?.anon,nodes:[anonSec]},

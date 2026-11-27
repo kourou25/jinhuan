@@ -9,7 +9,7 @@ export type MediaIn = { key?: unknown; poster?: unknown; w?: unknown; h?: unknow
 // kind 'f'：群聊文件附件，n 文件名、s 大小；b：群聊里发的图整张先糊上（点一下看）
 export type Media = { k: string; p?: string; w: number | null; h: number | null; kind?: 'v' | 'l' | 'g' | 'f'; o?: string; n?: string; s?: number; b?: 1; c?: 1 }
 export const fileName = (s: unknown) => String(s ?? '').replace(/[\u0000-\u001f\\/:*?"<>|]+/g, '_').trim().slice(0, 100) || '文件'
-export async function prepareMedia(c: C, uid: number, raw: unknown, allowFile = false, privatePrefix: false | 'd' | 'q' | 'x' = false): Promise<Media[]> {
+export async function prepareMedia(c: C, uid: number, raw: unknown, allowFile = false, privatePrefix: false | 'c' | 'd' | 'q' | 'x' = false, allowUsed = false): Promise<Media[]> {
   const list = (Array.isArray(raw) ? raw : []).slice(0, MAX_ITEMS) as MediaIn[]
   const items: Media[] = []
   const keys: string[] = []
@@ -28,8 +28,8 @@ export async function prepareMedia(c: C, uid: number, raw: unknown, allowFile = 
   }
   if (!items.length) return items
   const { results } = await c.env.DB.prepare(
-    `SELECT key, mime, size FROM uploads WHERE user_id = ? AND used = 0 AND key IN (SELECT value FROM json_each(?))`,
-  ).bind(uid, JSON.stringify(keys)).all<{ key: string; mime: string; size: number }>()
+    `SELECT key, mime, size FROM uploads WHERE user_id = ? AND (used=0 OR (?=1 AND used=1)) AND key IN (SELECT value FROM json_each(?))`,
+  ).bind(uid, allowUsed ? 1 : 0, JSON.stringify(keys)).all<{ key: string; mime: string; size: number }>()
   const mime = new Map(results.map((r) => [r.key, r.mime]))
   const size = new Map(results.map((r) => [r.key, r.size]))
   for (const it of items) {

@@ -78,7 +78,7 @@ import { sharedRoutes } from '../routes/guess-shared'
 import { huancai } from '../routes/huancai'
 import { isleLegacyLimit, isleRoutes } from '../routes/isle'
 import { instantCards } from '../routes/instant-cards'
-import { chatBots } from '../routes/chat-bots'
+import { chatBots, botGalleryUser } from '../routes/chat-bots'
 import { chatGroupPin } from '../routes/chat-group-pin'
 import { circleTagMiddleware, seesCircle } from '../services/circle-tag'
 import { bottles } from '../routes/bottles'
@@ -86,7 +86,6 @@ import { createBottleMini } from '../routes/bottle-mini'
 import { settleRewards as settleBottleRewards } from '../services/bottle-money'
 import { sweepPending as sweepBottleAi } from '../services/bottle-ai'
 import { cleanMiniUploads as cleanBottleMiniUploads } from '../services/bottle-media'
-import { scrubMedia, MediaMetaError } from '../services/media-meta'
 import { buildMemorial } from '../services/autumn'
 import { autumn } from '../routes/autumn'
 import { dou } from '../routes/dou'
@@ -111,6 +110,7 @@ import { chatRankView } from '../services/chat-rank'
 import { canDeleteComment, deleteComment } from '../services/comments'
 import { settleContentRewards } from '../services/content-coin-rewards'
 import { fileName, mediaKeys, prepareMedia } from '../services/content-media'
+import { cleanMedia, sniffImage, sniffVideo } from '../services/media-format'
 import { runCronTasks } from '../services/cron-tasks'
 import { googleHandle } from '../services/google'
 import { guideLevel, rewardStatements, settleInviteRewards } from '../services/invite-rewards'
@@ -461,7 +461,8 @@ var farewellRelease = (() => {
       return;
     }
     if (path === "/api/me") return c.json({ user: null, main_activation_required: true });
-    if (c.req.method === "POST" && /^\/api\/chat-bots\/[a-f0-9-]{36}\/messages$/.test(path)) {
+    if ((c.req.method === "POST" && /^\/api\/chat-bots\/[a-f0-9-]{36}\/(messages|uploads)$/.test(path)) ||
+        (c.req.method === "GET" && /^\/api\/chat-bots\/[a-f0-9-]{36}\/(status|gallery\/(days|memes))$/.test(path))) {
       await next();
       return;
     }
@@ -10739,7 +10740,7 @@ var browseMemes = async (c) => {
 };
 app.get("/api/memes", browseMemes);
 app.post("/api/browse/memes", browseMemes);
-app.on(["GET", "POST"], ["/api/days", "/api/browse/days"], async (c) => {
+const browseDays = async (c) => {
 	const { u, where, args, plain, mode, unseen, seenSql, seenArgs } = await listFilter(c);
 	const asc = c.req.query("sort") === "old";
 	if (plain) {
@@ -10793,6 +10794,15 @@ app.on(["GET", "POST"], ["/api/days", "/api/browse/days"], async (c) => {
 			text: (d.latest_title || snippet(d.latest_content ?? "", 40)).trim()
 		}
 	})) });
+};
+app.on(["GET", "POST"], ["/api/days", "/api/browse/days"], browseDays);
+app.get("/api/chat-bots/:id/gallery/memes", async (c) => {
+	c.set("user", await botGalleryUser(c));
+	return browseMemes(c);
+});
+app.get("/api/chat-bots/:id/gallery/days", async (c) => {
+	c.set("user", await botGalleryUser(c));
+	return browseDays(c);
 });
 var STRIP_HIDE = /^(第.{1,4}期|梗图合集|摸.{1,2}时刻)$/u;
 app.get("/api/tags", async (c) => {
@@ -10881,34 +10891,6 @@ var RECOUNT = {
 	fav_count: "SELECT COUNT(DISTINCT user_id) FROM favorites WHERE meme_id = ?1"
 };
 var recount = (c, id, col) => c.env.DB.prepare(`UPDATE memes SET ${col} = (${RECOUNT[col]}) WHERE id = ?1`).bind(id);
-var sniffImage = (b) => {
-	if (b[0] === 137 && b[1] === 80 && b[2] === 78 && b[3] === 71) return ["image/png", "png"];
-	if (b[0] === 255 && b[1] === 216 && b[2] === 255) return ["image/jpeg", "jpg"];
-	if (b[0] === 71 && b[1] === 73 && b[2] === 70) return ["image/gif", "gif"];
-	const ascii = (i, n) => String.fromCharCode(...b.slice(i, i + n));
-	if (ascii(0, 4) === "RIFF" && ascii(8, 4) === "WEBP") return ["image/webp", "webp"];
-	return null;
-};
-var sniffVideo = (b) => {
-	const ascii = (i, n) => String.fromCharCode(...b.slice(i, i + n));
-	if (ascii(4, 4) === "ftyp") {
-		const brand = ascii(8, 4);
-		if (/^(heic|heix|hevc|mif1|msf1|avif)$/.test(brand)) return "heic";
-		return brand === "qt  " ? ["video/quicktime", "mov"] : ["video/mp4", "mp4"];
-	}
-	if (b[0] === 26 && b[1] === 69 && b[2] === 223 && b[3] === 163) return ["video/webm", "webm"];
-	return null;
-};
-// 上传的图片 / 视频去元信息；结构坏掉的图片拒收，不带着定位存下来
-var cleanMedia = (bytes, mime, lenient = false) => {
-	try {
-		return scrubMedia(bytes, mime);
-	} catch (error) {
-		if (error instanceof MediaMetaError && lenient) return bytes; // 转发站内已有的旧文件：解析不了就保留原样，不让转发失败
-		if (error instanceof MediaMetaError) fail(415, mime.startsWith("video/") ? "视频文件已损坏，请换一个" : "图片文件已损坏，请换一张");
-		throw error;
-	}
-};
 app.post("/api/uploads", async (c) => {
 	const u = needUser(c);
 	if (u.silenced) fail(403, "你在 linux.do 处于禁言状态");
@@ -12562,16 +12544,18 @@ app.get("/api/chat/groups/:id/members", async (c) => {
 	// 匿名群：除站长外只给对外身份，没有入群时间、在线状态，也不能按真名搜
 	if (anonGroup && !seesAnonGroup(c.env, viewer)) {
 		const list = await anonRoster(c, g.id), q = (c.req.query("q") ?? "").trim().toLowerCase();
-		const bots = c.req.query("view") === "mention" ? (await c.env.DB.prepare(`SELECT u.username,u.name,u.avatar FROM chat_bot_installations i
-      JOIN users u ON u.id=i.bot_id AND u.kind='bot' AND u.disabled=0 WHERE i.group_id=? AND i.enabled=1 ORDER BY i.created_at,i.id`).bind(g.id).all()).results.map((b) => ({ ...b, anon: null })) : [];
+		const bots = c.req.query("view") === "mention" ? (await c.env.DB.prepare(`SELECT u.username,u.name,u.avatar FROM chat_group_bot_identity identity
+      JOIN users u ON u.id=identity.bot_id AND u.kind='bot' AND u.disabled=0 WHERE identity.group_id=?
+      AND EXISTS(SELECT 1 FROM chat_bot_installations i WHERE i.group_id=identity.group_id AND i.enabled=1)`).bind(g.id).all()).results.map((b) => ({ ...b, anon: null })) : [];
 		const total = (await c.env.DB.prepare("SELECT member_count-(SELECT COUNT(*) FROM chat_members bm JOIN users bu ON bu.id=bm.user_id WHERE bm.group_id=g.id AND bu.kind='bot') AS n FROM chat_groups g WHERE id=?").bind(g.id).first())?.n ?? list.length;
 		return c.json({ group: { id: g.id, name: g.name, is_default: !!g.is_default }, members: [...bots, ...list.filter((m) => !q || String(m.name || m.username).toLowerCase().includes(q))], now: t, total, online: 0, more: false, anon_roster: true });
 	}
 	if (c.req.query("view") === "mention") {
 		const [members, bots] = await c.env.DB.batch([c.env.DB.prepare(`SELECT u.id, u.username, u.name, u.avatar FROM chat_members cm
        JOIN users u ON u.id = cm.user_id WHERE cm.group_id = ? AND u.kind='user'
-       ORDER BY (u.last_seen > ?) DESC, cm.joined_at ASC, cm.rowid ASC LIMIT 300`).bind(g.id, t - 180), c.env.DB.prepare(`SELECT u.username,u.name,u.avatar FROM chat_bot_installations i
-      JOIN users u ON u.id=i.bot_id AND u.kind='bot' AND u.disabled=0 WHERE i.group_id=? AND i.enabled=1 ORDER BY i.created_at,i.id`).bind(g.id)]);
+       ORDER BY (u.last_seen > ?) DESC, cm.joined_at ASC, cm.rowid ASC LIMIT 300`).bind(g.id, t - 180), c.env.DB.prepare(`SELECT u.username,u.name,u.avatar FROM chat_group_bot_identity identity
+      JOIN users u ON u.id=identity.bot_id AND u.kind='bot' AND u.disabled=0 WHERE identity.group_id=?
+      AND EXISTS(SELECT 1 FROM chat_bot_installations i WHERE i.group_id=identity.group_id AND i.enabled=1)`).bind(g.id)]);
 		return c.json({ members: [...bots.results, ...(anonGroup ? await tagMembers(c, g.id, members.results, true) : members.results.map(({ id, ...m }) => m))] });
 	}
 	const manage = c.req.query("view") === "manage";
@@ -13010,6 +12994,7 @@ app.post("/api/chat/groups/:id/messages", async (c) => {
 			media = await prepareMedia(c, u.id, b.media, true);
 		}
 	}
+	const botCommandBody = body;
 	body = body.replace(/\r/g, "").trim().slice(0, CHAT_BODY_MAX);
 	if (!body && !file && !media.length) fail(400, "说点什么吧");
 	// 匿名群：引用名字、站长 @ 的真名按对外身份重写；「@角色名」解析成真实成员（复读口令、收藏快捷发送不含引用，不受影响）
@@ -13049,7 +13034,7 @@ app.post("/api/chat/groups/:id/messages", async (c) => {
 		w: dims.w,
 		h: dims.h
 	}] : [];
-	const botEvent = botCommandInsert(db, g.id, body, t, !!c.env.CHAT_BOT_WEBHOOK_KEY);
+	const botEvent = botCommandInsert(db, g.id, botCommandBody, t, !!c.env.CHAT_BOT_WEBHOOK_KEY, new URL(c.req.url).origin);
 	const committed = await commitUploadContent(db, u.id, legacyUpload ? [legacyUpload] : mediaKeys(media), [
 		...favoriteGuard ? [favoriteGuard] : [],
 		db.prepare(`INSERT INTO chat_messages (group_id, user_id, body, image_key, width, height, media, reply_to, created_at, updated_at)
@@ -13061,7 +13046,7 @@ app.post("/api/chat/groups/:id/messages", async (c) => {
 		throw error;
 	});
 	const id = committed[favoriteGuard ? 1 : 0].results[0].id;
-	if (botEvent && committed[favoriteGuard ? 2 : 1].results.length) c.executionCtx.waitUntil(deliverBotEvent(c.env, botEvent.id).catch(() => console.error("chat_bot_delivery_failed")));
+	if (botEvent?.id && committed[favoriteGuard ? 2 : 1].results.length) c.executionCtx.waitUntil(deliverBotEvent(c.env, botEvent.id).catch(() => console.error("chat_bot_delivery_failed")));
 	const shared = sharedPacket(body);
 	if (shared) await db.batch(sharedPacketStatements(db, id, body, shared));
 	if (mentioned.length) await db.batch(mentionStatements(db, id, mentioned));

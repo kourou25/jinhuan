@@ -41,7 +41,7 @@ export const MERGE_RELATION_POLICY={
   packet_draw_entries:{user_id:'block'},packet_events:{user_id:'block'},packet_coin_escrows:{owner_id:'block'},fish_accounts:{user_id:'block'},ldc_accounts:{user_id:'block'},ldc_packets:{owner_id:'block'},ldc_awards:{recipient_id:'block'},ldc_questions:{user_id:'block'},
   ai_jobs:{user_id:'block'},anchors:{user_id:'clear'},api_tokens:{user_id:'revoke'},auth_tokens:{user_id:'revoke'},
   badge_log:{user_id:'clear'},chat_bans:{user_id:'block'},chat_boosts:{user_id:'block'},chat_groups:{created_by:'block'},
-  chat_bot_installations:{bot_id:'block',created_by:'block'},
+  chat_bot_installations:{bot_id:'block',created_by:'block'},chat_group_bot_identity:{bot_id:'block'},
   chat_join_reqs:{user_id:'clear'},chat_members:{user_id:'membership'},chat_messages:{user_id:'system-join-only'},
   chat_reactions:{user_id:'block'},chat_sticker_favorites:{user_id:'block'},dm_threads:{user_low:'block',user_high:'block'},dm_messages:{sender_id:'block'},chat_redpack_external_views:{user_id:'block'},chat_redpack_opens:{user_id:'block'},
   chat_redpack_successes:{user_id:'block'},chat_title_raffles:{creator_id:'block',winner_id:'block'},chat_title_raffle_entries:{user_id:'block'},comments:{user_id:'block'},fav_folders:{user_id:'clear'},favorites:{user_id:'block'},
