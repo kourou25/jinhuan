@@ -1,4 +1,45 @@
-import {socialLinks,canSocialPost,socialCaption} from './social-links.js?v=472f7fbf'
+import {bilibiliLink,bilibiliLinks,socialLinks,canSocialPost,socialCaption} from './social-links.js?v=472f7fbf'
+
+function bilibiliChatCards(message, { h, api, onRemoval }, available) {
+  return bilibiliLinks(message.body || '').slice(0, available).map((link, index) => {
+    const frame = playerUrl => h('iframe', {
+      src: playerUrl,
+      title: '哔哩哔哩视频播放器',
+      loading: 'lazy',
+      allowfullscreen: true,
+      referrerpolicy: 'no-referrer',
+      sandbox: 'allow-scripts allow-same-origin allow-presentation',
+      style: { aspectRatio: '16 / 9', height: 'auto' },
+    })
+    const area = h('div', { class: 'cm-social-area' })
+    const card = h('section', { class: 'cm-social', 'aria-label': '哔哩哔哩视频预览' }, area)
+    let observer, abort
+    if (link.playerUrl) {
+      area.append(frame(link.playerUrl))
+    } else {
+      const status = h('p', { class: 'cm-social-status', role: 'status' }, '正在读取 B 站视频…')
+      area.append(status)
+      const IO = card.ownerDocument.defaultView.IntersectionObserver || IntersectionObserver
+      observer = new IO(async entries => {
+        if (!entries.some(entry => entry.isIntersecting)) return
+        observer.disconnect()
+        abort = new AbortController()
+        try {
+          const data = await api(`/chat/messages/${message.id}/preview/bilibili?index=${index}`, { signal: abort.signal })
+          const resolved = data.embed?.provider === 'bilibili' ? bilibiliLink(data.embed.url) : null
+          if (!resolved?.playerUrl) throw new Error('B 站短链不可用')
+          if (!abort.signal.aborted && card.isConnected) area.replaceChildren(frame(resolved.playerUrl))
+        } catch {
+          if (!abort.signal.aborted) status.textContent = '暂时无法预览，仍可打开原链接。'
+        }
+      }, { rootMargin: '100px' })
+      observer.observe(card)
+    }
+    onRemoval(card, () => { observer?.disconnect(); abort?.abort(); area.replaceChildren() })
+    return card
+  })
+}
+
 const scripts=new WeakMap()
 function loadScript(doc,provider){
  let cache=scripts.get(doc);if(!cache){cache=new Map();scripts.set(doc,cache)}
@@ -14,7 +55,7 @@ function loadScript(doc,provider){
 }
 export function socialCards(message,{h,api,onRemoval,onPost,onOpenMedia,renderVideo,post=false}){
  if(message.redpack||!message.id||message.deleted)return []
- return socialLinks(message.body||'').map((link,index)=>{
+ const cards=socialLinks(message.body||'').map((link,index)=>{
   const shell=h('section',{class:'cm-social'+(post?' social-post':''),'aria-label':'分享内容预览'})
   const status=h('p',{class:'cm-social-status',role:'status'},'进入视野后加载内容')
   const origin=h('a',{href:link.url,target:'_blank',rel:'noopener noreferrer',hidden:true},'打开原链接 ↗')
@@ -92,4 +133,6 @@ export function socialCards(message,{h,api,onRemoval,onPost,onOpenMedia,renderVi
   }
   onRemoval(shell,()=>{state='disposed';visibleObserver?.disconnect();clear()});return shell
  })
+ if(!post)cards.push(...bilibiliChatCards(message, { h, api, onRemoval }, 2-cards.length))
+ return cards
 }

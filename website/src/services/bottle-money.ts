@@ -57,6 +57,8 @@ const bjDay = (t: number) => new Date((t + 28800) * 1000).toISOString().slice(0,
 // 喜欢 / 回信之后调用；主键挡住重复（取消再点也不会多一份）。站长自己的瓶子不产生奖励
 export async function queueReward(env: Env, p: { bottle: number; author: number; actor: number; kind: 'like' | 'reply' }) {
   const db = env.DB
+  // 小程序里没有站内账号的人：不拿奖励，也不带出奖励
+  if (p.author < -5e12 || p.actor < -5e12) return
   if (p.author === p.actor || p.author === incomeUser(env) || await rewardSource(db) === 'off') return
   const t = now(), day = bjDay(t)
   await db.prepare(`INSERT OR IGNORE INTO bottle_rewards(bottle_id,actor_id,kind,user_id,amount,day,created_at)

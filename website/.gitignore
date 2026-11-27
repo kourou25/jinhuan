@@ -40,3 +40,6 @@ node_modules
 # 服务器版构建产物
 server/dist/
 server/vars.json
+
+# 匿名头像的原始大图
+art/anon-sheets/

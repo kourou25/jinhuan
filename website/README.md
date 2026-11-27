@@ -15,7 +15,7 @@ npm run dev
 
 打开 http://localhost:8787/ ，访问 `/auth/dev` 用测试口令登录。需要站长权限时，从本地数据库查到测试账号 ID 填进 `wrangler.toml` 的 `ADMIN_USER_IDS`。
 
-`schema.sql` 是当前线上的完整表结构（含 0201 号及之前的全部迁移），新库只需执行它。`migrations/` 供已有实例升级使用。
+`schema.sql` 是 2026-11-25 线上的完整表结构（含 0201 号及之前的迁移，但不含 0180–0183）。新库先执行它，再按编号执行 0180–0183 和 0201 之后的迁移；`migrations/` 也供已有实例升级使用。
 
 ## 自己部署（Node.js 服务器）
 
@@ -23,8 +23,8 @@ npm run dev
 npm ci && npx vite build && node server/build.mjs
 mkdir -p /meme/data/db /meme/data/storage /meme/config /meme/logs /meme/cache
 sqlite3 /meme/data/db/meme-hall.sqlite < schema.sql
-# 新库已包含全部迁移，登记为已执行，否则发布脚本会再跑一遍
-for f in migrations/*.sql; do sqlite3 /meme/data/db/meme-hall.sqlite "INSERT INTO d1_migrations(name) VALUES('$(basename $f)')"; done
+# schema.sql 已包含的迁移登记为已执行；其余（0180–0183、0201 之后）留给发布脚本按编号执行
+for f in migrations/*.sql; do n=$(basename $f); case $n in 018[0-3]_*) continue;; esac; [ "$n" \> "0201_~" ] && continue; sqlite3 /meme/data/db/meme-hall.sqlite "INSERT INTO d1_migrations(name) VALUES('$n')"; done
 cd server && MEME_ROOT=/meme CLIENT_DIR=../web/dist/client node main.mjs   # 监听 127.0.0.1:8080
 ```
 

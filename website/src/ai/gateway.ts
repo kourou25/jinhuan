@@ -55,7 +55,9 @@ function validate(input:AiChatInput){
 export async function chat(env:Env,input:AiChatInput,runtimeOverrides:Partial<Runtime>={}):Promise<AiResult|Response>{
  validate(input)
  const run={...runtime,...runtimeOverrides},settings=await aiSettings(env.DB,input.feature)
- const task=input.guessTask??(!input.guessReview&&!input.guess&&!input.guessDraft&&!input.vision&&input.feature==='assistant'?'chat':undefined)
+ const plain=!input.guessReview&&!input.guess&&!input.guessDraft&&!input.vision
+ // 内容审核（举报复核、漂流瓶发布审核）：在「模型连接」里给「内容审核」选了连接就用它，没选沿用原有设置
+ const task=input.guessTask??(plain&&input.feature==='assistant'?'chat':plain&&input.feature==='report'?'review':undefined)
  const configured=input.connectionTest?await connectionDraftProvider(env,input.connectionTest.revision,input.connectionTest.task):!input.guessDraft&&task?await configuredTaskProvider(env,task):null
  const providers=input.guessReview?aiProviders(env,false).slice(0,1):configured?[configured]:input.guess||input.guessDraft?await guessProviders(env,!!input.guessDraft,input.guessTask):aiProviders(env,!!input.vision)
  if(input.guessReview&&providers.some(p=>p.protocol==='typesafe'||!/(?:^|\/)gpt[-\d]/i.test(p.model)))throw new AiError('ai_input',400)

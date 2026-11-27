@@ -25,6 +25,40 @@ export function socialLinks(text='') {
 }
 export const canSocialPost = provider => ['x','douyin','weibo','instagram','tiktok'].includes(provider)
 export const isOfficialEmbed = provider => provider==='instagram'||provider==='tiktok'
+
+export function bilibiliLink(input) {
+  let video
+  try { video = new URL(input) } catch { return null }
+  if (video.protocol !== 'https:' || video.username || video.password || video.port || input.length > 2048) return null
+
+  if (video.hostname === 'b23.tv' && /^\/[A-Za-z0-9_-]{1,32}\/?$/.test(video.pathname)) {
+    return { provider: 'bilibili', short: true, url: `https://b23.tv${video.pathname.replace(/\/$/, '')}`, playerUrl: null }
+  }
+  if (!['www.bilibili.com', 'm.bilibili.com', 'bilibili.com'].includes(video.hostname)) return null
+  const id = video.pathname.match(/^\/video\/(?:BV([A-Za-z0-9]{10})|av([1-9]\d{0,19}))\/?$/)
+  if (!id) return null
+
+  const canonical = new URL(`https://www.bilibili.com/video/${id[1] ? 'BV' + id[1] : 'av' + id[2]}`)
+  const params = new URLSearchParams({ autoplay: '0', poster: '1' })
+  params.set(id[1] ? 'bvid' : 'aid', id[1] ? 'BV' + id[1] : id[2])
+  const part = video.searchParams.get('p')
+  if (part && /^[1-9]\d*$/.test(part) && part !== '1') {
+    params.set('p', part)
+    canonical.searchParams.set('p', part)
+  }
+  return { provider: 'bilibili', short: false, url: canonical.href, playerUrl: 'https://player.bilibili.com/player.html?' + params }
+}
+
+export function bilibiliLinks(text) {
+  const links = new Map()
+  for (const [address] of text.matchAll(/https:\/\/[^\s<>"'`）)\]】、，。；！？;]+/g)) {
+    const link = bilibiliLink(address)
+    if (link) links.set(link.url, link)
+    if (links.size === 2) break
+  }
+  return [...links.values()]
+}
+
 // 仅用于外站抓取的配文：保留正文，去掉话题标记和平台分享尾文。
 export function socialCaption(text=''){
  return String(text).replace(/(?:复制此链接|复制链接，?打开抖音|打开抖音搜索)[\s\S]*$/,'')

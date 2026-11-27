@@ -2,7 +2,8 @@
 // 起点由 scripts/consolidate/extract-legacy.mjs 从线上 b39 包提取（2026-11-23）：线上有、但没有 TS 源码的代码，按原包顺序。
 // 提取之后这里就是正式源码（已删除音乐模块等），不要再重新生成覆盖；整理时按功能拆分，见 docs/consolidation-plan.md。
 import { assertChatHistory } from '../services/chat-access'
-import { ANON_GROUP_IDS, ANON_IDLE_SECONDS, TRUSTED_GROUP_IDS, identityMaskMiddleware, inTrustedGroup, isNewbie, maskChatMessages, seesAnonGroup } from '../services/identity-mask'
+import { ANON_GROUP_IDS, ANON_IDLE_SECONDS, TRUSTED_GROUP_IDS, identityMaskMiddleware, inTrustedGroup, isNewbie, seesAnonGroup } from '../services/identity-mask'
+import { AnonError, SEARCHABLE_SQL, anonRoster, anonSettings, claimCharacter, drawCharacter, unlockTheme, finishMessages, isAnonGroup, mentionStatements, mentionTargets, messagePeople, realIdOf, rewriteOutgoing, senderFilter, setAnonEnabled, tagMembers } from '../services/anon-identity'
 import { accountProof } from '../services/account-binding'
 import { handleExt } from '../services/ext-proxy'
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie'
@@ -17,6 +18,7 @@ import { AI_BOT_ID, enqueueImageReply, ensureAiBot } from '../ai/images'
 import { authorFilter, cleanSeen, tagFilter } from '../browse-filter'
 import { chatRoadContent } from '../chat-road'
 import { communityProgressStatements } from '../community-growth'
+import { publishedSkinUpdates, skinUpdatesReader } from '../services/community-skin-updates.mjs'
 import { UNICODE_EMOJI, UNICODE_GROUPS } from '../emoji'
 import { FARM_EXPANSIONS, RANCH_EXPANSIONS } from '../farm/capacity'
 import { claimCoinPacket, coinPacketView, createCoinPacket, settleCoinPackets } from '../farm/coin-packets'
@@ -77,11 +79,18 @@ import { huancai } from '../routes/huancai'
 import { isleLegacyLimit, isleRoutes } from '../routes/isle'
 import { instantCards } from '../routes/instant-cards'
 import { chatBots } from '../routes/chat-bots'
+import { chatGroupPin } from '../routes/chat-group-pin'
 import { circleTagMiddleware, seesCircle } from '../services/circle-tag'
 import { bottles } from '../routes/bottles'
+import { createBottleMini } from '../routes/bottle-mini'
 import { settleRewards as settleBottleRewards } from '../services/bottle-money'
+import { sweepPending as sweepBottleAi } from '../services/bottle-ai'
+import { cleanMiniUploads as cleanBottleMiniUploads } from '../services/bottle-media'
+import { scrubMedia, MediaMetaError } from '../services/media-meta'
 import { buildMemorial } from '../services/autumn'
 import { autumn } from '../routes/autumn'
+import { dou } from '../routes/dou'
+import { runDouAuto } from '../services/dou'
 import { botCommandInsert, deliverBotEvent, pruneBotEvents, runBotDeliveries } from '../services/chat-bots'
 import { claimNative, handleNativeGameMessage, nativeLdc, settleCompensationAwards, settlePacketDraws, settlePendingEscalationAwards } from '../routes/native-ldc'
 import { novels } from '../routes/novels'
@@ -108,6 +117,7 @@ import { guideLevel, rewardStatements, settleInviteRewards } from '../services/i
 import { createInvite } from '../services/invites'
 import { recordLoginFailure } from '../services/login-failure'
 import { hashPassword, verifyPassword } from '../services/password'
+import { handleRoadGithub, roadGithubView, roadSkinSource } from '../services/road-github'
 import { settleDailyRanks } from '../services/rank-settlement'
 import { getSetting, setSetting } from '../services/settings'
 import { sendSleepReminder } from '../services/sleep-reminder'
@@ -8240,7 +8250,7 @@ var communitySkinRelease = (() => {
       throw Error("\u5DF2\u4FDD\u5B58\u76EE\u5F55\u65E0\u6CD5\u8BFB\u53D6");
     }
   }
-  async function syncCommunitySkins(bucket, fetcher = fetch) {
+  async function fetchSkinCatalog(fetcher = fetch) {
     const response = await fetcher(root2 + "main/catalog.json", { headers: { "cache-control": "no-cache" }, signal: AbortSignal.timeout(1e4) }), raw2 = await bytes(response, 512 * 1024);
     let catalog;
     try {
@@ -8249,6 +8259,11 @@ var communitySkinRelease = (() => {
       throw Error("\u6295\u7A3F\u76EE\u5F55\u683C\u5F0F\u65E0\u6548");
     }
     if (catalog?.schemaVersion !== 1 || !Number.isSafeInteger(catalog.revision) || catalog.revision < 1 || !/^[a-f0-9]{40}$/.test(catalog.source || "") || !Array.isArray(catalog.entries) || catalog.entries.length > 200) throw Error("\u6295\u7A3F\u76EE\u5F55\u65E0\u6548");
+    return catalog;
+  }
+  const readSkinUpdates = skinUpdatesReader(fetchSkinCatalog);
+  async function syncCommunitySkins(bucket, fetcher = fetch) {
+    const catalog = await fetchSkinCatalog(fetcher);
     const existing = await jsonObject(bucket, catalogKey);
     if (existing?.data?.revision > catalog.revision || existing?.data?.revision === catalog.revision && existing.data.source !== catalog.source) throw Error("\u62D2\u7EDD\u65E7\u7248\u6295\u7A3F\u76EE\u5F55");
     if (existing?.data?.revision === catalog.revision && existing.data.source === catalog.source) return { unchanged: true };
@@ -8315,7 +8330,9 @@ var communitySkinRelease = (() => {
     }
     const activeBubble = new Set(out.filter((x) => x.components?.bubble).map((x) => x.id)), archived = /* @__PURE__ */ new Map();
     for (const item of [...existing?.data?.archived || [], ...existing?.data?.entries || []]) if (item?.components?.bubble && !activeBubble.has(item.id)) archived.set(item.id, { id: item.id, name: item.name, author: item.author, github: item.github, license: item.license, components: { bubble: item.components.bubble } });
-    const value = JSON.stringify({ schemaVersion: 1, revision: catalog.revision, source: catalog.source, entries: out, archived: [...archived.values()] }), onlyIf = existing ? { etagMatches: existing.obj.etag } : new Headers({ "if-none-match": "*" });
+    const snapshot = { schemaVersion: 1, revision: catalog.revision, source: catalog.source, entries: out, archived: [...archived.values()] };
+    const recentUpdates = publishedSkinUpdates(existing?.data, snapshot, Math.floor(Date.now() / 1000));
+    const value = JSON.stringify({ ...snapshot, recentUpdates }), onlyIf = existing ? { etagMatches: existing.obj.etag } : new Headers({ "if-none-match": "*" });
     const written = await bucket.put(catalogKey, value, { onlyIf, httpMetadata: { contentType: "application/json", cacheControl: "public, max-age=60" } });
     if (!written) return { conflict: true };
     return { published: true, source: catalog.source, entries: out.length };
@@ -8344,7 +8361,13 @@ var communitySkinRelease = (() => {
   communityRoutes.get("/api/community-skins", async (c) => {
     cors(c);
     c.header("cache-control", "public, max-age=60");
-    return c.json(await readCommunityCatalog(c.env.BUCKET));
+    const { recentUpdates, ...catalog } = await readCommunityCatalog(c.env.BUCKET);
+    return c.json(catalog);
+  });
+  communityRoutes.get("/api/community-skins/updates", async (c) => {
+    cors(c);
+    c.header("cache-control", "public, max-age=30");
+    return c.json(await readSkinUpdates(await readCommunityCatalog(c.env.BUCKET)));
   });
   communityRoutes.get("/api/community-skins/status", async (c) => {
     cors(c);
@@ -8559,6 +8582,7 @@ var valleyMiniBridge = (() => {
   var site_adapter_exports = {};
   __export(site_adapter_exports, {
     createGalleryMiniApp: () => createGalleryMiniApp,
+    platformDeps: () => ({ verify: z, loadKeys: cachedJWKS('https://linux.do') }),
     createSiteMiniApp: () => createSiteMiniApp
   });
 
@@ -8988,6 +9012,8 @@ function b9GalleryGateway(galleryApp,verify,loadKeys){
 var galleryMini=b9CreateGallery();
 let galleryMiniHandler;
 app.all('/api/miniapp/gallery/*',c=>{galleryMiniHandler ||= valleyMiniBridge.createGalleryMiniApp(galleryMini);return galleryMiniHandler(c.req.raw,c.env)});
+var bottleMiniHandler;
+app.all('/api/miniapp/bottles/*',c=>{bottleMiniHandler ||= createBottleMini(valleyMiniBridge.platformDeps);return bottleMiniHandler(c.req.raw,c.env)});
 app.all('/api/miniapp/*',c=>{valleyMiniHandler ||= valleyMiniBridge.createSiteMiniApp(Hono,sitePetRelease,new Hono());return valleyMiniHandler(c.req.raw,c.env)});
 var b10ManorFarewell = (() => {
   var __defProp = Object.defineProperty;
@@ -10197,7 +10223,9 @@ var jinhuanPublicUpdates = (() => {
   }
   return __toCommonJS(read_updates_exports);
 })();
-app.get("/api/community-updates", () => jinhuanPublicUpdates.readSiteUpdates());
+// 社区更新页 2026-11-26 站长要求全面下线（数据保留在 jinhuanPublicUpdates，导航入口已换成「斗」）
+app.get("/api/community-updates", (c) => c.json({ error: "页面不存在" }, 404));
+for (const p of ["/community-updates.html", "/community-updates.js", "/community-updates.css"]) app.get(p, (c) => c.text("页面不存在", 404));
 app.get("/api/me", async (c) => {
 	const u = c.get("user");
 	const [limits, badges, officialTitles, linuxdo, unlocks, farmSave] = u ? await Promise.all([
@@ -10217,6 +10245,7 @@ app.get("/api/me", async (c) => {
 	];
 	if (u) settleLater(c);
 	return c.json({
+		community_hub_sync: true,
 		limits,
 		official_titles: OFFICIAL_TITLES,
 		guess_rewards: GUESS_REWARDS,
@@ -10367,7 +10396,9 @@ app.get("/api/users/:username", async (c) => {
         + (SELECT COUNT(*) FROM memes WHERE hidden = 0 AND author_name = ?2 COLLATE NOCASE AND (author_id IS NULL OR author_id != ?1)) AS n`).bind(u?.id ?? -1, name).first(), u ? db.prepare(`SELECT (SELECT COUNT(*) FROM short_replies WHERE user_id = ?1) AS replies,
               (SELECT COUNT(*) FROM comments WHERE user_id = ?1 AND deleted = 0) AS comments`).bind(u.id).first() : null]);
 	if (!u && !posts?.n) return c.json({ error: "没有这个用户" }, 404);
-	const badges = u ? await badgesOf(c, u.id) : [];
+	// 榜单徽章的经验每天结算，和匿名群的水群榜对照就能反推是谁：别人看时只给到当前等级的门槛，不给精确经验和最近获得日期
+	const viewer = c.get("user"), exact = u && viewer && (viewer.id === u.id || isOwner(c, viewer));
+	const badges = u ? (await badgesOf(c, u.id)).map((b) => exact || !/^(rank_|water$|react$)/.test(b.id) ? b : { ...b, n: b.id.startsWith("rank_") ? Math.max(1, ...RANK_REWARDS.filter((r) => r.series === b.id && r.wins <= b.n).map((r) => r.wins)) : 1, last_day: null }) : [];
 	return c.json({ user: {
 		id: u?.id ?? null,
 		username: u?.username ?? name,
@@ -10868,6 +10899,16 @@ var sniffVideo = (b) => {
 	if (b[0] === 26 && b[1] === 69 && b[2] === 223 && b[3] === 163) return ["video/webm", "webm"];
 	return null;
 };
+// 上传的图片 / 视频去元信息；结构坏掉的图片拒收，不带着定位存下来
+var cleanMedia = (bytes, mime, lenient = false) => {
+	try {
+		return scrubMedia(bytes, mime);
+	} catch (error) {
+		if (error instanceof MediaMetaError && lenient) return bytes; // 转发站内已有的旧文件：解析不了就保留原样，不让转发失败
+		if (error instanceof MediaMetaError) fail(415, mime.startsWith("video/") ? "视频文件已损坏，请换一个" : "图片文件已损坏，请换一张");
+		throw error;
+	}
+};
 app.post("/api/uploads", async (c) => {
 	const u = needUser(c);
 	if (u.silenced) fail(403, "你在 linux.do 处于禁言状态");
@@ -10887,10 +10928,12 @@ app.post("/api/uploads", async (c) => {
 	const asFile = form.get("as") === "file" && ["chat", "dm"].includes(String(form.get("for")));
 	if (vid === "heic" && !asFile) fail(415, "HEIC 格式浏览器看不了：iPhone 可在 设置 → 相机 → 格式 选「兼容性最佳」，或先转成 JPG");
 	const kind = asFile ? ["application/octet-stream", (file.name.match(/\.([a-z0-9]{1,8})$/i)?.[1] ?? "bin").toLowerCase()] : img ?? vid ?? fail(415, "只支持 PNG / JPG / GIF / WebP 图片和 MP4 / MOV / WebM 视频");
+	// 擦掉照片 / 视频里的拍摄地点、设备、时间等元信息（services/media-meta.ts）；「作为文件发送」保持原样
+	const clean = asFile ? bytes : cleanMedia(bytes, kind[0]);
 	return c.json(await storeUpload(db, c.env.BUCKET, {
 		uid: u.id,
 		nonce: form.get("nonce"),
-		bytes,
+		bytes: clean,
 		mime: kind[0],
 		ext: kind[1],
 		purpose: forAvatar ? "avatar" : form.get("for") === "dm" ? "dm" : form.get("for") === "chat" ? "chat" : "meme",
@@ -11030,7 +11073,7 @@ app.post("/api/memes", async (c) => {
 		const { key } = await storeUpload(c.env.DB, c.env.BUCKET, {
 			uid: u.id,
 			nonce: void 0,
-			bytes,
+			bytes: cleanMedia(bytes, kind[0]),
 			mime: kind[0],
 			ext: kind[1],
 			purpose: "meme",
@@ -11693,9 +11736,9 @@ var NOTIF_PARTS = {
 	// 漂流瓶（gid=-4）：瓶主看到互动人；瓶主的回信在这里就把 user_id 换成 0，收到的人只看到「瓶主」
 	bottle_like: `SELECT 'bottle_like' AS kind, b.id AS meme_id, -4 AS gid, l.user_id, NULL AS val, l.created_at AS at FROM bottles b
     JOIN bottle_likes l ON l.bottle_id = b.id WHERE b.author_id = ?1 AND b.deleted = 0 AND l.user_id != ?1 AND l.created_at > ?2`,
-	bottle_reply: `SELECT 'bottle_reply' AS kind, b.id AS meme_id, -4 AS gid, r.user_id, r.body AS val, r.created_at AS at FROM bottles b
+	bottle_reply: `SELECT 'bottle_reply' AS kind, b.id AS meme_id, -4 AS gid, CASE WHEN r.anon = 1 THEN -2 ELSE r.user_id END AS user_id, r.body AS val, r.created_at AS at FROM bottles b
     JOIN bottle_replies r ON r.bottle_id = b.id WHERE b.author_id = ?1 AND b.deleted = 0 AND r.is_host = 0 AND r.deleted = 0 AND r.hidden = 0 AND r.created_at > ?2`,
-	bottle_re: `SELECT 'bottle_re' AS kind, r.bottle_id AS meme_id, -4 AS gid, CASE WHEN r.is_host = 1 AND b.anon = 1 THEN 0 ELSE r.user_id END AS user_id, r.body AS val, r.created_at AS at FROM bottle_replies p
+	bottle_re: `SELECT 'bottle_re' AS kind, r.bottle_id AS meme_id, -4 AS gid, CASE WHEN r.is_host = 1 AND b.anon = 1 THEN 0 WHEN r.anon = 1 THEN -2 ELSE r.user_id END AS user_id, r.body AS val, r.created_at AS at FROM bottle_replies p
     JOIN bottle_replies r ON r.reply_to = p.id JOIN bottles b ON b.id = r.bottle_id
     WHERE p.user_id = ?1 AND p.is_host = 0 AND r.user_id != ?1 AND r.deleted = 0 AND r.hidden = 0 AND b.deleted = 0 AND b.hidden = 0 AND r.created_at > ?2`,
 	join_req: `SELECT 'join_req' AS kind, 0 AS meme_id, r.group_id AS gid, r.user_id, COALESCE(b.kind,'new') AS val, r.created_at AS at FROM chat_join_reqs r
@@ -11708,13 +11751,16 @@ var NOTIF_PARTS = {
 	chat_at: `SELECT 'chat_at' AS kind, x.id AS meme_id, x.group_id AS gid, x.user_id, x.body AS val, x.created_at AS at FROM chat_messages x INDEXED BY idx_chat_msg_mentions
     JOIN chat_members cm ON cm.group_id = x.group_id AND cm.user_id = ?1
     WHERE x.created_at > ?2 AND x.created_at >= cm.joined_at AND x.id >= ${CHAT_HISTORY_FLOOR} AND x.deleted = 0 AND instr(x.body, '@') > 0 AND (x.user_id != ?1 OR instr(x.body, '[quote=') = 0)
-      AND instr(lower(x.body), '@' || lower((SELECT username FROM users WHERE id = ?1))) > 0`,
+      AND (instr(lower(x.body), '@' || lower((SELECT username FROM users WHERE id = ?1))) > 0 OR EXISTS(SELECT 1 FROM anon_mentions am WHERE am.message_id = x.id AND am.user_id = ?1))`,
+	// 匿名角色被侵占：只告诉原主人角色名，不说是谁
+	anon_seized: `SELECT 'anon_seized' AS kind, d.id AS meme_id, d.group_id AS gid, 0 AS user_id, d.name AS val, d.created_at AS at FROM anon_draws d WHERE d.victim_id = ?1 AND d.created_at > ?2 AND d.result = 'seized'`,
 	chat_reply: `SELECT 'chat_reply' AS kind, x.id AS meme_id, x.group_id AS gid, x.user_id, x.body AS val, x.created_at AS at FROM chat_messages x
     JOIN chat_messages p ON p.id = x.reply_to JOIN chat_members cm ON cm.group_id = x.group_id AND cm.user_id = ?1
     WHERE x.created_at > ?2 AND x.created_at >= cm.joined_at AND x.id >= ${CHAT_HISTORY_FLOOR}
       AND p.group_id = x.group_id AND p.created_at >= cm.joined_at AND p.id >= ${CHAT_HISTORY_FLOOR}
       AND x.deleted = 0 AND p.user_id = ?1 AND x.user_id != ?1
-      AND instr(lower(x.body), '@' || lower((SELECT username FROM users WHERE id = ?1))) = 0`
+      AND instr(lower(x.body), '@' || lower((SELECT username FROM users WHERE id = ?1))) = 0
+      AND NOT EXISTS(SELECT 1 FROM anon_mentions am WHERE am.message_id = x.id AND am.user_id = ?1)`
 };
 var NOTIF_RECENT_INDEX = {
 	like: ["likes l", "idx_likes_recent"],
@@ -11733,6 +11779,7 @@ var NOTIF_DEFAULT = {
 	mention: true,
 	chat_at: true,
 	chat_reply: true,
+	anon_seized: true,
 	chat: true,
 	packet: true,
 	post_at: true,
@@ -11809,11 +11856,11 @@ async function notifsList(c, u) {
 	prefs.release = prefs.release && c.req.query("system") === "1";
 	const db = c.env.DB;
 	const sql = notifSql(prefs, await notifRecentPlan(db, u.id));
-	const list = await db.prepare(`SELECT n.*, u.username, u.name, u.avatar, m.title, m.thumb_url, m.image_url, m.image_key, g.name AS group_name,
+	const list = await db.prepare(`SELECT n.*, u.username, COALESCE(u.name, bm.name, bm.username) AS name, COALESCE(u.avatar, bm.avatar) AS avatar, m.title, m.thumb_url, m.image_url, m.image_key, g.name AS group_name,
        CASE WHEN n.kind='badge' THEN COALESCE((SELECT n FROM user_badges WHERE user_id=n.user_id AND badge=n.val),0) END AS badge_n,
        (m.id IS NOT NULL OR g.id IS NOT NULL OR n.kind IN ('badge','farm_conflict','release','bottle_like','bottle_reply','bottle_re')) AS displayable
        FROM (SELECT n.*, n.at > ?3 AND ${NOT_READ} AS unread FROM (${sql}) n ORDER BY unread DESC, at DESC LIMIT 60) n
-       LEFT JOIN users u ON u.id = n.user_id LEFT JOIN memes m ON m.id = n.meme_id AND n.gid = 0
+       LEFT JOIN users u ON u.id = n.user_id LEFT JOIN bottle_mini_users bm ON bm.id = n.user_id AND n.gid = -4 LEFT JOIN memes m ON m.id = n.meme_id AND n.gid = 0
        LEFT JOIN chat_groups g ON g.id = n.gid AND n.gid > 0
        ORDER BY n.unread DESC, n.at DESC`).bind(u.id, since, read).all();
 	let unread = list.results.filter((r) => r.unread).length;
@@ -11855,7 +11902,9 @@ app.post("/api/notifs/read", async (c) => {
 		if (!(kind in NOTIF_PARTS)) fail(400, "不认识的提醒");
 		const big = Number.MAX_SAFE_INTEGER;
 		const mid = kind === "join_req" ? intIn(item.gid, 0, big, 0) : intIn(item.meme_id, 0, big, 0);
-		await db.prepare("INSERT OR IGNORE INTO notif_reads (user_id, kind, meme_id, actor_id, at) VALUES (?, ?, ?, ?, ?)").bind(u.id, kind, mid, intIn(item.user_id, -big, big, 0), intIn(item.at, 0, big, 0)).run();
+		// 匿名群的通知里发起人是对外身份，按消息换回真实作者才能对上
+		const author = ["chat_at", "chat_reply"].includes(kind) ? (await db.prepare("SELECT user_id FROM chat_messages WHERE id=? AND group_id IN (SELECT value FROM json_each(?))").bind(mid, JSON.stringify([...ANON_GROUP_IDS])).first())?.user_id : null;
+		await db.prepare("INSERT OR IGNORE INTO notif_reads (user_id, kind, meme_id, actor_id, at) VALUES (?, ?, ?, ?, ?)").bind(u.id, kind, mid, author ?? intIn(item.user_id, -big, big, 0), intIn(item.at, 0, big, 0)).run();
 		return c.json({ ok: true });
 	}
 	const t = now();
@@ -12142,6 +12191,9 @@ function refOf(r) {
 		username: r.username,
 		name: r.name,
 		avatar: r.avatar,
+		_uid: r.user_id,
+		_at: r.created_at,
+		_kind: r.system_kind ?? null,
 		deleted: !!r.deleted,
 		fancy: isFancy(r),
 		deco: decoOf(r.deco),
@@ -12178,10 +12230,9 @@ async function atReads(c, rows) {
 	}
 	return out;
 }
-// 匿名群（chat/1）：除站长外，消息里的发言者、引用、回应名单一律换成化名（services/identity-mask.ts）
+// 匿名群（chat/1）：消息里的发言者、引用、回应名单按发送时的身份显示（services/anon-identity.ts）；站长看真实身份并附角色名
 async function decorateMsgs(c, rows) {
-	const out = await decorateMsgsRaw(c, rows), viewer = c.get("user");
-	return seesAnonGroup(c.env, viewer) ? out : maskChatMessages(c.env, viewer, out);
+	return finishMessages(c, await decorateMsgsRaw(c, rows));
 }
 async function decorateMsgsRaw(c, rows) {
 	if (!rows.length) return [];
@@ -12194,7 +12245,7 @@ async function decorateMsgsRaw(c, rows) {
           FROM (SELECT r2.user_id FROM chat_reactions r2 WHERE r2.message_id = r.message_id AND r2.emoji = r.emoji
                 ORDER BY r2.created_at LIMIT 3) t JOIN users w ON w.id = t.user_id) AS who
        FROM chat_reactions r WHERE r.message_id IN (SELECT value FROM json_each(?)) GROUP BY r.message_id, r.emoji ORDER BY MIN(r.created_at)`).bind(u?.id ?? -1, ids).all(),
-		refs === "[]" ? { results: [] } : c.env.DB.prepare(`SELECT x.id, x.group_id, x.body, x.image_key, x.media, x.created_at, x.deleted, u.username, u.name, u.avatar, u.is_admin, u.trust_level, u.fancy, u.deco
+		refs === "[]" ? { results: [] } : c.env.DB.prepare(`SELECT x.id, x.group_id, x.user_id, x.system_kind, x.body, x.image_key, x.media, x.created_at, x.deleted, u.username, u.name, u.avatar, u.is_admin, u.trust_level, u.fancy, u.deco
        FROM chat_messages x LEFT JOIN users u ON u.id = x.user_id
        WHERE x.id IN (SELECT value FROM json_each(?1))
        AND EXISTS(SELECT 1 FROM chat_members cm WHERE cm.group_id=x.group_id AND cm.user_id=?2 AND x.created_at>=cm.joined_at AND x.id>=${CHAT_HISTORY_FLOOR})
@@ -12242,6 +12293,7 @@ async function decorateMsgsRaw(c, rows) {
 		const ai = b.kind === "bot" && !!b.ai_status;
 		bs.set(b.message_id, [...bs.get(b.message_id) ?? [], {
 			deco: decoOf(b.deco),
+			_uid: b.user_id,
 			text: b.text,
 			mine: !ai && !!u && u.id === b.user_id,
 			username: b.username,
@@ -12273,6 +12325,7 @@ async function decorateMsgsRaw(c, rows) {
 		const expired=chatMediaExpired(m.created_at,!!(m.image_key||m.media));
 		return {
 			id: m.id,
+			_uid: m.user_id,
 			group_id: m.group_id,
 			deleted: !!m.deleted,
 			system_kind: m.system_kind ?? null,
@@ -12328,18 +12381,18 @@ app.get("/api/chat/groups", async (c) => {
      ORDER BY g.is_default DESC, b.created_at DESC`).bind(u.id).all();
 	const pend = isChatAdmin(u) ? await c.env.DB.prepare(`SELECT group_id AS gid, COUNT(*) AS n FROM chat_join_reqs r WHERE status = 0 ${isOwner(c, u) ? "" : "AND COALESCE((SELECT trust_level FROM users WHERE id = r.user_id),0) < 4 AND r.group_id NOT IN (SELECT group_id FROM chat_group_policy)"} GROUP BY group_id`).all() : null;
 	const pm = new Map((pend?.results ?? []).map((x) => [x.gid, x.n]));
-	const { results } = await c.env.DB.prepare(`SELECT g.id, g.name, g.avatar, g.is_default, g.created_at, cm.last_read, cm.muted, g.notice, g.notice_at, (SELECT open_apply FROM chat_group_policy p WHERE p.group_id=g.id) AS internal_open,
+	const { results } = await c.env.DB.prepare(`SELECT g.id, g.name, g.avatar, g.is_default, g.created_at, cm.last_read, cm.muted, cm.pinned, g.notice, g.notice_at, (SELECT open_apply FROM chat_group_policy p WHERE p.group_id=g.id) AS internal_open,
        g.member_count-(SELECT COUNT(*) FROM chat_members bm JOIN users bu ON bu.id=bm.user_id WHERE bm.group_id=g.id AND bu.kind='bot') AS members,
        (SELECT COUNT(*) FROM chat_members om JOIN users ou ON ou.id = om.user_id WHERE om.group_id = g.id AND ou.kind='user' AND ou.last_seen > ?3) AS online,
        (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m WHERE m.group_id = g.id AND m.id > MAX(cm.last_read,${CHAT_HISTORY_FLOOR}-1) AND m.created_at>=cm.joined_at AND m.deleted = 0 AND m.user_id != ?1 LIMIT 100)) AS unread,
        (SELECT COUNT(*) FROM (SELECT 1 FROM chat_messages m INDEXED BY idx_chat_msg_at_unread WHERE m.group_id = g.id AND m.id > MAX(cm.last_read,${CHAT_HISTORY_FLOOR}-1) AND m.deleted = 0 AND m.user_id != ?1
-          AND m.created_at>=cm.joined_at AND instr(m.body,'@') > 0 AND m.body LIKE ?2 ESCAPE '\\' LIMIT 20)) AS at_me,
+          AND m.created_at>=cm.joined_at AND instr(m.body,'@') > 0 AND (m.body LIKE ?2 ESCAPE '\\' OR EXISTS(SELECT 1 FROM anon_mentions am WHERE am.message_id=m.id AND am.user_id=?1)) LIMIT 20)) AS at_me,
        l.id AS last_id, l.body AS last_body, l.image_key AS last_image, l.deleted AS last_deleted, l.created_at AS last_at,
        lu.username AS last_by, lu.name AS last_by_name
      FROM chat_members cm JOIN chat_groups g ON g.id = cm.group_id
      LEFT JOIN chat_messages l ON l.id = (SELECT MAX(id) FROM chat_messages WHERE group_id = g.id) AND l.created_at>=cm.joined_at AND l.id>=${CHAT_HISTORY_FLOOR}
      LEFT JOIN users lu ON lu.id = l.user_id
-     WHERE cm.user_id = ?1 ORDER BY g.is_default DESC, COALESCE(l.created_at, g.created_at) DESC`).bind(u.id, `%@${likeEsc(u.username)}%`, now() - 300).all();
+     WHERE cm.user_id = ?1 ORDER BY cm.pinned DESC, g.is_default DESC, COALESCE(l.created_at, g.created_at) DESC`).bind(u.id, `%@${likeEsc(u.username)}%`, now() - 300).all();
 	const dmUnread = await c.env.DB.prepare(`SELECT COUNT(*) AS n FROM (
     SELECT m.id FROM dm_threads t JOIN dm_messages m INDEXED BY idx_dm_messages_thread
       ON m.thread_id=t.id AND m.id>t.read_low
@@ -12377,6 +12430,7 @@ app.get("/api/chat/groups", async (c) => {
 			unread: g.unread,
 			at_me: g.at_me,
 			muted: !!g.muted,
+			pinned: !!g.pinned,
 			last_read: g.last_read,
 			notice: g.notice || null,
 			notice_at: g.notice_at || null,
@@ -12463,6 +12517,37 @@ app.delete("/api/chat/groups/:id", async (c) => {
 	for (let i = 0; i < keys.length; i += 1e3) await c.env.BUCKET.delete(keys.slice(i, i + 1e3));
 	return c.json({ ok: true });
 });
+// 匿名设置：自己的开关、本周系列和角色；站长另外能看到并更换下周的系列
+app.get("/api/chat/groups/:id/anon", async (c) => {
+	const { g } = await needMember(c, groupId(c));
+	if (!isAnonGroup(g.id)) fail(404, "这个群没有匿名");
+	c.header("cache-control", "private, no-store");
+	return c.json(await anonSettings(c, g.id));
+});
+app.put("/api/chat/groups/:id/anon", async (c) => {
+	const { u, g } = await needMember(c, groupId(c));
+	if (!isAnonGroup(g.id)) fail(404, "这个群没有匿名");
+	const b = await boundedJson(c, 1e3);
+	if (b.enabled !== undefined) {
+		if (typeof b.enabled !== "boolean") fail(400, "请选择开启或关闭");
+		await setAnonEnabled(c.env.DB, g.id, u.id, b.enabled);
+	}
+	c.header("cache-control", "private, no-store");
+	return c.json(await anonSettings(c, g.id));
+});
+// 抽角色（免费 3 次，之后 10 万 D币一次）；结果是候选，再用 claim 换上 / 放弃 / 侵占（52 万 D币）
+for (const [path, fn] of [["draw", async (c, g, u) => drawCharacter(c.env.DB, g.id, u.id, (await boundedJson(c, 1e3)).series || null)], ["unlock", async (c, g, u) => unlockTheme(c.env.DB, g.id, u.id, String((await boundedJson(c, 1e3)).series ?? ""))], ["claim", async (c, g, u) => claimCharacter(c.env.DB, g.id, u.id, String((await boundedJson(c, 1e3)).action ?? ""))]]) app.post("/api/chat/groups/:id/anon/" + path, async (c) => {
+	sameOrigin(c);
+	const { u, g } = await needMember(c, groupId(c));
+	if (!isAnonGroup(g.id)) fail(404, "这个群没有匿名");
+	c.header("cache-control", "private, no-store");
+	try {
+		return c.json(await fn(c, g, u));
+	} catch (e) {
+		if (e instanceof AnonError) fail(e.status, e.message);
+		throw e;
+	}
+});
 app.get("/api/chat/groups/:id/activity-stats", async (c) => {
 	const gid = groupId(c);
 	const { u } = await needMember(c, gid, false);
@@ -12472,14 +12557,22 @@ app.get("/api/chat/groups/:id/activity-stats", async (c) => {
 });
 // 成员列表；view=manage（管理员）支持按最久未发言排序、搜索、分页（移植自 kourou25/jinhuan#4，radish40）
 app.get("/api/chat/groups/:id/members", async (c) => {
-	const { g } = await needMember(c, groupId(c));
-	const t = now();
+	const { u: viewer, g } = await needMember(c, groupId(c));
+	const t = now(), anonGroup = isAnonGroup(g.id);
+	// 匿名群：除站长外只给对外身份，没有入群时间、在线状态，也不能按真名搜
+	if (anonGroup && !seesAnonGroup(c.env, viewer)) {
+		const list = await anonRoster(c, g.id), q = (c.req.query("q") ?? "").trim().toLowerCase();
+		const bots = c.req.query("view") === "mention" ? (await c.env.DB.prepare(`SELECT u.username,u.name,u.avatar FROM chat_bot_installations i
+      JOIN users u ON u.id=i.bot_id AND u.kind='bot' AND u.disabled=0 WHERE i.group_id=? AND i.enabled=1 ORDER BY i.created_at,i.id`).bind(g.id).all()).results.map((b) => ({ ...b, anon: null })) : [];
+		const total = (await c.env.DB.prepare("SELECT member_count-(SELECT COUNT(*) FROM chat_members bm JOIN users bu ON bu.id=bm.user_id WHERE bm.group_id=g.id AND bu.kind='bot') AS n FROM chat_groups g WHERE id=?").bind(g.id).first())?.n ?? list.length;
+		return c.json({ group: { id: g.id, name: g.name, is_default: !!g.is_default }, members: [...bots, ...list.filter((m) => !q || String(m.name || m.username).toLowerCase().includes(q))], now: t, total, online: 0, more: false, anon_roster: true });
+	}
 	if (c.req.query("view") === "mention") {
-		const [members, bots] = await c.env.DB.batch([c.env.DB.prepare(`SELECT u.username, u.name, u.avatar FROM chat_members cm
+		const [members, bots] = await c.env.DB.batch([c.env.DB.prepare(`SELECT u.id, u.username, u.name, u.avatar FROM chat_members cm
        JOIN users u ON u.id = cm.user_id WHERE cm.group_id = ? AND u.kind='user'
        ORDER BY (u.last_seen > ?) DESC, cm.joined_at ASC, cm.rowid ASC LIMIT 300`).bind(g.id, t - 180), c.env.DB.prepare(`SELECT u.username,u.name,u.avatar FROM chat_bot_installations i
       JOIN users u ON u.id=i.bot_id AND u.kind='bot' AND u.disabled=0 WHERE i.group_id=? AND i.enabled=1 ORDER BY i.created_at,i.id`).bind(g.id)]);
-		return c.json({ members: [...bots.results, ...members.results] });
+		return c.json({ members: [...bots.results, ...(anonGroup ? await tagMembers(c, g.id, members.results, true) : members.results.map(({ id, ...m }) => m))] });
 	}
 	const manage = c.req.query("view") === "manage";
 	if (manage) needAdmin(c);
@@ -12503,7 +12596,7 @@ app.get("/api/chat/groups/:id/members", async (c) => {
 	const creator = summary.created_by, rows = manage ? list.results.slice(0, pageSize) : list.results;
 	return c.json({
 		group: { id: g.id, name: g.name, is_default: !!g.is_default },
-		members: rows.map((m) => ({ ...m, is_admin: !!m.is_admin, fancy: isFancy(m), deco: decoOf(m.deco), last_seen: m.last_seen || null,
+		members: (anonGroup ? await tagMembers(c, g.id, rows) : rows).map((m) => ({ ...m, is_admin: !!m.is_admin, fancy: isFancy(m), deco: decoOf(m.deco), last_seen: m.last_seen || null,
 			creator: creator != null && m.id === creator, owner: creator == null && isOwner(c, m) })),
 		now: t,
 		total: summary.n,
@@ -12525,6 +12618,7 @@ app.delete("/api/chat/groups/:id/members/:uid", async (c) => {
 	const uid = intIn(c.req.param("uid"), -Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 0);
 	if (uid !== u.id && !isChatAdmin(u)) fail(403, "只有管理员能移出别人");
 	if (uid !== u.id && await b33Internal(c.env.DB, gid) && !isOwner(c, u)) fail(403, "只有站长能管理这个群");
+	if (uid !== u.id && isAnonGroup(gid) && !isOwner(c, u)) fail(403, "匿名群只有站长能移出成员");
 	if (!await c.env.DB.prepare("SELECT is_default FROM chat_groups WHERE id = ?").bind(gid).first()) fail(404, "群不存在");
 	if (uid !== u.id) {
 		const t = await c.env.DB.prepare("SELECT is_admin, role FROM users WHERE id = ?").bind(uid).first();
@@ -12691,14 +12785,15 @@ app.get("/api/chat/groups/:id/files", async (c) => {
       AND instr(CASE WHEN json_valid(media) THEN json(media) ELSE '[]' END,'"kind":"f"')>0
     ORDER BY id DESC LIMIT 21
   ) x JOIN users u ON u.id=x.user_id ORDER BY x.id DESC`).bind(g.id, before, g.joined_at).all()).results;
-	const page = rows.slice(0, 20);
+	const page = rows.slice(0, 20), anonGroup = isAnonGroup(g.id);
+	const people = anonGroup ? await messagePeople(c, page.map((r) => ({ id: r.id, user_id: r.user_id, created_at: r.created_at, person: { username: r.username, name: r.name } })), g.id) : new Map();
 	return c.json({
 		items: page.flatMap((row) => {
 			const media = JSON.parse(row.media);
 			return (Array.isArray(media) ? media : []).filter((m) => m && m.kind === "f" && typeof m.k === "string").map((m) => ({
 				message_id: row.id,
 				created_at: row.created_at,
-				by: row.name || row.username,
+				by: anonGroup ? people.get(row.id)?.name || people.get(row.id)?.username || "鱼友" : row.name || row.username,
 				...toGallery(m)
 			}));
 		}),
@@ -12802,13 +12897,21 @@ app.get("/api/chat/groups/:id/search", async (c) => {
 		where.push("x.body LIKE ? ESCAPE '\\'");
 		args.push(`%${likeEsc(q)}%`);
 	}
+	const anonGroup = isAnonGroup(g.id);
+	if (anonGroup && !seesAnonGroup(c.env, c.get("user"))) where.push(SEARCHABLE_SQL);
 	if (img) where.push("x.image_key IS NOT NULL");
 	if (before) {
 		where.push("x.id < ?");
 		args.push(before);
 	}
 	let query = `${CHAT_SELECT} WHERE ${where.join(" AND ")} ORDER BY x.id DESC LIMIT 31`;
-	if (who) {
+	if (who && anonGroup) {
+		// 匿名群：只按对外名字搜，真名搜不到匿名时发的消息
+		const filter = await senderFilter(c, g.id, who, g.joined_at);
+		if (!filter) return c.json({ items: [], more: false });
+		query = `${CHAT_SELECT} LEFT JOIN anon_messages s ON s.message_id=x.id WHERE ${where.join(" AND ")} AND ${filter.sql} ORDER BY x.id DESC LIMIT 31`;
+		args.push(...filter.args);
+	} else if (who) {
 		const pattern = `%${likeEsc(who)}%`;
 		const senders = (await c.env.DB.prepare("SELECT id FROM users WHERE username LIKE ?1 ESCAPE '\\' OR name LIKE ?1 ESCAPE '\\' LIMIT 9").bind(pattern).all()).results;
 		if (!senders.length) return c.json({
@@ -12909,6 +13012,9 @@ app.post("/api/chat/groups/:id/messages", async (c) => {
 	}
 	body = body.replace(/\r/g, "").trim().slice(0, CHAT_BODY_MAX);
 	if (!body && !file && !media.length) fail(400, "说点什么吧");
+	// 匿名群：引用名字、站长 @ 的真名按对外身份重写；「@角色名」解析成真实成员（复读口令、收藏快捷发送不含引用，不受影响）
+	if (!favoriteGuard) body = (await rewriteOutgoing(c, g.id, body)).slice(0, CHAT_BODY_MAX);
+	const mentioned = await mentionTargets(db, g.id, body);
 	let key = null;
 	let legacyUpload = null;
 	if (file) {
@@ -12919,7 +13025,7 @@ app.post("/api/chat/groups/:id/messages", async (c) => {
 		key = legacyUpload = (await storeUpload(c.env.DB, c.env.BUCKET, {
 			uid: u.id,
 			nonce: void 0,
-			bytes,
+			bytes: cleanMedia(bytes, kind[0]),
 			mime: kind[0],
 			ext: kind[1],
 			purpose: "chat",
@@ -12958,6 +13064,7 @@ app.post("/api/chat/groups/:id/messages", async (c) => {
 	if (botEvent && committed[favoriteGuard ? 2 : 1].results.length) c.executionCtx.waitUntil(deliverBotEvent(c.env, botEvent.id).catch(() => console.error("chat_bot_delivery_failed")));
 	const shared = sharedPacket(body);
 	if (shared) await db.batch(sharedPacketStatements(db, id, body, shared));
+	if (mentioned.length) await db.batch(mentionStatements(db, id, mentioned));
 	c.executionCtx.waitUntil(handleNativeGameMessage(c, {
 		id,
 		group_id: g.id,
@@ -13098,6 +13205,7 @@ app.post("/api/chat/groups/:id/redpacks", async (c) => {
 	await needNotLimited(c, u, "chat");
 	const b = await boundedJson(c);
 	if (!/^[a-zA-Z0-9-]{16,64}$/.test(String(b.nonce ?? ""))) fail(400, "发送标识无效，请重新打开红包面板");
+	if (isAnonGroup(g.id) && Number(b.exclusive_user_id) <= -1e12) b.exclusive_user_id = await realIdOf(c.env.DB, Number(b.exclusive_user_id)) ?? fail(400, "指定成员当前无法领取红包，请重新选择");
 	if (b.provider === "coin52") {
 		const id = await sha256(`redpack:${u.id}:${g.id}:${b.nonce}`);
 		try {
@@ -13494,7 +13602,9 @@ app.post("/api/chat/messages/:id/to-post", async (c) => {
 	if(chatMediaExpired(m.created_at,src.length>0))fail(404,"群聊附件已超过七天，无法转成帖子");
 	const me2 = await postGate(c);
 	const f = await jsonBody(c);
-	const u = (f.as === "me" || m.user_id === me2.id ? null : await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(m.user_id).first()) ?? me2;
+	// 匿名发的消息只能记在转发人名下，否则帖子作者会暴露发言者
+	const anonMsg = isAnonGroup(m.group_id) && (await c.env.DB.prepare("SELECT anon FROM anon_messages WHERE message_id=?").bind(m.id).first())?.anon !== 0;
+	const u = (f.as === "me" || anonMsg || m.user_id === me2.id ? null : await c.env.DB.prepare("SELECT * FROM users WHERE id = ?").bind(m.user_id).first()) ?? me2;
 	if (!src.length) {
 		const links = socialLinks(m.body || "");
 		if (f.social_index !== void 0 && (typeof f.social_index !== "number" || !Number.isInteger(f.social_index) || f.social_index < 0 || f.social_index >= links.length)) fail(400, "分享内容编号无效");
@@ -13539,7 +13649,7 @@ app.post("/api/chat/messages/:id/to-post", async (c) => {
 			const stored = await storeUpload(c.env.DB, c.env.BUCKET, {
 				uid: me2.id,
 				nonce,
-				bytes: new Uint8Array(await obj.arrayBuffer()),
+				bytes: cleanMedia(new Uint8Array(await obj.arrayBuffer()), obj.httpMetadata?.contentType || "application/octet-stream", true),
 				mime: obj.httpMetadata?.contentType || "application/octet-stream",
 				ext: key.split(".").pop() || "bin",
 				purpose: "meme",
@@ -13604,10 +13714,13 @@ app.patch("/api/chat/messages/:id", async (c) => {
 	if (m.redpack_id || sharedPacket(m.body) || await c.env.DB.prepare("SELECT 1 FROM chat_redpacks WHERE message_id=?").bind(m.id).first()) fail(409, "红包发出后不能编辑或撤回");
 	if (u.id !== m.user_id) fail(403, "只能改自己的消息");
 	if (u.id === m.user_id && m.body && await c.env.DB.prepare(`SELECT 1 FROM chat_messages m WHERE m.id=? AND EXISTS(SELECT 1 FROM chat_redpacks rp JOIN chat_messages rx ON rx.id=rp.message_id WHERE rp.mode='phrase' AND rp.phrase=m.body AND rx.group_id=m.group_id AND rx.id<m.id AND rx.deleted=0)`).bind(m.id).first()) fail(409, "复读红包口令发出后不能编辑");
-	const body = String((await jsonBody(c)).body ?? "").replace(/\r/g, "").trim().slice(0, CHAT_BODY_MAX);
+	let body = String((await jsonBody(c)).body ?? "").replace(/\r/g, "").trim().slice(0, CHAT_BODY_MAX);
 	if (!body && !m.image_key) fail(400, "说点什么吧");
 	const t = now();
+	body = (await rewriteOutgoing(c, m.group_id, body)).slice(0, CHAT_BODY_MAX);
+	const mentioned = await mentionTargets(c.env.DB, m.group_id, body);
 	await c.env.DB.batch([
+		...isAnonGroup(m.group_id) ? mentionStatements(c.env.DB, m.id, mentioned) : [],
 		c.env.DB.prepare("UPDATE chat_messages SET body = ?, edited_at = ?, updated_at = ? WHERE id = ? AND deleted = 0").bind(body, t, t, m.id),
 		c.env.DB.prepare("DELETE FROM chat_boosts WHERE message_id=? AND ai_status<>''").bind(m.id),
 		...chatRoadStatements(c.env.DB, m.id, body, chatRoadAttachments(m), t),
@@ -13626,24 +13739,27 @@ app.patch("/api/chat/messages/:id", async (c) => {
 });
 app.get("/api/chat/messages/:id/replies", async (c) => {
 	const { m, g } = await chatMessage(c);
-	const { results } = await c.env.DB.prepare(`SELECT x.id, x.body, x.image_key, x.media, x.created_at AS at, u.username, u.name, u.avatar FROM chat_messages x
+	const { results } = await c.env.DB.prepare(`SELECT x.id, x.user_id, x.system_kind, x.body, x.image_key, x.media, x.created_at AS at, u.username, u.name, u.avatar FROM chat_messages x
      LEFT JOIN users u ON u.id = x.user_id
      WHERE x.reply_to = ? AND x.group_id = ? AND x.created_at>=? AND x.id>=? AND x.deleted = 0 ORDER BY x.id LIMIT 100`).bind(m.id, m.group_id, g.joined_at, g.history_floor).all();
+	const people = isAnonGroup(m.group_id) ? await messagePeople(c, results.map((r) => ({ id: r.id, user_id: r.user_id, created_at: r.at, system_kind: r.system_kind, person: { username: r.username ?? "佚名", name: r.name, avatar: r.avatar } })), m.group_id) : null;
 	return c.json({ items: results.map((r) => ({
 		id: r.id,
 		at: r.at,
 		username: r.username ?? "佚名",
 		name: r.name,
 		avatar: r.avatar,
+		...people ? (({ username, name, avatar, anon }) => ({ username, name, avatar, anon: anon ?? null }))(people.get(r.id)) : {},
 		text: chatPreview(r.body ?? "", 60),
 		image: !!(r.image_key || r.media)
 	})) });
 });
 app.get("/api/chat/messages/:id/reactions", async (c) => {
 	const { m } = await chatMessage(c);
-	const { results } = await c.env.DB.prepare(`SELECT r.emoji, r.created_at AS at, u.username, u.name, u.avatar FROM chat_reactions r LEFT JOIN users u ON u.id = r.user_id
+	const { results } = await c.env.DB.prepare(`SELECT r.emoji, r.created_at AS at, r.user_id, u.username, u.name, u.avatar FROM chat_reactions r LEFT JOIN users u ON u.id = r.user_id
      WHERE r.message_id = ? ORDER BY r.created_at LIMIT 500`).bind(m.id).all();
-	return c.json({ items: results });
+	// 匿名群由 identity-mask 中间件按 user_id + at 换成当时的身份
+	return c.json({ items: isAnonGroup(m.group_id) ? results : results.map(({ user_id, ...r }) => r) });
 });
 app.post("/api/chat/messages/:id/reactions", async (c) => {
 	const { u, m } = await chatMessage(c);
@@ -13690,7 +13806,7 @@ app.post("/api/chat/messages/:id/boosts", async (c) => {
 app.get("/api/chat/groups/:id/reads", async (c) => {
 	const { g } = await needMember(c, groupId(c));
 	const ids = String(c.req.query("ids") ?? "").split(",").map((x) => intIn(x, 1, Number.MAX_SAFE_INTEGER, 0)).filter(Boolean).slice(0, 100);
-	if (!ids.length) return c.json({ reads: {} });
+	if (!ids.length || isAnonGroup(g.id)) return c.json({ reads: {} });
 	const { results } = await c.env.DB.prepare("SELECT id, group_id, body, deleted, created_at FROM chat_messages WHERE group_id = ? AND id IN (SELECT value FROM json_each(?)) AND created_at>=? AND id>=?").bind(g.id, JSON.stringify(ids), g.joined_at, g.history_floor).all();
 	return c.json({ reads: Object.fromEntries(await atReads(c, results)) });
 });
@@ -14142,8 +14258,16 @@ app.get("/api/road", async (c) => {
 		where.push("r.id = ?");
 		args.push(item);
 	}
+	const rawIssue = c.req.query("issue");
+	if (rawIssue !== void 0) {
+		const issue = /^[1-9]\d*$/.test(rawIssue) ? Number(rawIssue) : 0;
+		if (!Number.isSafeInteger(issue) || issue < 1) return c.json({ items: [] });
+		where.push("r.github_issue = ?");
+		args.push(issue);
+	}
 	const rows = (await c.env.DB.prepare(`SELECT r.*, u.username, u.name, u.avatar, u.is_admin, u.trust_level, u.fancy, u.deco,
-       (SELECT v FROM road_votes WHERE item_id = r.id AND user_id = ?) AS my
+       (SELECT v FROM road_votes WHERE item_id = r.id AND user_id = ?) AS my,
+       (r.source_group_id = 1 AND COALESCE((SELECT s.anon FROM anon_messages s WHERE s.message_id = r.source_msg_id), 1) = 1) AS hide_author
      FROM road_items r JOIN users u ON u.id = r.user_id WHERE ${where.join(" AND ")} ORDER BY ${sort} LIMIT 200`).bind(...args).all()).results;
 	return c.json({ items: rows.map((r) => ({
 		id: r.id,
@@ -14161,7 +14285,11 @@ app.get("/api/road", async (c) => {
 		media: roadMedia(r.media),
 		source_msg_id: r.source_msg_id ?? null,
 		source_group_id: r.source_group_id ?? null,
-		user: {
+		skin_id: r.skin_id ?? null,
+		skin_source: r.skin_source ?? null,
+		...roadGithubView(r),
+		// 由匿名群消息生成的条目：除站长和本人外不显示提出人
+		user: r.hide_author && r.user_id !== u?.id && !isOwner(c, u) ? { username: "鱼友", name: "鱼友", avatar: null, is_admin: false, fancy: false, deco: null, anon: { name: "鱼友", generic: true } } : {
 			username: r.username,
 			name: r.name,
 			avatar: r.avatar,
@@ -14184,7 +14312,8 @@ app.post("/api/road", async (c) => {
 	if (rateOn(c) && last?.t && now() - last.t < 30) fail(429, "慢一点，30 秒后再提");
 	const prepared = await prepareMedia(c, u.id, b.media, true), media = prepared.map(toGallery);
 	const t = now();
-	const [r] = await commitUploadContent(c.env.DB, u.id, mediaKeys(prepared), [c.env.DB.prepare("INSERT INTO road_items (user_id, kind, title, body, media, score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 1, ?, ?) RETURNING id").bind(u.id, kind, title, body, media.length ? JSON.stringify(media) : null, t, t), c.env.DB.prepare("INSERT INTO road_votes (item_id, user_id, v) VALUES (last_insert_rowid(), ?, 1)").bind(u.id)]);
+	const { skinId, skinSource } = roadSkinSource(b);
+	const [r] = await commitUploadContent(c.env.DB, u.id, mediaKeys(prepared), [c.env.DB.prepare("INSERT INTO road_items (user_id, kind, title, body, media, skin_id, skin_source, score, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?) RETURNING id").bind(u.id, kind, title, body, media.length ? JSON.stringify(media) : null, skinId, skinSource, t, t), c.env.DB.prepare("INSERT INTO road_votes (item_id, user_id, v) VALUES (last_insert_rowid(), ?, 1)").bind(u.id)]);
 	const id = r.results[0].id;
 	c.executionCtx.waitUntil(settleContentRewards(c.env.DB, t, {
 		source: "road",
@@ -14192,6 +14321,7 @@ app.post("/api/road", async (c) => {
 	}).catch(() => console.error("content_road_reward_retry")));
 	return c.json({ id });
 });
+app.post("/api/road/:id/github", (c) => handleRoadGithub(c, (u) => needNotLimited(c, u, "post")));
 var roadItem = async (c) => {
 	const id = intIn(c.req.param("id"), 0, Number.MAX_SAFE_INTEGER, 0);
 	const r = await c.env.DB.prepare("SELECT * FROM road_items WHERE id = ? AND hidden = 0 AND source_hidden = 0").bind(id).first();
@@ -14262,12 +14392,14 @@ app.post("/api/road/:id/comments", async (c) => {
 });
 app.route("/", novels);
 app.route("/", autumn);
+app.route("/", dou);
 app.route("/", resources);
 app.route("/", platform);
 app.route("/", aiAdmin);
 app.route("/", aiChat);
 app.route("/", nativeLdc);
 app.route("/", chatBots);
+app.route("/", chatGroupPin);
 app.route("/", fishFunding);
 app.route("/", dm);
 var chatRetentionRoutes = (() => {
@@ -38254,6 +38386,8 @@ var worker_entry_default = {
           {name:"community_skins",every:5,offset:2,run:()=>communitySkinRelease.sync(env,t)},
           { name: "huancai", run: () => runHuancaiDue(env.DB, t) },
           { name: "bottle_rewards", every: 10, offset: 3, run: () => settleBottleRewards(env, t) },
+          { name: "bottle_ai", run: () => sweepBottleAi(env) },
+          { name: "bottle_mini_uploads", every: 60, offset: 17, run: () => cleanBottleMiniUploads(env.DB, env.BUCKET, t) },
           {name:"huancai_daily",every:5,run:()=>B19_HUANCAI_RETIRED?{retired:true}:huancaiDailyRelease.settleDailyHuancai(env.DB,t,randomInt,ensureAiBot,AI_BOT_ID)},
 			{
 				name: "sleep_reminder",
@@ -38387,6 +38521,7 @@ var worker_entry_default = {
 			await env.DB.prepare("DELETE FROM guess_reference_preparations WHERE packet_id IN (SELECT packet_id FROM guess_reference_preparations WHERE expires_at<? ORDER BY expires_at LIMIT 500)").bind(t).run().catch(() => console.error("guess_reference_cleanup_failed"));
 			await cleanupAccounts(env.DB, t);
 			await buildMemorial(env.DB, t).catch(() => console.error("autumn_memorial_failed"));
+			await runDouAuto(env.DB, t).catch(() => console.error("dou_auto_failed"));
 			for (let batch = 0; batch < 5; batch++) {
 				const result = await settleInviteRewards(env.DB, t);
 				if (result.qualified < 200 && result.rewarded < 40) break;

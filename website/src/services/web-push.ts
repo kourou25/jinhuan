@@ -24,7 +24,7 @@ export const PUSH_UNREAD_SQL=`SELECT cm.group_id,
  (SELECT m.id FROM chat_messages m WHERE m.group_id=cm.group_id
   AND m.id>MAX(cm.last_read,p.last_message_id,${CHAT_HISTORY_FLOOR}-1) AND m.created_at>=cm.joined_at
   AND m.deleted=0 AND m.user_id<>p.user_id
-  AND (cm.muted=0 OR (instr(lower(m.body),lower('@'||u.username))>0 AND COALESCE(json_extract(CASE WHEN json_valid(u.notif_prefs) THEN u.notif_prefs ELSE '{}' END,'$.chat_at'),1)<>0))
+  AND (cm.muted=0 OR ((instr(lower(m.body),lower('@'||u.username))>0 OR EXISTS(SELECT 1 FROM anon_mentions am WHERE am.message_id=m.id AND am.user_id=p.user_id)) AND COALESCE(json_extract(CASE WHEN json_valid(u.notif_prefs) THEN u.notif_prefs ELSE '{}' END,'$.chat_at'),1)<>0))
   ORDER BY m.id DESC LIMIT 1) AS message_id
  FROM web_push_subscriptions p JOIN users u ON u.id=p.user_id
  JOIN sessions s ON s.id=p.session_id AND s.user_id=p.user_id

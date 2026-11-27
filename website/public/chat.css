@@ -2631,3 +2631,20 @@ html:is([data-bubble-motion=pause],[data-page-hidden=true]) :is(.cskin-title-aur
 .cm-social:not(.social-post) .cm-social-area.is-summary > img { height:var(--social-h);max-height:none;width:100%;object-fit:contain;background:#111; }
 .cm-social:not(.social-post) .cm-social-area.is-embed { height:var(--social-embed-h);overflow:auto;overscroll-behavior:contain;border-radius:10px; }
 @media(max-width:640px) { .cm-social:not(.social-post) { --social-h:210px;--social-embed-h:300px;width:260px; } }
+
+/* 1 群匿名身份 */
+.role-tag.anon-tag{background:color-mix(in srgb,currentColor 12%,transparent);font-weight:500}
+.anon-role{display:flex;align-items:center;gap:10px;padding:8px 0}
+.anon-role .avatar,.anon-card .avatar{image-rendering:pixelated}
+.anon-role>span{display:grid;gap:2px;min-width:0}
+.anon-card p{margin:8px 0 0}
+.cm-text span.at{cursor:default}
+.anon-pending{border:1px solid var(--line,#ddd);border-radius:12px;padding:6px 12px 10px;margin-top:6px}
+/* 侧栏作者栏的点赞：常驻显示，带数字 */
+.gf-icon-btn.gf-like { width:auto;min-width:26px;padding:0 5px;display:inline-flex;align-items:center;gap:3px;font-size:12px;font-variant-numeric:tabular-nums; }
+.gf-like.on { color:var(--like); }
+.gf-like.on svg path { fill:currentColor; }
+.gf-like:hover { color:var(--like);background:color-mix(in srgb,var(--like) 12%,transparent); }
+.gf-extra-foot { display:flex;justify-content:flex-end; }
+.gf-extra-foot .gf-dislike { display:inline-flex;align-items:center;gap:4px;color:var(--text-3);font-size:12px; }
+.gf-extra-foot .gf-dislike:hover { color:var(--like); }

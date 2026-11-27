@@ -1,7 +1,8 @@
 export interface Env {
+  /** 漂流瓶小程序的程序 ID；留空时小程序入口关闭 */
+  BOTTLE_APP_ID?: string
   DB: D1Database
   CHAT_BOT_WEBHOOK_KEY?: string
-  CHAT_BOT_WEBHOOK_ORIGINS?: string
   MUSIC_ORIGIN?: string
   MUSIC_TOKEN?: string
   PUSH_VAPID_PUBLIC_KEY?: string
@@ -24,6 +25,7 @@ export interface Env {
   GOOGLE_CLIENT_SECRET?: string
   GITHUB_CLIENT_ID?: string // GitHub OAuth App（回调 /auth/github/callback）
   GITHUB_CLIENT_SECRET?: string
+  COMMUNITY_GITHUB_TOKEN?: string // 社区 Issue 写入专用凭据
   RESEND_API_KEY?: string
   MAIL_FROM?: string
   EMAIL_DAILY_MAX?: string

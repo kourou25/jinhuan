@@ -22,7 +22,7 @@ simple = { limit = 10, period = 60 }
 [assets]
 binding = "ASSETS"
 not_found_handling = "single-page-application"
-run_worker_first = ["/api/*", "/auth/*", "/img/*", "/ext", "/m/*", "/s/*", "/admin/ai", "/admin/flags", "/admin/invites", "/me/invites", "/me/account", "/me/account/email", "/me/account/password", "/login", "/register", "/reset", "/i/*", "/i", "/welcome", "/", "/activate", "/music", "/farm", "/chat", "/chat/*", "/road", "/autumn", "/autumn/*", "/novels", "/novels/*", "/slime", "/arcade", "/arcade/*", "/pets", "/manor", "/hb/*", "/oauth/*", "/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"]
+run_worker_first = ["/api/*", "/auth/*", "/img/*", "/ext", "/m/*", "/s/*", "/admin/ai", "/admin/flags", "/admin/invites", "/me/invites", "/me/account", "/me/account/email", "/me/account/password", "/login", "/register", "/reset", "/i/*", "/i", "/welcome", "/", "/activate", "/music", "/farm", "/chat", "/chat/*", "/road", "/autumn", "/autumn/*", "/dou", "/dou/*", "/novels", "/novels/*", "/slime", "/arcade", "/arcade/*", "/pets", "/manor", "/hb/*", "/oauth/*", "/.well-known/openid-configuration", "/.well-known/oauth-authorization-server"]
 
 [[d1_databases]]
 binding = "DB"
@@ -71,5 +71,7 @@ MINI_APP_ID = ""
 MINI_APP_JWKS = "{\"keys\":[]}"
 MINI_APP_PRODUCTION = "off"
 GALLERY_APP_ID = ""
+# 漂流瓶小程序的程序 ID（2026-11-25 平台分配）；改成空字符串即可关闭入口（/api/miniapp/bottles/* 一律 503）
+BOTTLE_APP_ID = "" # 漂流瓶小程序 ID，在 linux.do 小程序后台申请；留空时小程序入口关闭
 # 鱼鱼谷岛钟起点：发布时必须保持不变（2026-11-09 b12 起）
 B12_CLOCK_START = "" # 鱼鱼谷岛钟起点：首次部署填当前 Unix 秒数，之后不要改

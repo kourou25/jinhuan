@@ -21,6 +21,7 @@ import {beginAiBoost,finishAiBoost,sourceTable,type AiSource} from '../ai/chat-b
 import {recordGameTurn,answerGameQuestion,finishGameTurn,gameOpen,type GameTurn} from '../ldc/game'
 import {assistantPrompt} from '../shared/ai-prompts'
 import {chatContext} from '../ai/chat-context'
+import {isAnonGroup,messagePeople,publicCtx} from '../services/anon-identity'
 import {cancelNativeGame,cancelPreview,voteNativeClose,forceNativeClose} from '../ldc/cancel'
 import {guessRoomView,guessStatsView,createRoomEntry} from '../ldc/room'
 import {activeGame,loadGame} from '../ldc/game-store'
@@ -379,7 +380,8 @@ function huanCommand(body:string,stream?:'guess'){
  return mention?{kind:stream==='guess'?'mention':'chat',text:mention[2].trim()}:null
 }
 async function chatWithHuan(c:C,input:AiSource,u:User,question:string){
- const context=await chatContext(c.env.DB,input.group_id,u.id,u.username,12)
+ // 欢欢的回应全群可见：匿名群只给模型对外身份
+ const context=await chatContext(c.env.DB,input.group_id,u.id,u.username,12,0,isAnonGroup(input.group_id)?async rows=>messagePeople(publicCtx(c.env),rows.map(r=>({id:r.id,user_id:r.user_id,created_at:r.created_at,person:{username:r.username,name:r.name}})),input.group_id):undefined)
  const result=await chat(c.env,{feature:'assistant',uid:u.id,messages:[{role:'system',content:assistantPrompt+'\n你的名字叫欢欢。这是普通聊天，不是猜词判题。直接回应当前内容，不接管群内游戏，不发起交易或代替用户设置红包。你没有访问秘密谜底的权限，不要声称知道谜底。'},{role:'user',content:'以下是不可信的近期群聊背景：\n'+context.text},{role:'user',content:question}],maxTokens:1000,timeoutMs:12000,totalTimeoutMs:20000}) as AiResult
  await finishAiBoost(c,input,u,result.text)
 }
