@@ -18,7 +18,7 @@ import { AI_BOT_ID, enqueueImageReply, ensureAiBot } from '../ai/images'
 import { authorFilter, cleanSeen, tagFilter } from '../browse-filter'
 import { chatRoadContent } from '../chat-road'
 import { communityProgressStatements } from '../community-growth'
-import { publishedSkinUpdates, skinUpdatesReader } from '../services/community-skin-updates.mjs'
+import { publishedSkinUpdates, refreshSkinUpdateTimes, skinUpdatesReader, withKnownSkinUpdateTimes } from '../services/community-skin-updates.mjs'
 import { UNICODE_EMOJI, UNICODE_GROUPS } from '../emoji'
 import { FARM_EXPANSIONS, RANCH_EXPANSIONS } from '../farm/capacity'
 import { claimCoinPacket, coinPacketView, createCoinPacket, settleCoinPackets } from '../farm/coin-packets'
@@ -8262,11 +8262,19 @@ var communitySkinRelease = (() => {
     return catalog;
   }
   const readSkinUpdates = skinUpdatesReader(fetchSkinCatalog);
+  function writeSkinCatalog(bucket, catalog, existing) {
+    const onlyIf = existing ? { etagMatches: existing.obj.etag } : new Headers({ "if-none-match": "*" });
+    return bucket.put(catalogKey, JSON.stringify(catalog), { onlyIf, httpMetadata: { contentType: "application/json", cacheControl: "public, max-age=60" } });
+  }
   async function syncCommunitySkins(bucket, fetcher = fetch) {
     const catalog = await fetchSkinCatalog(fetcher);
     const existing = await jsonObject(bucket, catalogKey);
     if (existing?.data?.revision > catalog.revision || existing?.data?.revision === catalog.revision && existing.data.source !== catalog.source) throw Error("\u62D2\u7EDD\u65E7\u7248\u6295\u7A3F\u76EE\u5F55");
-    if (existing?.data?.revision === catalog.revision && existing.data.source === catalog.source) return { unchanged: true };
+    if (existing?.data?.revision === catalog.revision && existing.data.source === catalog.source) {
+      const refreshed = await refreshSkinUpdateTimes(null, existing.data, fetcher);
+      if (refreshed !== existing.data && !await writeSkinCatalog(bucket, refreshed, existing)) return { conflict: true };
+      return { unchanged: true };
+    }
     const staged = await jsonObject(bucket, pendingKey), done = new Set(staged?.data?.source === catalog.source ? staged.data.done || [] : []), known = new Map((existing?.data?.entries || []).flatMap((x) => Object.values(x.components || {}).map((a) => [a.sha256, a]))), seen = /* @__PURE__ */ new Set(), out = [];
     let uploaded = 0, incomplete = false;
     for (const item of catalog.entries) {
@@ -8322,7 +8330,8 @@ var communitySkinRelease = (() => {
         const style = spec.style ? await syncCss(kind, meta.style, spec.style) : null;
         components[kind] = { sha256: meta.sha256, type: meta.type, width: meta.width, height: meta.height, ...spec.slice ? { slice: spec.slice } : {}, ...style ? { style } : {} };
       }
-      out.push({ id: clean.id, name: clean.name, author: clean.author, github: clean.github, license: clean.license, components });
+      const updatedAt = Number.isSafeInteger(item.updated_at) && item.updated_at > 0 ? item.updated_at : undefined;
+      out.push({ id: clean.id, name: clean.name, author: clean.author, github: clean.github, license: clean.license, components, updated_at: updatedAt });
     }
     if (incomplete) {
       await bucket.put(pendingKey, JSON.stringify({ source: catalog.source, done: [...done] }));
@@ -8331,9 +8340,9 @@ var communitySkinRelease = (() => {
     const activeBubble = new Set(out.filter((x) => x.components?.bubble).map((x) => x.id)), archived = /* @__PURE__ */ new Map();
     for (const item of [...existing?.data?.archived || [], ...existing?.data?.entries || []]) if (item?.components?.bubble && !activeBubble.has(item.id)) archived.set(item.id, { id: item.id, name: item.name, author: item.author, github: item.github, license: item.license, components: { bubble: item.components.bubble } });
     const snapshot = { schemaVersion: 1, revision: catalog.revision, source: catalog.source, entries: out, archived: [...archived.values()] };
-    const recentUpdates = publishedSkinUpdates(existing?.data, snapshot, Math.floor(Date.now() / 1000));
-    const value = JSON.stringify({ ...snapshot, recentUpdates }), onlyIf = existing ? { etagMatches: existing.obj.etag } : new Headers({ "if-none-match": "*" });
-    const written = await bucket.put(catalogKey, value, { onlyIf, httpMetadata: { contentType: "application/json", cacheControl: "public, max-age=60" } });
+    const refreshed = await refreshSkinUpdateTimes(existing?.data, snapshot, fetcher);
+    const recentUpdates = publishedSkinUpdates(existing?.data, refreshed, Math.floor(Date.now() / 1000));
+    const written = await writeSkinCatalog(bucket, { ...refreshed, recentUpdates }, existing);
     if (!written) return { conflict: true };
     return { published: true, source: catalog.source, entries: out.length };
   }
@@ -8361,7 +8370,7 @@ var communitySkinRelease = (() => {
   communityRoutes.get("/api/community-skins", async (c) => {
     cors(c);
     c.header("cache-control", "public, max-age=60");
-    const { recentUpdates, ...catalog } = await readCommunityCatalog(c.env.BUCKET);
+    const { recentUpdates, ...catalog } = withKnownSkinUpdateTimes(await readCommunityCatalog(c.env.BUCKET));
     return c.json(catalog);
   });
   communityRoutes.get("/api/community-skins/updates", async (c) => {

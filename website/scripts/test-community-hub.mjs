@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { once } from 'node:events'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createRequire, registerHooks } from 'node:module'
 import { createServer } from 'node:net'
 import { dirname, join, resolve } from 'node:path'
@@ -30,6 +30,8 @@ assert(values['expect-backend'] === undefined || ['legacy', 'sync'].includes(val
 const target = values['website-root'] ? resolve(values['website-root']) : fileURLToPath(new URL('..', import.meta.url))
 const website = existsSync(join(target, 'website/server/main.mjs')) ? join(target, 'website') : target
 const client = join(website, 'web/dist/client')
+const migrations = join(website, 'migrations')
+const mainlineSnapshot = existsSync(join(migrations, '0180_anon_series.sql'))
 assert(existsSync(join(website, 'server/dist/app.mjs')), '请先执行 npm run build:server')
 const browserAvailable = existsSync(join(website, 'public/community-hub.js'))
 if (browserAvailable && !values['api-only']) {
@@ -44,12 +46,13 @@ const skinId = 'shiratori-starlight'
 const pendingId = 'fixture-pending-skin'
 const otherId = 'fixture-other-skin'
 const otherSkinTitle = '本地验收另一套票根'
+const publicationTime = 1_790_000_000
 const database = join(root, 'data/db/meme-hall.sqlite')
 const envFile = join(root, 'config/.env')
 const mockFile = fileURLToPath(new URL('./test-community-hub-fetch.mjs', import.meta.url))
 const postsFile = join(root, 'github.ndjson')
 const browserFile = fileURLToPath(new URL('./test-community-hub-browser.py', import.meta.url))
-let server, origin, db
+let server, origin, db, skinOrder = []
 
 async function seedCatalog(skinRoot, backend) {
   const manifest = JSON.parse(readFileSync(join(skinRoot, 'manifest.json'), 'utf8'))
@@ -81,8 +84,21 @@ async function seedCatalog(skinRoot, backend) {
     }
   }
   const catalog = { schemaVersion: 1, revision: 1, source, entries: [entry, other], archived: [] }
+  if (mainlineSnapshot) {
+    entry.updated_at = publicationTime
+    other.updated_at = publicationTime + 86_400
+    const synthetic = Array.from({ length: 96 }, (_, index) => {
+      const number = String(index).padStart(2, '0')
+      const updatedAt = index % 11 === 0 ? undefined : publicationTime - (index % 16) * 86_400
+      return { id: `fixture-catalog-${number}`, name: `分页装扮 ${number}`, components: {}, updated_at: updatedAt }
+    })
+    // 倒置来源顺序，让同时间和缺时间的稳定排序都能被验收。
+    catalog.entries = [...synthetic.reverse(), other, entry]
+    skinOrder = catalog.entries.map(({ id, name, updated_at }) => ({ id, name, updated_at }))
+      .sort((a, b) => (b.updated_at || 0) - (a.updated_at || 0) || a.id.localeCompare(b.id))
+  }
   if (backend === 'sync') {
-    catalog.recentUpdates = catalog.entries.map(skin => ({ source, id: skin.id, name: skin.name, kind: 'added', published_at: 1_790_000_000 }))
+    catalog.recentUpdates = [entry, other].map(skin => ({ source, id: skin.id, name: skin.name, kind: 'added', published_at: publicationTime }))
     writeFileSync(join(root, 'pending-catalog.json'), JSON.stringify({
       schemaVersion: catalog.schemaVersion, source: pendingSource, revision: 2,
       entries: [...catalog.entries, { ...entry, id: pendingId, name: '等待同步的夹具票根' }],
@@ -245,14 +261,19 @@ async function verifySyncApi() {
   assert.deepEqual(syncFields(await readFeedback(interrupted, current)), [72, 'linked'])
   assert.deepEqual(upstream().slice(beforeRetry), [{ method: 'GET', path: issuePath }], '查证只能读取 GitHub 已有 Issue')
 
-  const publicUpdates = expectStatus(await api('/api/community-updates'), 200, '游客可取公开更新')
-  assert.deepEqual(publicUpdates.updates, [fix, feature])
+  if (mainlineSnapshot) {
+    expectStatus(await api('/api/community-updates'), 404, '旧站点更新 API 已下线')
+    expectStatus(await api('/community-updates.html'), 404, '旧站点更新时间线已下线')
+  } else {
+    const publicUpdates = expectStatus(await api('/api/community-updates'), 200, '游客可取公开更新')
+    assert.deepEqual(publicUpdates.updates, [fix, feature])
+  }
   const skinUpdates = expectStatus(await api('/api/community-skins/updates'), 200, '游客可取装扮更新')
   assert.deepEqual(skinUpdates.updates.map(event => [event.source, event.id, event.kind]),
     [[source, skinId, 'added'], [source, otherId, 'added']])
   assert.deepEqual(skinUpdates.pending.map(event => [event.source, event.id, event.kind]), [[pendingSource, pendingId, 'added']])
   assert.equal(skinUpdates.pending_source_available, true)
-  console.log('通过真实 Node 服务 API 验收，访客更新、装扮状态、权限、站内先保存、Issue 筛选和只读查证均符合预期。GitHub 写入三次均为本机替身。')
+  console.log('通过真实 Node 服务 API 验收，旧更新入口、装扮状态、权限、站内先保存、Issue 筛选和只读查证均符合预期。GitHub 写入三次均为本机替身。')
 }
 
 async function verifyLegacyApi() {
@@ -283,10 +304,18 @@ async function backendMode() {
 async function verifyBrowser(backend) {
   const scratch = join(root, 'browser')
   mkdirSync(scratch)
+  const releaseData = []
+  if (mainlineSnapshot) {
+    const { RECENT_UPDATES } = await import(pathToFileURL(join(client, 'recent-updates-data.js')).href)
+    const firstFix = RECENT_UPDATES.find(release => release.groups.some(([name]) => name === '修复'))
+    assert(RECENT_UPDATES.length && firstFix, '构建产物缺少近期更新或修复分组')
+    releaseData.push(RECENT_UPDATES[0], firstFix)
+  }
   // 在隔离目录内使用相对临时路径，避免 Chromium 的 Unix socket 地址超长。
   const browser = spawn(process.env.PYTHON || 'python3', [browserFile, '--origin', origin, '--env-file', envFile, '--backend', backend,
     '--skin-source', source, '--fix-title', fix.title, '--feature-title', feature.title, '--other-skin-title', otherSkinTitle,
-    '--issue', String(fix.issue), '--denied-title', deniedTitle], {
+    '--issue', String(fix.issue), '--denied-title', deniedTitle, '--release-data', JSON.stringify(releaseData),
+    '--skin-order', JSON.stringify(skinOrder)], {
     cwd: scratch, env: { ...process.env, TMPDIR: '.', PYTHONUNBUFFERED: '1' }, stdio: 'inherit',
   })
   const [code] = await once(browser, 'exit')
@@ -301,6 +330,15 @@ try {
   for (const dir of [dirname(database), dirname(envFile), join(root, 'logs')]) mkdirSync(dir, { recursive: true })
   db = new DatabaseSync(database)
   db.exec(readFileSync(join(website, 'schema.sql'), 'utf8'))
+  // 按当前主线 README 补齐 schema.sql 快照未包含的迁移。
+  if (mainlineSnapshot) {
+    for (const file of readdirSync(migrations).sort()) {
+      const id = Number(file.split('_')[0])
+      if (file.endsWith('.sql') && ((id >= 180 && id <= 183) || id > 201)) {
+        db.exec(readFileSync(join(migrations, file), 'utf8'))
+      }
+    }
+  }
   await start(false)
   const backend = await backendMode()
   await seedCatalog(values['skin-root'], backend)
