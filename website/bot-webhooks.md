@@ -49,7 +49,9 @@ curl "$UPLOAD_URL" \
 
 群成员发出 `/status api` 时，尽欢向该命令的回调发送 `type` 为 `chat.command` 的 JSON。其他字段有 `event_id`、`installation_id`、`group_id`、`message_id`、`bot_username`、`sender_id`、`sender_username`、`command`、`args` 和 `created_at`。已有的 `@bot_… /status api` 形式也可以使用。
 
-每群可设置一个默认对话回调。接入方勾选「接收艾特机器人后的对话」后，群成员把群机器人放在消息开头并输入正文，如 `@bot_… 你好`，回调会收到 `type: "chat.mention"` 和 `text: "你好"`。它沿用命令事件的消息、群、发送者和签名字段。`text` 取代 `command` 与 `args`。只有艾特且没有正文时不触发。
+想接入对话时，给自己的回调登记「聊天身份名」。每群可以有多个身份。群友发送 `@机器人 你好` 或 `/chat 你好` 时，选中的回调收到同样的 `type: "chat.command"`，其中 `command: "chat"`、`args: "你好"`，并附上 `chat_name`。接收端可按 `group_id` 和 `sender_id` 保存对话上下文。
+
+只有一个可用身份时自动选用。有多个且群友还没有选过时，群里先列出身份，发送 `/chat 选择 身份名` 后会继续处理刚才的消息。选择按群和用户保存。发送 `@机器人 切换身份` 或 `/chat 切换身份` 可以重新选择。只有艾特且没有正文时不触发。
 
 接收端用签名密钥字符串的 UTF-8 字节，对 `X-Jinhuan-Timestamp + "." + 原始请求正文` 计算 HMAC-SHA256。对比十六进制结果和 `X-Jinhuan-Signature` 中 `sha256=` 后的值，并核对时间窗口。拿到已验证的 `sender_id` 后，可以按指令检查调用者权限。
 

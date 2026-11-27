@@ -10365,7 +10365,15 @@ function chatMsg(m, { cont, pane, pending } = {}) {
       h('span', { class: 'cm-redpack-foot' }, m.redpack.game==='free_guess'?'进入猜词专区':m.redpack.snapshot?.claimed ? '已领取' : ({exhausted:'被抢光啦',expired:'已过期',cancelled:'已取消',registered:'等待开奖',drawing:'正在开奖',not_won:'未中奖',payment_pending:'等待发放',simulation:'模拟奖励',draft:'尚未开放',unconfirmed:'结果待核对'})[m.redpack.snapshot?.state] || (m.redpack.draw?.kind==='lottery'?'参与 / 查看抽奖':m.redpack.provider && m.redpack.provider!=='native' || m.redpack.solved ? '查看红包' : '戳我拆开'), h('span', null, (m.redpack.provider==='coin52'||m.redpack.payment_provider==='coin52')?dcoinIcon(h):m.redpack.game==='free_guess'?'猜词游戏':m.redpack.game==='ldc'||m.redpack.provider && m.redpack.provider!=='native'?'LDC 红包':m.redpack.ldc_count!=null?`${m.redpack.ldc_count} 份奖励 · ${m.redpack.opened} 人拆封`:`${m.redpack.opened} 人拆过`))))
     const displayBody=excerpt?m.body:m.redpack?m.body:socialMessageText(m.body||'')
     if(excerpt)body.push(h('div',{class:'cm-text cm-novel-outer'},novelExcerptCard(excerpt,h),edited))
-    if (botMessage && m.body) body.push(h('div', { class: 'cm-text cm-bot-text' }, linkify(m.body)))
+    if (botMessage && m.body) {
+      const choose = m.system_ref?.startsWith('persona-menu:') && pane?.send &&
+        (m.reply_to?.me ?? m.reply_to?.username === S.me?.username)
+      const [heading, ...options] = m.body.split('\n')
+      body.push(h('div', { class: 'cm-text cm-bot-text' }, choose
+        ? [heading, h('div', {class:'cm-bot-personas'}, ...options.map(command =>
+          h('button', {class:'btn sm', type:'button', onclick:()=>pane.send(command)}, command.slice('/chat 选择 '.length))))]
+        : linkify(m.body)))
+    }
     else if (!excerpt && (!m.redpack || m.redpack.shared) && displayBody && !lnk?.only) body.push(h('div', stkOnly(displayBody) ? { class:'cm-text stk-only' } : bubbleView(m.user, 'cm-text','chat',false,m.id),
       (raffleOf(m.user)||personalOf(m.user,'chat')) ? h('span', { class:'ds-copy rt-copy' }, richBody(displayBody, { md:'lite' }), edited) : [richBody(displayBody, { md: 'lite' }), edited]))
     if (lnk) body.push(linkImg(lnk.url, lnk.only && edited))

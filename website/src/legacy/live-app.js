@@ -13039,7 +13039,7 @@ app.post("/api/chat/groups/:id/messages", async (c) => {
 		...favoriteGuard ? [favoriteGuard] : [],
 		db.prepare(`INSERT INTO chat_messages (group_id, user_id, body, image_key, width, height, media, reply_to, created_at, updated_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`).bind(g.id, u.id, body, key, key ? dims.w || null : null, key ? dims.h || null : null, mediaJson, replyTo || null, t, t),
-		...botEvent ? [botEvent.statement] : [],
+		...(botEvent?.statements ?? []),
 		...chatRoadStatements(db, null, body, roadAttachments, t)
 	]).catch((error) => {
 		if (String(error).includes("favorite_source_changed")) fail(409, "来源消息已变化，请重新打开收藏");

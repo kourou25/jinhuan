@@ -54,10 +54,11 @@ function receiverFields(c: C, body: Record<string,unknown>) {
   const input = body.commands ?? []
   if (!Array.isArray(input) || input.some(name => typeof name !== 'string' || !BOT_COMMAND.test(name))) fail(400, '指令格式无效')
   const commands = [...new Set(input as string[])]
-  if (commands.some(name => name === 'doc' || name === 'help')) fail(400, '/help 和 /doc 由本群机器人提供')
-  if (body.accept_mentions !== undefined && typeof body.accept_mentions !== 'boolean') fail(400, '对话选项无效')
-  const mentions = body.accept_mentions === true ? 1 : 0
-  if (!!callback !== !!(commands.length || mentions)) fail(400, '请同时填写回调地址和命令，或启用艾特对话')
+  if (commands.some(name => name === 'doc' || name === 'help' || name === 'chat')) fail(400, '/help、/doc 和 /chat 由本群机器人分发，请在聊天身份名中登记 /chat 服务')
+  if (body.chat_name != null && typeof body.chat_name !== 'string') fail(400, '请填写有效的聊天身份名')
+  const chatName = typeof body.chat_name === 'string' ? body.chat_name.normalize('NFKC').trim() || null : null
+  if (chatName && !/^[\p{L}\p{N}_-]{1,24}$/u.test(chatName)) fail(400, '身份名使用 1–24 个文字、数字、下划线或连字符')
+  if (!!callback !== !!(commands.length || chatName)) fail(400, '请填写回调地址，并登记命令或聊天身份名')
   if (callback && !c.env.CHAT_BOT_WEBHOOK_KEY) fail(503, '站点尚未配置机器人回调签名')
   const inputDescriptions = body.descriptions ?? {}
   if (!inputDescriptions || typeof inputDescriptions !== 'object' || Array.isArray(inputDescriptions)) fail(400, '命令描述格式无效')
@@ -66,7 +67,7 @@ function receiverFields(c: C, body: Record<string,unknown>) {
     return [name, value.trim()]
   }))
   if (body.gallery_access !== undefined && typeof body.gallery_access !== 'boolean') fail(400, '图库读取选项无效')
-  return { callback, mentions, commands: JSON.stringify(commands), descriptions: JSON.stringify(descriptions), gallery: body.gallery_access === true ? 1 : 0 }
+  return { callback, chatName, commands: JSON.stringify(commands), descriptions: JSON.stringify(descriptions), gallery: body.gallery_access === true ? 1 : 0 }
 }
 
 const conflictingCommands = `EXISTS(SELECT 1 FROM chat_bot_installations other
@@ -78,11 +79,11 @@ chatBots.get(managePath, async c => {
   const db = c.env.DB
   const [{ results }, identity] = await Promise.all([
     db.prepare(`SELECT i.id,CASE WHEN i.created_by=?2 THEN i.callback_url END AS callback_url,
-      i.created_by=?2 AS own,i.commands,i.command_descriptions,i.gallery_access,i.accept_mentions,i.enabled,
+      i.created_by=?2 AS own,i.commands,i.command_descriptions,i.gallery_access,i.chat_name,i.enabled,
       b.name,owner.id AS maintainer_id,owner.username AS maintainer,(${botMaintainerActive}) AS active_owner
       FROM chat_bot_installations i JOIN users b ON b.id=i.bot_id JOIN users owner ON owner.id=i.created_by
       WHERE i.group_id=?1 ORDER BY i.created_at,i.id`).bind(gid,u.id).all<{
-        commands:string;command_descriptions:string;enabled:number;own:number;gallery_access:number;accept_mentions:number;active_owner:number;maintainer_id:number;maintainer:string
+        commands:string;command_descriptions:string;enabled:number;own:number;gallery_access:number;chat_name:string|null;active_owner:number;maintainer_id:number;maintainer:string
       }>(),
     db.prepare(`SELECT b.username,b.name,doc_post_id FROM chat_group_bot_identity identity JOIN users b ON b.id=identity.bot_id
       WHERE group_id=?`).bind(gid).first<{doc_post_id:number|null;username:string;name:string}>(),
@@ -97,7 +98,7 @@ chatBots.get(managePath, async c => {
   return c.json({ identity, can_edit_doc: isChatAdmin(u), bots: results.map(({ command_descriptions, maintainer_id, ...bot }) => ({
     ...bot, maintainer:anonymous.get(maintainer_id) ?? bot.maintainer,
     commands: JSON.parse(bot.commands), descriptions: JSON.parse(command_descriptions), own: !!bot.own,
-    enabled: !!bot.enabled, active_owner: !!bot.active_owner, gallery_access: !!bot.gallery_access, accept_mentions:!!bot.accept_mentions,
+    enabled: !!bot.enabled, active_owner: !!bot.active_owner, gallery_access: !!bot.gallery_access, chat_name:bot.chat_name,
   })) })
 })
 
@@ -141,7 +142,7 @@ chatBots.post(managePath, async c => {
   const body = await boundedJson(c)
   const name = typeof body.name === 'string' ? body.name.trim() : ''
   if (!name || [...name].length > 24 || /[\p{Cc}\p{Cf}]/u.test(name)) fail(400, '机器人名称需为 1–24 个字符')
-  const { callback, commands, descriptions, gallery, mentions } = receiverFields(c,body)
+  const { callback, commands, descriptions, gallery, chatName } = receiverFields(c,body)
 
   const id = crypto.randomUUID(), token = 'jhb_' + randHex(32), keyVersion = crypto.randomUUID()
   const username = 'bot_' + randHex(6), t = now(), db = c.env.DB
@@ -155,15 +156,15 @@ chatBots.post(managePath, async c => {
         AND NOT EXISTS(SELECT 1 FROM chat_bans WHERE group_id=?4 AND user_id=?6)
         AND NOT EXISTS(SELECT 1 FROM chat_bot_installations other JOIN json_each(other.commands) old
           JOIN json_each(?7) incoming ON incoming.value=old.value WHERE other.group_id=?4)
-        AND (?8=0 OR NOT EXISTS(SELECT 1 FROM chat_bot_installations i WHERE i.group_id=?4 AND i.accept_mentions=1))
-      RETURNING id`).bind(username, name, t, gid, BOT_GROUP_LIMIT, u.id, commands,mentions),
-    db.prepare(`INSERT INTO chat_bot_installations(id,group_id,bot_id,created_by,token_hash,key_version,callback_url,commands,created_at,gallery_access,command_descriptions,accept_mentions)
+        AND (?8 IS NULL OR NOT EXISTS(SELECT 1 FROM chat_bot_installations i WHERE i.group_id=?4 AND i.chat_name=?8))
+      RETURNING id`).bind(username, name, t, gid, BOT_GROUP_LIMIT, u.id, commands,chatName),
+    db.prepare(`INSERT INTO chat_bot_installations(id,group_id,bot_id,created_by,token_hash,key_version,callback_url,commands,created_at,gallery_access,command_descriptions,chat_name)
       SELECT ?,?,id,?,?,?,?,?,?,?,?,? FROM users WHERE username=? AND kind='bot' AND id=last_insert_rowid() RETURNING id`)
-      .bind(id, gid, u.id, await sha256(token), keyVersion, callback, commands, t, gallery, descriptions, mentions, username),
+      .bind(id, gid, u.id, await sha256(token), keyVersion, callback, commands, t, gallery, descriptions, chatName, username),
     db.prepare(`INSERT OR IGNORE INTO chat_group_bot_identity(group_id,bot_id) SELECT group_id,bot_id FROM chat_bot_installations WHERE id=?`)
       .bind(id),
   ])
-  if (!result[1].results.length) fail(409, `命令或艾特对话已被登记，或本群已达到 ${BOT_GROUP_LIMIT} 个回调配置`)
+  if (!result[1].results.length) fail(409, `命令或聊天身份名已被登记，或本群已达到 ${BOT_GROUP_LIMIT} 个回调配置`)
   const shared = await db.prepare(`SELECT b.username FROM chat_group_bot_identity identity JOIN users b ON b.id=identity.bot_id
     WHERE identity.group_id=?`).bind(gid).first<{username:string}>()
   return c.json({ id, username:shared?.username ?? username, ...await credentials(c, id, token, keyVersion, callback) }, 201)
@@ -174,28 +175,28 @@ chatBots.patch(managePath + '/:id', async c => {
   const { gid,u } = await manage(c), id = installId(c)
   const body = await boundedJson(c)
   const row = await c.env.DB.prepare(`SELECT * FROM chat_bot_installations WHERE id=? AND group_id=? AND created_by=?`)
-    .bind(id,gid,u.id).first<{enabled:number;callback_url:string|null;key_version:string;commands:string;command_descriptions:string;gallery_access:number;accept_mentions:number}>()
+    .bind(id,gid,u.id).first<{enabled:number;callback_url:string|null;key_version:string;commands:string;command_descriptions:string;gallery_access:number;chat_name:string|null}>()
   if (!row) return fail(404, '回调配置不存在或不属于你')
   const enabled = body.enabled ?? !!row.enabled
   if (typeof enabled !== 'boolean') fail(400, '请选择暂停或启用')
   // Pause/resume remains valid for previously configured /help or /doc callbacks.
-  const changesFields = ['commands','callback_url','descriptions','gallery_access','accept_mentions'].some(key=>key in body)
+  const changesFields = ['commands','callback_url','descriptions','gallery_access','chat_name'].some(key=>key in body)
   const fields = changesFields ? receiverFields(c,{
     commands: JSON.parse(row.commands), callback_url: row.callback_url,
-    descriptions: JSON.parse(row.command_descriptions), gallery_access: !!row.gallery_access, accept_mentions:!!row.accept_mentions, ...body,
-  }) : {callback:row.callback_url,commands:row.commands,descriptions:row.command_descriptions,gallery:row.gallery_access,mentions:row.accept_mentions}
+    descriptions: JSON.parse(row.command_descriptions), gallery_access: !!row.gallery_access, chat_name:row.chat_name, ...body,
+  }) : {callback:row.callback_url,commands:row.commands,descriptions:row.command_descriptions,gallery:row.gallery_access,chatName:row.chat_name}
   const callbackChanged = fields.callback !== row.callback_url
   const keyVersion = callbackChanged ? crypto.randomUUID() : row.key_version
-  const invalidate = !enabled || callbackChanged || fields.commands !== row.commands || fields.mentions !== row.accept_mentions
+  const invalidate = !enabled || callbackChanged || fields.commands !== row.commands || fields.chatName !== row.chat_name
   const [updated] = await c.env.DB.batch([
-    c.env.DB.prepare(`UPDATE chat_bot_installations SET enabled=?5,callback_url=?6,commands=?4,key_version=?7,gallery_access=?8,command_descriptions=?9,accept_mentions=?10
+    c.env.DB.prepare(`UPDATE chat_bot_installations SET enabled=?5,callback_url=?6,commands=?4,key_version=?7,gallery_access=?8,command_descriptions=?9,chat_name=?10
       WHERE group_id=?1 AND id=?2 AND created_by=?3 AND (commands=?4 OR NOT ${conflictingCommands})
-      AND (?10=0 OR NOT EXISTS(SELECT 1 FROM chat_bot_installations other WHERE other.group_id=?1 AND other.id!=?2 AND other.accept_mentions=1)) RETURNING id`)
-      .bind(gid,id,u.id,fields.commands,enabled?1:0,fields.callback,keyVersion,fields.gallery,fields.descriptions,fields.mentions),
+      AND (?10 IS NULL OR NOT EXISTS(SELECT 1 FROM chat_bot_installations other WHERE other.group_id=?1 AND other.id!=?2 AND other.chat_name=?10)) RETURNING id`)
+      .bind(gid,id,u.id,fields.commands,enabled?1:0,fields.callback,keyVersion,fields.gallery,fields.descriptions,fields.chatName),
     ...(invalidate ? [c.env.DB.prepare(`UPDATE chat_bot_events SET state='cancelled',lease=NULL,error='回调配置已更新'
       WHERE changes()=1 AND installation_id=? AND state IN('pending','delivering')`).bind(id)] : []),
   ])
-  if (!updated.results.length) fail(409, '命令或艾特对话已被另一个回调登记，或该配置已移除')
+  if (!updated.results.length) fail(409, '命令或聊天身份名已被另一个回调登记，或该配置已移除')
   return c.json({ ok: true, ...(callbackChanged && fields.callback && c.env.CHAT_BOT_WEBHOOK_KEY ? {
     signing_secret: await botSigningSecret(c.env.CHAT_BOT_WEBHOOK_KEY,id,keyVersion),
   } : {}) })

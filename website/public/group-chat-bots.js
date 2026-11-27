@@ -12,7 +12,7 @@ export function groupChatBots({ h, api, groupId, onChange }) {
   const callback = h('input', { class: 'input', type: 'url', maxlength: 500, placeholder: 'https://hooks.example.com/jinhuan' })
   const commands = h('textarea', { class: 'input', rows: 5, placeholder: '/status 查看服务状态\n/提醒 设置群提醒' })
   const gallery = h('input', { type: 'checkbox' })
-  const mentions = h('input', { type: 'checkbox' })
+  const chatName = h('input', { class: 'input', maxlength:24, placeholder:'如 小助手' })
   const field = (label, input) => h('label', { class: 'gp-bot-field' }, h('span', null, label), input)
   const button = (label, onclick) => h('button', { class: 'btn btn-ghost sm', type: 'button', onclick }, label)
   let loaded = false, busy = false, editing = null
@@ -36,14 +36,14 @@ export function groupChatBots({ h, api, groupId, onChange }) {
       const edit = editing
       const data = await api(edit ? path + '/' + edit : path, { method: edit ? 'PATCH' : 'POST', body: {
         name: name.value, callback_url: callback.value, commands: Object.keys(descriptions), descriptions,
-        gallery_access: gallery.checked, accept_mentions:mentions.checked,
+        gallery_access: gallery.checked, chat_name:chatName.value.trim(),
       } })
       resetForm()
       if (data.push_token || data.signing_secret) showCredentials(data)
       return edit ? '回调已更新' : '回调已登记'
     })
   } }, field('回调名称', name), field('HTTPS 回调地址', callback), field('命令和描述，每行一条', commands),
-    h('label', { class: 'gp-inline' }, mentions, '接收艾特机器人后的对话（每群一项）'),
+    field('聊天身份名（可选，用于 /chat 和艾特对话）',chatName),
     h('label', { class: 'gp-inline' }, gallery, '允许此回调使用我的图库读取权限'), h('div', { class: 'gp-inline' }, submit, cancel))
   const element = h('div', { class: 'gp-bots' }, configuration, form, status, secrets, list)
 
@@ -100,7 +100,7 @@ export function groupChatBots({ h, api, groupId, onChange }) {
     const logs = h('div', { class: 'gp-bot-logs', hidden: true })
     return h('section', { class: 'gp-sec gp-bot-item' },
       h('strong', null, bot.name), h('p', { class: 'muted gp-note' }, '维护者 @' + bot.maintainer + (bot.enabled && bot.active_owner ? ' · 已启用' : ' · 未启用')),
-      bot.accept_mentions && h('p', { class: 'gp-note' }, '@机器人后输入文字 · 对话'),
+      bot.chat_name && h('p', { class: 'gp-note' }, '聊天身份 · '+bot.chat_name),
       ...bot.commands.map(command=>h('p', { class: 'gp-note' }, '/' + command + (bot.descriptions[command] ? ' · ' + bot.descriptions[command] : ''))),
       bot.own && h('div', { class: 'gp-files-controls' },
         button('编辑', () => {
@@ -108,10 +108,10 @@ export function groupChatBots({ h, api, groupId, onChange }) {
           name.value = bot.name
           name.readOnly = true
           callback.value = bot.callback_url || ''
-          commands.value = bot.commands.filter(command=>!['help','doc'].includes(command))
+          commands.value = bot.commands.filter(command=>!['help','doc','chat'].includes(command))
             .map(command=>'/' + command + (bot.descriptions[command] ? ' ' + bot.descriptions[command] : '')).join('\n')
           gallery.checked = bot.gallery_access
-          mentions.checked = bot.accept_mentions
+          chatName.value = bot.chat_name || ''
           submit.textContent = '保存回调'
           cancel.hidden = false
           callback.focus()
@@ -131,7 +131,7 @@ export function groupChatBots({ h, api, groupId, onChange }) {
           try {
             const { items } = await api(url + '/deliveries')
             logs.replaceChildren(...(items.length ? items.map(item => h('p', { class: 'gp-note' },
-              new Date(item.created_at * 1000).toLocaleString(), item.command ? ' · /' + item.command : ' · 艾特对话',
+              new Date(item.created_at * 1000).toLocaleString(), ' · /' + item.command,
               ' · ' + statusText[item.state], ' · ' + item.attempts + ' 次', item.error ? ' · ' + item.error : ''))
               : [h('p', { class: 'gp-note muted' }, '暂无投递记录')]))
           } catch (error) { logs.textContent = error.message }

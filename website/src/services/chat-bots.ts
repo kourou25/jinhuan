@@ -51,17 +51,80 @@ export const botMaintainerActive = `EXISTS(SELECT 1 FROM chat_members cm JOIN us
   WHERE cm.group_id=i.group_id AND owner.id=i.created_by AND owner.kind='user' AND owner.disabled=0 AND owner.silenced=0)
   AND NOT EXISTS(SELECT 1 FROM chat_bans ban WHERE ban.group_id=i.group_id AND ban.user_id=i.created_by)`
 
+const chatPersona = `(i.chat_name IS NOT NULL OR EXISTS(SELECT 1 FROM json_each(i.commands) WHERE value='chat'))`
+
+function chatPersonaStatements(db:D1Database, groupId:number, at:number, target:string|null, text:string) {
+  const requested = /^选择[ \t]+([^\r\n]+)$/.exec(text)?.[1].normalize('NFKC').trim()
+  const action = requested ? 'choose' : !text || text === '切换身份' ? 'menu' : 'turn'
+  const id = crypto.randomUUID()
+  const routing = `WITH source AS MATERIALIZED (
+    SELECT m.id,m.user_id,m.body,identity.bot_id FROM chat_messages m
+    JOIN chat_group_bot_identity identity ON identity.group_id=m.group_id
+    JOIN users shared ON shared.id=identity.bot_id AND shared.kind='bot' AND shared.disabled=0
+    WHERE m.id=last_insert_rowid() AND m.group_id=?1 AND (?2 IS NULL OR shared.username=?2)
+  ), available AS MATERIALIZED (
+    SELECT i.id,COALESCE(i.chat_name,b.username) AS name FROM chat_bot_installations i
+    JOIN users b ON b.id=i.bot_id AND b.kind='bot' AND b.disabled=0
+    WHERE i.group_id=?1 AND i.enabled=1 AND i.callback_url IS NOT NULL AND ${chatPersona} AND ${botMaintainerActive}
+  ), preference AS (
+    SELECT p.* FROM chat_bot_persona_choices p JOIN source s ON s.user_id=p.user_id WHERE p.group_id=?1
+  ), picked AS MATERIALIZED (
+    SELECT available.id,available.name FROM available WHERE
+      (?3='choose' AND available.name=?4 COLLATE NOCASE)
+      OR (?3='turn' AND (available.id=(SELECT installation_id FROM preference)
+        OR ((SELECT installation_id FROM preference) IS NULL AND (SELECT COUNT(*) FROM available)=1)))
+  )`
+  const bind = (sql:string,...values:(string|number|null)[]) =>
+    db.prepare(routing + sql).bind(groupId,target,action,requested ?? text,...values)
+
+  const event = bind(`INSERT OR IGNORE INTO chat_bot_events(id,installation_id,message_id,command,args,source_body,next_at,created_at)
+    SELECT ?5,p.id,CASE WHEN ?3='choose' THEN original.id ELSE s.id END,'chat',
+      CASE WHEN ?3='choose' THEN previous.pending_text ELSE ?4 END,
+      CASE WHEN ?3='choose' THEN original.body ELSE s.body END,?6,?6
+    FROM source s CROSS JOIN picked p LEFT JOIN preference previous ON previous.user_id=s.user_id
+    LEFT JOIN chat_messages original ON original.id=previous.pending_message_id AND original.group_id=?1
+      AND original.user_id=s.user_id AND original.deleted=0 AND original.edited_at IS NULL AND original.created_at>=?6-600
+    WHERE (?3='turn' OR (?3='choose' AND original.id IS NOT NULL AND previous.pending_text IS NOT NULL))
+      AND (SELECT COUNT(*) FROM chat_bot_events e WHERE e.installation_id=p.id AND e.created_at>?6-60)<30
+    RETURNING id`,id,at)
+
+  // WITHOUT ROWID keeps the source message ID available for the following prompt.
+  const preference = bind(`INSERT INTO chat_bot_persona_choices(group_id,user_id,installation_id,pending_message_id,pending_text)
+    SELECT ?1,s.user_id,p.id,
+      CASE WHEN ?3='turn' AND p.id IS NULL AND EXISTS(SELECT 1 FROM available) THEN s.id END,
+      CASE WHEN ?3='turn' AND p.id IS NULL AND EXISTS(SELECT 1 FROM available) THEN ?4 END
+    FROM source s LEFT JOIN picked p ON 1 WHERE ?3!='choose' OR p.id IS NOT NULL
+    ON CONFLICT(group_id,user_id) DO UPDATE SET installation_id=excluded.installation_id,
+      pending_message_id=excluded.pending_message_id,pending_text=excluded.pending_text`)
+  const prompt = bind(`INSERT OR IGNORE INTO chat_messages(group_id,user_id,body,reply_to,created_at,updated_at,system_kind,system_ref)
+    SELECT ?1,s.bot_id,CASE
+      WHEN ?3='choose' AND p.id IS NOT NULL THEN '已切换到「'||p.name||'」。'
+      WHEN NOT EXISTS(SELECT 1 FROM available) THEN '本群还没有启用聊天身份。发送 /help 查看命令。'
+      ELSE '请选择聊天身份：'||char(10)||(SELECT group_concat(line,char(10)) FROM (
+        SELECT '/chat 选择 '||name AS line FROM available ORDER BY name COLLATE NOCASE
+      )) END,s.id,?5,?5,'chat_bot',
+      CASE WHEN EXISTS(SELECT 1 FROM available) AND NOT (?3='choose' AND p.id IS NOT NULL)
+        THEN 'persona-menu:' ELSE 'persona-status:' END||s.id
+    FROM source s LEFT JOIN picked p ON 1
+    WHERE (?3!='turn' OR NOT EXISTS(SELECT 1 FROM available) OR (SELECT pending_message_id FROM preference)=s.id)
+      AND (SELECT COUNT(*) FROM chat_messages q WHERE q.user_id=s.bot_id AND q.created_at>?5-60)<30`,at)
+  return {id,statements:[event,preference,prompt]}
+}
+
 function groupHelpInsert(db: D1Database, groupId: number, at: number, doc: boolean, origin: string) {
   return db.prepare(`INSERT OR IGNORE INTO chat_messages(group_id,user_id,body,reply_to,created_at,updated_at,system_kind,system_ref)
     SELECT identity.group_id,identity.bot_id,
       CASE WHEN ?3=1 THEN COALESCE((SELECT '接入说明 '||?4||'/m/'||post.id
         FROM memes post WHERE post.id=identity.doc_post_id AND post.hidden=0),'本群还没有设置对接说明帖子。')
-      ELSE '本群机器人命令'||char(10)||'/help · 查看命令列表'||char(10)||'/doc · 对接说明'||char(10)||COALESCE((SELECT group_concat(line,char(10)) FROM (
+      ELSE '本群机器人命令'||char(10)||'/help · 查看命令列表'||char(10)||'/doc · 对接说明'||char(10)||
+      CASE WHEN EXISTS(SELECT 1 FROM chat_bot_installations i JOIN users receiver ON receiver.id=i.bot_id AND receiver.disabled=0
+        WHERE i.group_id=?1 AND i.enabled=1 AND i.callback_url IS NOT NULL AND ${chatPersona} AND ${botMaintainerActive})
+        THEN '/chat · 和机器人对话或切换聊天身份'||char(10) ELSE '' END||COALESCE((SELECT group_concat(line,char(10)) FROM (
         SELECT '/'||commands.value||COALESCE(' · '||group_concat(DISTINCT NULLIF(descriptions.value,'')),'') AS line
         FROM chat_bot_installations i JOIN users receiver ON receiver.id=i.bot_id AND receiver.disabled=0
         JOIN json_each(i.commands) commands
         LEFT JOIN json_each(i.command_descriptions) descriptions ON descriptions.key=commands.value
-        WHERE i.group_id=?1 AND i.enabled=1 AND i.callback_url IS NOT NULL AND commands.value NOT IN('help','doc') AND ${botMaintainerActive}
+        WHERE i.group_id=?1 AND i.enabled=1 AND i.callback_url IS NOT NULL AND commands.value NOT IN('help','doc','chat') AND ${botMaintainerActive}
         GROUP BY commands.value ORDER BY commands.value
       )), '暂无已启用的回调命令') END,m.id,?2,?2,'chat_bot','group-help:'||m.id
     FROM chat_group_bot_identity identity
@@ -87,11 +150,13 @@ export function botCommandInsert(db: D1Database, groupId: number, body: string, 
     target = mention[1].toLowerCase()
     args = mention[2].trim()
     if (!args || args.startsWith('/') || args.length > BOT_TEXT_LIMIT) return null
+    name = 'chat'
   }
   if (!target && (name === 'help' || name === 'doc') && !args) {
-    return { id: null, statement: groupHelpInsert(db, groupId, at, name === 'doc', origin) }
+    return { id: null, statements: [groupHelpInsert(db, groupId, at, name === 'doc', origin)] }
   }
   if (!webhookReady) return null
+  if (name === 'chat') return chatPersonaStatements(db,groupId,at,target,args)
   const id = crypto.randomUUID()
   const statement = db.prepare(`WITH receivers AS MATERIALIZED (
     SELECT i.id FROM chat_bot_installations i JOIN users b ON b.id=i.bot_id AND b.kind='bot' AND b.disabled=0
@@ -100,22 +165,21 @@ export function botCommandInsert(db: D1Database, groupId: number, body: string, 
     WHERE i.group_id=?5
       AND i.enabled=1 AND i.callback_url IS NOT NULL
       AND ${botMaintainerActive}
-      AND CASE WHEN ?2='' THEN i.accept_mentions=1 AND shared.username=?6 ELSE
-        (?6 IS NULL OR b.username=?6 OR shared.username=?6) AND EXISTS(SELECT 1 FROM json_each(i.commands) WHERE value=?2)
-      END
+      AND (?6 IS NULL OR b.username=?6 OR shared.username=?6)
+      AND EXISTS(SELECT 1 FROM json_each(i.commands) WHERE value=?2)
   ) INSERT INTO chat_bot_events(id,installation_id,message_id,command,args,source_body,next_at,created_at)
     SELECT ?1,r.id,m.id,?2,?3,m.body,?4,?4 FROM receivers r
     JOIN chat_messages m ON m.id=last_insert_rowid() AND m.group_id=?5
     WHERE (SELECT COUNT(*) FROM receivers)=1
       AND (SELECT COUNT(*) FROM chat_bot_events e WHERE e.installation_id=r.id AND e.created_at>?4-60)<30
     RETURNING id`).bind(id, name, args, at, groupId, target)
-  return { id, statement }
+  return { id, statements:[statement] }
 }
 
 type Delivery = {
   installation_id: string; message_id: number; command: string; args: string; created_at: number
   group_id: number; callback_url: string; key_version: string; username: string
-  sender_id: number; sender_username: string
+  sender_id: number; sender_username: string; chat_name:string
 }
 
 export async function deliverBotEvent(env: Env, id: string) {
@@ -128,7 +192,7 @@ export async function deliverBotEvent(env: Env, id: string) {
   if (!claimed) return
 
   const event = await db.prepare(`SELECT e.installation_id,e.message_id,e.command,e.args,e.created_at,
-      i.group_id,i.callback_url,i.key_version,COALESCE(shared.username,b.username) AS username,u.id sender_id,u.username sender_username
+      i.group_id,i.callback_url,i.key_version,COALESCE(shared.username,b.username) AS username,u.id sender_id,u.username sender_username,COALESCE(i.chat_name,b.username) AS chat_name
     FROM chat_bot_events e JOIN chat_bot_installations i ON i.id=e.installation_id AND i.enabled=1
     JOIN users b ON b.id=i.bot_id AND b.kind='bot' AND b.disabled=0
     LEFT JOIN chat_group_bot_identity identity ON identity.group_id=i.group_id
@@ -138,7 +202,7 @@ export async function deliverBotEvent(env: Env, id: string) {
     JOIN chat_members cm ON cm.group_id=m.group_id AND cm.user_id=u.id
     WHERE e.id=? AND e.lease=? AND i.callback_url IS NOT NULL
       AND ${botMaintainerActive}
-      AND (e.command!='' OR i.accept_mentions=1)
+      AND (e.command!='chat' OR ${chatPersona})
       AND m.created_at>=cm.joined_at AND m.id>=${CHAT_HISTORY_FLOOR}
       AND NOT EXISTS(SELECT 1 FROM chat_bans WHERE group_id=m.group_id AND user_id=u.id)
       AND NOT EXISTS(SELECT 1 FROM user_limits WHERE user_id=u.id AND u.is_admin=0 AND kind='chat' AND (until=0 OR until>unixepoch()))`)
@@ -154,11 +218,11 @@ export async function deliverBotEvent(env: Env, id: string) {
         event.sender_id = Number(p?.id ?? -1); event.sender_username = String(p?.username ?? '鱼友')
       }
       const payload = JSON.stringify({
-        type: event.command ? 'chat.command' : 'chat.mention', event_id: id, installation_id: event.installation_id,
+        type: 'chat.command', event_id: id, installation_id: event.installation_id,
         group_id: event.group_id, message_id: event.message_id,
         bot_username: event.username, sender_id: event.sender_id, sender_username: event.sender_username,
-        ...(event.command ? { command:event.command, args:event.args } : { text:event.args }),
-        created_at: event.created_at,
+        command: event.command, args: event.args, created_at: event.created_at,
+        ...(event.command==='chat' ? { chat_name:event.chat_name } : {}),
       })
       const timestamp = String(now())
       const secret = await botSigningSecret(key, event.installation_id, event.key_version)
@@ -204,4 +268,8 @@ export async function runBotDeliveries(env: Env, at: number) {
 export async function pruneBotEvents(db: D1Database, at: number) {
   await db.prepare('DELETE FROM chat_bot_events WHERE id IN (SELECT id FROM chat_bot_events WHERE created_at<? ORDER BY created_at,id LIMIT 500)')
     .bind(at - RETENTION).run()
+  await db.prepare(`DELETE FROM chat_bot_persona_choices WHERE (group_id,user_id) IN (
+    SELECT p.group_id,p.user_id FROM chat_bot_persona_choices p LEFT JOIN chat_messages m ON m.id=p.pending_message_id
+    WHERE p.installation_id IS NULL AND (m.id IS NULL OR m.deleted=1 OR m.created_at<?) LIMIT 500
+  )`).bind(at-600).run()
 }
