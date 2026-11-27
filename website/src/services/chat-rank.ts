@@ -1,9 +1,15 @@
 import type {C} from '../types'
 import {fail} from '../lib/http'
 import {now} from '../lib/time'
+import {anonRank,isAnonGroup} from './anon-identity'
 
 const metrics={count:{column:'messages',direction:'DESC',index:'idx_chat_activity_count'},early:{column:'first_at',direction:'ASC',index:'idx_chat_activity_first'},late:{column:'last_at',direction:'DESC',index:'idx_chat_activity_last'}} as const
+// 匿名群：今日榜按对外身份分开统计，总榜除本人外一律「鱼友」
 export async function chatRankView(c:C,gid:number,uid:number){
+ const view=await rankView(c,gid,uid)
+ return isAnonGroup(gid)?anonRank(c as any,gid,view.metric,'today' in view?String(view.today):'',view.period,view):view
+}
+async function rankView(c:C,gid:number,uid:number){
  const metric=c.req.query('metric')||'count',period=c.req.query('period')==='all'?'all':'today'
  if(!Object.prototype.hasOwnProperty.call(metrics,metric))fail(400,'水群榜类型无效')
  if(period==='all'&&metric!=='count')return chatPodiumView(c,gid,uid,metric as 'early'|'late')

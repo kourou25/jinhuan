@@ -1,9 +1,9 @@
-export const AI_TASKS=['generation','hint','similarity','yesno','chat'] as const
+export const AI_TASKS=['generation','hint','similarity','yesno','chat','review'] as const
 export type AiTask=typeof AI_TASKS[number]
 export type ConnectionTask={connection:string;thinking:boolean;stream:boolean;maxTokens:number}
 export type ConnectionTasks=Partial<Record<AiTask,ConnectionTask>>
-export const taskLabels:Record<AiTask,string>={generation:'出题',hint:'给线索',similarity:'相关度',yesno:'是非判断',chat:'普通对话'}
-export const connectionTaskDefault=(task:AiTask):ConnectionTask=>({connection:'',thinking:false,stream:true,maxTokens:task==='generation'?384:task==='hint'?240:task==='chat'?1000:128})
+export const taskLabels:Record<AiTask,string>={generation:'出题',hint:'给线索',similarity:'相关度',yesno:'是非判断',chat:'普通对话',review:'内容审核'}
+export const connectionTaskDefault=(task:AiTask):ConnectionTask=>({connection:'',thinking:false,stream:task!=='review',maxTokens:task==='generation'?384:task==='hint'?240:task==='chat'?1000:128})
 export function parseConnectionTasks(value:unknown):ConnectionTasks{
  if(!value||typeof value!=='object'||Array.isArray(value))throw Error('用途配置无效')
  const result:ConnectionTasks={}

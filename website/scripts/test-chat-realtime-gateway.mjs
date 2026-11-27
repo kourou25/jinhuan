@@ -129,9 +129,7 @@ test('断线补拉期间，已追平订阅和其他群可以先收到新消息',
   await Promise.all([live('ready'), other('ready')])
   let posted = false
   hook.project = userId => {
-    if (userId !== 3) return
-    Atomics.wait(sleepWord, 0, 0, 4)
-    if (posted) return
+    if (userId !== 3 || posted) return
     posted = true
     setTimeout(async () => {
       await append(193, 7, 1, 192)

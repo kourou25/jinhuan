@@ -7,7 +7,9 @@ import { isOwner, needUser } from '../services/auth'
 import { isleThrottle } from './isle'
 import * as S from '../services/bottles'
 import * as M from '../services/bottle-money'
-import { cleanNick, randomNick } from '../services/bottle-names'
+import { cleanNick, isAnonAvatar, rollAvatar, rollNick } from '../services/bottle-names'
+import { reviewReported } from '../services/bottle-ai'
+import { attachMedia, checkMedia, claimMedia, MAX_BOTTLE_MEDIA, MAX_REPLY_MEDIA } from '../services/bottle-media'
 import { loadWords, saveWords } from '../services/bottle-words'
 
 export const bottles = new Hono<Ctx>()
@@ -42,19 +44,23 @@ bottles.get('/api/bottles', async (c) => {
   const u = needUser(c), owner = isOwner(c, u), admin = !!u.is_admin || owner
   c.header('cache-control', 'private, no-store')
   return c.json({
-    ...(await state(c, u)), moods: S.MOODS, max: S.BODY_MAX, days: S.DAYS, default_days: S.DEFAULT_DAYS, nick: randomNick(S.randomId()),
+    ...(await state(c, u)), moods: S.MOODS, max: S.BODY_MAX, days: S.DAYS, default_days: S.DEFAULT_DAYS, nick: rollNick(), avatar: rollAvatar(),
     reward: await M.rewardSource(c.env.DB) === 'off' ? 0 : M.REWARD, admin, owner, reports: admin ? await S.openReportCount(c.env.DB) : 0,
   })
 })
+// 重新随机一个匿名昵称 / 头像（发瓶子、匿名回信前选）
+bottles.get('/api/bottles/roll', (c) => { needUser(c); return c.json({ nick: rollNick(), avatar: rollAvatar() }) })
 bottles.post('/api/bottles', async (c) => {
   const u = await actor(c, 'post')
-  slow(u, 'throw', 20, 60)
+  slow(u, 'throw', 30, 60)
   const b = await boundedJson(c, 8000), op = S.opOf(b.op), mood = moodOf(b.mood)
   const days = b.days === undefined ? S.DEFAULT_DAYS : S.DAYS.includes(Number(b.days)) ? Number(b.days) : fail(400, '有效期不正确')
   // 默认匿名：只有明确传 anon:false 才是实名
   const anon = b.anon !== false
-  const body = await S.cleanBody(c.env.DB, b.body), nick = anon ? await cleanNick(c.env.DB, b.nick) : ''
-  const id = await S.throwBottle(c.env, u.id, { op, body, mood, days, anon, nick, show_badge: b.show_badge !== false, price: b.price })
+  const media = await checkMedia(c.env.DB, u.id, b.media, MAX_BOTTLE_MEDIA)
+  const nick = anon ? (await cleanNick(c.env.DB, b.nick)) || rollNick() : '', body = await S.cleanBody(c.env, c.env.DB, b.body, u.id, media.length > 0)
+  const id = await claimMedia(c.env.DB, u.id, media, () => S.throwBottle(c.env, u.id, { op, body: body.text, ai: body.ai, mood, days, anon, nick, avatar: isAnonAvatar(b.avatar) ? b.avatar : undefined, show_badge: b.show_badge !== false, price: b.price, mini: b.mini !== false }))
+  await attachMedia(c.env.DB, media, { bottle: id })
   return c.json({ bottle: await S.bottleView(c.env.DB, id, u.id), ...(await state(c, u)) })
 })
 bottles.post('/api/bottles/draw', async (c) => {
@@ -92,6 +98,19 @@ bottles.put('/api/bottles/settings', async (c) => {
   if (b.reward_source !== undefined) await M.setRewardSource(c.env.DB, b.reward_source)
   return c.json({ ...(await loadWords(c.env.DB)), reward_source: await M.rewardSource(c.env.DB) })
 })
+// 小程序里没有站内账号的人：站长按论坛编号封禁 / 解封
+bottles.get('/api/bottles/mini-users', async (c) => {
+  needOwner(c)
+  const { results } = await c.env.DB.prepare('SELECT sub,created_at FROM bottle_mini_users WHERE blocked=1 ORDER BY created_at DESC LIMIT 200').all()
+  return c.json({ items: results })
+})
+bottles.put('/api/bottles/mini-users/:sub', async (c) => {
+  needOwner(c)
+  const sub = c.req.param('sub'), blocked = (await boundedJson(c, 100)).blocked === true
+  const r = await c.env.DB.prepare('UPDATE bottle_mini_users SET blocked=? WHERE sub=?').bind(blocked ? 1 : 0, sub).run()
+  if (!r.meta.changes) fail(404, '没有这个编号')
+  return c.json({ sub, blocked })
+})
 bottles.get('/api/bottles/author-log', async (c) => {
   needOwner(c)
   const { results } = await c.env.DB.prepare('SELECT bottle_id,at FROM bottle_author_views ORDER BY id DESC LIMIT 100').all()
@@ -119,20 +138,25 @@ bottles.post('/api/bottles/replies/:rid/report', async (c) => {
   if (r.user_id === u.id) fail(400, '不用举报自己的回信')
   slow(u, 'report', 20, 3600)
   await S.report(c.env.DB, 'reply', r.id, u.id, await reasonOf(c))
+  await reviewReported(c.env, c.env.DB, 'reply', r.id)
   return c.json({ ok: true })
+})
+bottles.post('/api/bottles/replies/:rid/author', async (c) => {
+  const u = needOwner(c)
+  return c.json({ author: await S.revealReplyAuthor(c.env.DB, idOf(c, 'rid'), u.id) })
 })
 
 // ---------- 单个瓶子 ----------
 bottles.get('/api/bottles/:id', async (c) => {
   const u = needUser(c), b = await S.needBottle(c.env.DB, idOf(c), u)
   const page = await S.replyPage(c.env.DB, b.id, u.id, 0)
-  return c.json({ bottle: await S.bottleView(c.env.DB, b.id, u.id), replies: page.items, next: page.next })
+  // my_alias：我在这个瓶子里的匿名身份（只给本人；匿名回信过一次就固定）
+  return c.json({ bottle: await S.bottleView(c.env.DB, b.id, u.id), replies: page.items, next: page.next, my_alias: b.author_id === u.id ? null : await S.myAlias(c.env.DB, b.id, u.id) })
 })
 bottles.delete('/api/bottles/:id', async (c) => {
   const u = needUser(c), b = await S.needBottle(c.env.DB, idOf(c), u)
   if (b.deleted) fail(404, '这个瓶子已经漂远了')
-  // 瓶主删除时连正文一起清空；有待处理的举报时保留正文给管理员看
-  if (b.author_id === u.id) await c.env.DB.prepare(`UPDATE bottles SET deleted=1,body=CASE WHEN EXISTS(SELECT 1 FROM bottle_reports WHERE kind='bottle' AND target_id=?1 AND resolved=0) THEN body ELSE '' END WHERE id=?1`).bind(b.id).run()
+  if (b.author_id === u.id) await S.deleteOwn(c.env.DB, b.id)
   else if (u.is_admin) await S.resolveReports(c.env.DB, 'bottle', b.id, true)
   else fail(403, '没有权限')
   return c.json({ ok: true })
@@ -188,7 +212,10 @@ bottles.post('/api/bottles/:id/replies', async (c) => {
   const done = await db.prepare('SELECT id FROM bottle_replies WHERE user_id=? AND op=?').bind(u.id, op).first<{ id: number }>()
   if (done) return c.json({ reply: (await S.replyPage(db, b.id, u.id, done.id - 1)).items[0] })
   slow(u, 'reply', 10, 60)
-  const body = await S.cleanBody(db, input.body), host = b.author_id === u.id
+  const host = b.author_id === u.id, anon = input.anon === true && !host
+  const want = anon ? { nick: (await cleanNick(db, input.nick)) || undefined, avatar: isAnonAvatar(input.avatar) ? input.avatar : undefined } : {}
+  const media = await checkMedia(db, u.id, input.media, MAX_REPLY_MEDIA)
+  const body = await S.cleanBody(c.env, db, input.body, u.id, media.length > 0)
   // 页面打开后在别的标签页换了账号：身份和输入框上写的不一致就不寄，免得匿名变实名
   if (typeof input.as_host === 'boolean' && input.as_host !== host) fail(409, '登录的账号变了，刷新页面后再寄')
   let to: number | null = null
@@ -196,9 +223,11 @@ bottles.post('/api/bottles/:id/replies', async (c) => {
     to = Number(input.reply_to)
     if (!Number.isSafeInteger(to) || !await db.prepare('SELECT 1 AS ok FROM bottle_replies WHERE id=? AND bottle_id=? AND deleted=0 AND hidden=0').bind(to, b.id).first()) fail(400, '要回复的那封信已经不在了')
   }
+  if (anon) await S.replyAlias(db, b, u.id, want)
   // 是不是瓶主由服务端判断，前端改不了
-  const r = await db.prepare('INSERT INTO bottle_replies(bottle_id,user_id,is_host,reply_to,body,created_at,op) VALUES(?,?,?,?,?,?,?) RETURNING id')
-    .bind(b.id, u.id, host ? 1 : 0, to, body, now(), op).first<{ id: number }>()
+  const r = await claimMedia(db, u.id, media, () => db.prepare('INSERT INTO bottle_replies(bottle_id,user_id,is_host,reply_to,body,created_at,op,anon,ai) VALUES(?,?,?,?,?,?,?,?,?) RETURNING id')
+    .bind(b.id, u.id, host ? 1 : 0, to, body.text, now(), op, anon ? 1 : 0, body.ai).first<{ id: number }>())
+  await attachMedia(db, media, { bottle: b.id, reply: r!.id })
   await S.reheat(db, b.id).run()
   if (!host) await M.queueReward(c.env, { bottle: b.id, author: b.author_id, actor: u.id, kind: 'reply' })
   return c.json({ reply: (await S.replyPage(db, b.id, u.id, r!.id - 1)).items[0] })
@@ -207,6 +236,8 @@ bottles.post('/api/bottles/:id/report', async (c) => {
   const u = needUser(c), b = await target(c, u)
   slow(u, 'report', 20, 3600)
   await S.report(c.env.DB, 'bottle', b.id, u.id, await reasonOf(c))
+  // 被举报就让 AI 再审一次，判定违规直接隐藏
+  await reviewReported(c.env, c.env.DB, 'bottle', b.id)
   return c.json({ ok: true })
 })
 bottles.post('/api/bottles/:id/author', async (c) => {

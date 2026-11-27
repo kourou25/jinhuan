@@ -1,0 +1,50 @@
+{
+  "format": 1,
+  "id": "00000000-0000-0000-0000-000000000000",
+  "name": "漂流瓶",
+  "version": "1.3.0",
+  "entry": "index.html",
+  "script": "app.js",
+  "style": "app.css",
+  "permissions": [
+    "user.read",
+    "user.lookup",
+    "theme.read",
+    "network.request",
+    "video.play",
+    "video.stream"
+  ],
+  "endpoints": {
+    "read": {
+      "url": "https://52dmeme.com/api/miniapp/bottles/read",
+      "method": "GET",
+      "query": [
+        "route",
+        "tab",
+        "cursor",
+        "after",
+        "k"
+      ],
+      "auth": "platform"
+    },
+    "write": {
+      "url": "https://52dmeme.com/api/miniapp/bottles/write",
+      "method": "POST",
+      "auth": "platform"
+    },
+    "file": {
+      "url": "https://52dmeme.com/api/miniapp/bottles/file",
+      "method": "GET",
+      "query": [
+        "k",
+        "p"
+      ],
+      "auth": "platform"
+    },
+    "upload": {
+      "url": "https://52dmeme.com/api/miniapp/bottles/upload",
+      "method": "POST",
+      "auth": "platform"
+    }
+  }
+}

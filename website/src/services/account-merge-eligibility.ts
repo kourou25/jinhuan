@@ -3,7 +3,9 @@ export type MergeEligibilityReason='ok'|'ineligible'|'identity_conflict'|'creden
 
 // 每个用户关联列必须明确处理。MG05实施时复用此清单验收迁移/撤销，不能将清单视为已实现事务。
 export const MERGE_RELATION_POLICY={
-  bottles:{author_id:'block'},bottle_draws:{user_id:'block'},bottle_likes:{user_id:'block'},bottle_keeps:{user_id:'block'},bottle_replies:{user_id:'block'},bottle_reports:{user_id:'block'},bottle_author_views:{viewer_id:'block'},bottle_poops:{user_id:'block'},bottle_rewards:{user_id:'block',actor_id:'block'},
+  // 1 群匿名身份：能合并的账号没发过言，这些记录留着也不会被读到
+  anon_assignments:{user_id:'clear'},anon_members:{user_id:'clear'},anon_member_log:{user_id:'clear'},anon_messages:{user_id:'clear'},anon_active:{user_id:'clear'},anon_mentions:{user_id:'clear'},anon_theme_unlocks:{user_id:'clear'},
+  bottles:{author_id:'block'},bottle_draws:{user_id:'block'},bottle_likes:{user_id:'block'},bottle_keeps:{user_id:'block'},bottle_replies:{user_id:'block'},bottle_reports:{user_id:'block'},bottle_author_views:{viewer_id:'block'},bottle_poops:{user_id:'block'},bottle_rewards:{user_id:'block',actor_id:'block'},bottle_notif_reads:{user_id:'block'},
   pet_saves:{user_id:'block'},
   pet_progress:{user_id:'block'},pet_battles:{attacker_id:'block',defender_id:'block'},
   pet_world:{user_id:'block'},
@@ -53,6 +55,7 @@ export const MERGE_RELATION_POLICY={
   users:{id:'retire',invited_by:'invitation'},view_days:{user_id:'clear'},views:{user_id:'clear'},daily_post_views:{user_id:'clear'},
   leap_posts:{user_id:'block'},leap_comments:{user_id:'block'},leap_likes:{user_id:'block'},
   autumn_reports:{reporter_id:'block',handled_by:'block'},autumn_reveals:{actor_id:'block'},autumn_leaves:{user_id:'clear',giver_id:'clear'},autumn_memorial:{user_id:'clear'},autumn_gifts:{sender_id:'block',recipient_id:'block'},autumn_opt_out:{user_id:'clear'},
+  dou_heroes:{user_id:'block'},dou_items:{user_id:'block'},dou_progress:{user_id:'block'},dou_achievements:{user_id:'block'},dou_battles:{attacker:'block',defender:'block'},dou_roles:{user_id:'clear'},dou_board:{user_id:'block'},
 } as const
 
 const contentTables:Record<string,string>={guess_free_rounds:'owner_id',guess_room_messages:'user_id',memes:'author_id',comments:'user_id',chat_boosts:'user_id',road_items:'user_id',
@@ -81,12 +84,13 @@ assetsTables.farm_loss_totals='user_id';assetsTables.farm_lease_offers='owner_id
 assetsTables.activity_honor_events='user_id'
 contentTables.chat_message_favorites='user_id'
 contentTables.novel_works='user_id'
-contentTables.bottles='author_id';contentTables.bottle_draws='user_id';contentTables.bottle_likes='user_id';contentTables.bottle_keeps='user_id';contentTables.bottle_replies='user_id';contentTables.bottle_reports='user_id';contentTables.bottle_author_views='viewer_id';contentTables.bottle_poops='user_id';contentTables.bottle_rewards='user_id'
+contentTables.bottles='author_id';contentTables.bottle_draws='user_id';contentTables.bottle_likes='user_id';contentTables.bottle_keeps='user_id';contentTables.bottle_replies='user_id';contentTables.bottle_reports='user_id';contentTables.bottle_author_views='viewer_id';contentTables.bottle_poops='user_id';contentTables.bottle_rewards='user_id';contentTables.bottle_notif_reads='user_id'
 for(const t of ['leap_posts','leap_comments','leap_likes'])contentTables[t]='user_id'
 contentTables.autumn_reports='reporter_id';contentTables.autumn_gifts='sender_id';assetsTables.autumn_gifts='recipient_id'
 assetsTables.instant_card_fingers='user_id';assetsTables.instant_card_receipts='user_id';assetsTables.instant_card_pools='owner_id';assetsTables.title_awards='user_id'
 assetsTables.coin52_packets='owner_id';assetsTables.coin52_packet_slots='recipient_id'
 assetsTables.chat_bot_installations='created_by'
+assetsTables.dou_heroes='user_id'
 
 // 单条只读查询；最终事务可将同一SQL作为标量子查询嵌入claim门槛，避免仅在HTTP预检。
 // 只使用6个绑定参数，防止关联表增长耗尽D1参数预算。

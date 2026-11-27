@@ -2,19 +2,42 @@ import type { Env } from '../env'
 import { hmacHex } from '../lib/crypto'
 import { now } from '../lib/time'
 import { CHAT_HISTORY_FLOOR } from './chat-access'
+import { isAnonGroup, messagePeople, publicCtx } from './anon-identity'
 
 const MAX_ATTEMPTS = 5
 const RETENTION = 7 * 86400
 
+// 回调地址不再限定域名（社区 PR #13），所以要防止被用来访问服务器所在的内网：
+// 拒绝 IP 直连的内网 / 本机 / 保留地址、本站自己的域名、非 443 端口；投递前再解析一次域名，解析到内网地址就不发
+const PRIVATE_V4 = [/^0\./, /^10\./, /^127\./, /^169\.254\./, /^172\.(1[6-9]|2\d|3[01])\./, /^192\.168\./, /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./, /^19[89]\.1[89]\./, /^2(2[4-9]|[3-5]\d)\./]
+export function privateAddress(ip: string) {
+  const v = ip.replace(/^\[|\]$/g, '').toLowerCase()
+  if (/^\d+\.\d+\.\d+\.\d+$/.test(v)) return PRIVATE_V4.some((re) => re.test(v))
+  if (v.includes(':')) {
+    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(v)
+    if (mapped) return privateAddress(mapped[1])
+    return v === '::' || v === '::1' || /^f[cd]/.test(v) || /^fe[89ab]/.test(v) || v.startsWith('ff')
+  }
+  return false
+}
+const OWN_HOSTS = /(^|\.)52dmeme\.com$|^localhost$|\.localhost$|\.local$|\.internal$/i
 export function botCallbackUrl(env: Env, value: string) {
   try {
     const url = new URL(value)
     const local = env.DEV_LOGIN_KEY && url.protocol === 'http:' && url.hostname === '127.0.0.1'
-    const origins = (env.CHAT_BOT_WEBHOOK_ORIGINS ?? '').split(',').map(origin => origin.trim().replace(/\/$/, ''))
-    if ((!local && url.protocol !== 'https:') || url.username || url.password || url.hash || url.search ||
-        !origins.includes(url.origin)) return null
+    if ((!local && url.protocol !== 'https:') || url.username || url.password || url.hash || url.search) return null
+    if (!local && (url.port && url.port !== '443' || OWN_HOSTS.test(url.hostname) || privateAddress(url.hostname) || /^\d+$/.test(url.hostname))) return null
     return url.href
   } catch { return null }
+}
+// 投递前解析域名：任何一个地址落在内网就不发（服务器上运行时才有 DNS 模块；Cloudflare 上跳过，那里本来就访问不到内网）
+async function resolvesPrivate(host: string) {
+  let dns: { lookup(h: string, o: { all: true }): Promise<{ address: string }[]> }
+  try { dns = await import('node:dns/promises' as string) } catch { return false }
+  try {
+    const list = await dns.lookup(host, { all: true })
+    return !list.length || list.some((x) => privateAddress(x.address))
+  } catch { return true } // 解析失败也不发
 }
 
 export function botSigningSecret(key: string, id: string, version: string) {
@@ -74,6 +97,11 @@ export async function deliverBotEvent(env: Env, id: string) {
   if (event) {
     const url = botCallbackUrl(env, event.callback_url)
     if (url) {
+      // 匿名群：机器人只拿到对外身份
+      if (isAnonGroup(event.group_id)) {
+        const p = (await messagePeople(publicCtx(env), [{ id: event.message_id, user_id: event.sender_id, created_at: event.created_at, person: { id: event.sender_id, username: event.sender_username } }], event.group_id)).get(event.message_id)
+        event.sender_id = Number(p?.id ?? -1); event.sender_username = String(p?.username ?? '鱼友')
+      }
       const payload = JSON.stringify({
         type: 'chat.command', event_id: id, installation_id: event.installation_id,
         group_id: event.group_id, message_id: event.message_id,
@@ -83,7 +111,8 @@ export async function deliverBotEvent(env: Env, id: string) {
       const timestamp = String(now())
       const secret = await botSigningSecret(key, event.installation_id, event.key_version)
       const signature = await hmacHex(secret, timestamp + '.' + payload)
-      try {
+      if (!(env.DEV_LOGIN_KEY && new URL(url).hostname === '127.0.0.1') && await resolvesPrivate(new URL(url).hostname)) error = '回调地址解析到内网或无法解析，已拒绝'
+      else try {
         const response = await fetch(url, {
           method: 'POST', body: payload, redirect: 'manual', signal: AbortSignal.timeout(5000),
           headers: {
@@ -96,7 +125,7 @@ export async function deliverBotEvent(env: Env, id: string) {
       } catch { error = '回调连接失败或超时' }
       state = error ? (claimed.attempts >= MAX_ATTEMPTS ? 'failed' : 'pending') : 'delivered'
       if (state === 'pending') nextAt = now() + 30 * 2 ** (claimed.attempts - 1)
-    } else { state = 'failed'; error = '回调域名未开放' }
+    } else { state = 'failed'; error = '回调地址无效' }
   } else { error = '消息或机器人已不可用' }
 
   await db.prepare('UPDATE chat_bot_events SET state=?,error=?,next_at=?,lease=NULL WHERE id=? AND lease=?')

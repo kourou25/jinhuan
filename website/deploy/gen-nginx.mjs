@@ -16,6 +16,9 @@ upstream meme_app { server 127.0.0.1:8080; keepalive 32; }
 include /meme/config/cloudflare-ips.conf;
 real_ip_header CF-Connecting-IP;
 
+# 在默认格式末尾加上耗时：rt 请求总耗时，urt 程序处理耗时（排查 Cloudflare 524 等超时用）
+log_format meme_timed '$remote_addr - $remote_user [$time_local] "$request" $status $body_bytes_sent "$http_referer" "$http_user_agent" rt=$request_time urt=$upstream_response_time';
+
 server {
   listen 80 default_server;
   listen [::]:80 default_server;
@@ -33,7 +36,7 @@ server {
 
   root /meme/app/current/client;
   client_max_body_size 130m;
-  access_log /meme/logs/nginx-access.log;
+  access_log /meme/logs/nginx-access.log meme_timed;
   error_log  /meme/logs/nginx-error.log warn;
 
   # Nginx 自带的类型表里没有这几种

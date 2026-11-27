@@ -1,16 +1,12 @@
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
+import { applyChatRealtimeTestMigrations, initializeChatRealtimeTestDb } from './chat-realtime-test-db.mjs'
 
-const schema = readFileSync(new URL('../schema.sql', import.meta.url), 'utf8')
-const migration = readFileSync(new URL('../migrations/0231_chat_realtime.sql', import.meta.url), 'utf8')
-const audienceMigration = readFileSync(new URL('../migrations/0232_chat_realtime_packet_audience.sql', import.meta.url), 'utf8')
-
-function database(t) {
+function database(t, through) {
   const db = new DatabaseSync(':memory:')
   t.after(() => db.close())
-  db.exec(schema)
+  initializeChatRealtimeTestDb(db, through)
   db.exec(`
     INSERT INTO users(id,username,created_at,updated_at) VALUES (900001,'tester',1,1),(900002,'reader',1,1);
     INSERT INTO chat_groups(id,name,created_at) VALUES (21,'群一',1),(22,'群二',1);
@@ -35,26 +31,33 @@ function head(db) {
   return db.prepare('SELECT COALESCE(MAX(seq),0) AS seq FROM chat_realtime_events').get().seq
 }
 
-test('空库与升级路径使用相同的实时数据库对象', (t) => {
-  const fresh = database(t)
-  const upgraded = database(t)
-  const objects = "SELECT type,name,sql FROM sqlite_schema WHERE name LIKE '%chat_realtime%' ORDER BY type,name"
-  for (const {type, name} of upgraded.prepare(objects).all().reverse()) {
-    if (type !== 'index') upgraded.exec(`DROP ${type} ${name}`)
-  }
-  upgraded.exec('ALTER TABLE chat_members DROP COLUMN realtime_epoch')
+test('空库初始化与主线升级使用相同的数据库结构并保留已有数据', (t) => {
+  const fresh = database(t, 232)
+  const upgraded = database(t, 230)
+  const objects = 'SELECT type,name,tbl_name,sql FROM sqlite_schema ORDER BY type,name'
+  const recorded = 'SELECT name FROM d1_migrations ORDER BY name'
   const id = message(upgraded)
-  upgraded.prepare('INSERT INTO chat_members(group_id,user_id,joined_at,last_read) VALUES (21,900001,1,?)').run(id)
+  upgraded.prepare('INSERT INTO chat_members(group_id,user_id,joined_at,last_read,pinned) VALUES (21,900001,1,?,1)').run(id)
   upgraded.prepare("INSERT INTO chat_redpacks(id,message_id,secret,mode) VALUES ('legacy-packet',?,'','open')").run(id)
-  upgraded.exec("INSERT INTO chat_redpack_external_views(packet_id,user_id,data,synced_at) VALUES('legacy-packet',900002,'{}',4)")
+  upgraded.exec(`
+    INSERT INTO chat_redpack_external_views(packet_id,user_id,data,synced_at) VALUES('legacy-packet',900002,'{}',4);
+    INSERT OR IGNORE INTO chat_groups(id,name,created_at) VALUES(1,'匿名群',1);
+    INSERT INTO anon_members(group_id,user_id,anon,changed_at) VALUES(1,900001,1,1);
+    INSERT INTO road_items(user_id,kind,title,body,created_at,updated_at,skin_id,github_issue,github_sync_status)
+      VALUES(900001,'feature','旧反馈','内容',1,1,'test-skin',19,'linked');
+  `)
+  const anonymousId = message(upgraded, 1)
   const legacyRows = () => ({
-    member: upgraded.prepare('SELECT group_id,user_id,joined_at,last_read,muted,last_read_at,away_from FROM chat_members').get(),
+    member: upgraded.prepare('SELECT group_id,user_id,joined_at,last_read,muted,last_read_at,away_from,pinned FROM chat_members').get(),
     message: upgraded.prepare('SELECT * FROM chat_messages WHERE id=?').get(id),
     packet: upgraded.prepare('SELECT * FROM chat_redpacks').get(),
     view: upgraded.prepare('SELECT * FROM chat_redpack_external_views').get(),
+    anonymousMessage: upgraded.prepare('SELECT * FROM anon_messages WHERE message_id=?').get(anonymousId),
+    roadItem: upgraded.prepare("SELECT * FROM road_items WHERE skin_id='test-skin'").get(),
   })
   const beforeRealtime = legacyRows()
-  upgraded.exec(migration)
+  assert.equal(beforeRealtime.anonymousMessage.anon, 1)
+  assert.deepEqual(applyChatRealtimeTestMigrations(upgraded, 231), ['0231_chat_realtime.sql'])
   assert.deepEqual(legacyRows(), beforeRealtime)
   assert.equal(upgraded.prepare('SELECT realtime_epoch AS epoch FROM chat_members').get().epoch, null)
   assert.equal(head(upgraded), 0)
@@ -64,9 +67,10 @@ test('空库与升级路径使用相同的实时数据库对象', (t) => {
   assert.deepEqual(events(upgraded), [[id, 'update']])
   const legacySeq = head(upgraded)
   const beforeAudience = legacyRows()
-  upgraded.exec(audienceMigration)
+  assert.deepEqual(applyChatRealtimeTestMigrations(upgraded, 232), ['0232_chat_realtime_packet_audience.sql'])
   assert.deepEqual(upgraded.prepare(objects).all(), fresh.prepare(objects).all())
-  assert.deepEqual(upgraded.prepare('PRAGMA table_info(chat_members)').all(), fresh.prepare('PRAGMA table_info(chat_members)').all())
+  assert.deepEqual(upgraded.prepare(recorded).all(), fresh.prepare(recorded).all())
+  assert.deepEqual(upgraded.prepare('PRAGMA foreign_key_check').all(), [])
   assert.deepEqual(legacyRows(), beforeAudience)
   const audienceEvents = () => upgraded.prepare('SELECT seq,message_id,kind,audience_user_id FROM chat_realtime_events ORDER BY seq')
     .all().map(row => [row.seq, row.message_id, row.kind, row.audience_user_id])

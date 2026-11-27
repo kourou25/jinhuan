@@ -160,9 +160,23 @@ export function createChatReadQueue({ getUser, send, onConfirmed, delay = 800, r
   }
 }
 
-export function createChatRealtime(getUser) {
+const MAX_PENDING_FRAMES = 32
+// 服务端单页最多读取 32 个事件。
+const MAX_NOTIFY_IDS = 32
+
+export function createChatRealtime(getUser, loadMessages) {
   const groups = new Map()
   let socket, user, retryTimer, openTimer, attempts = 0, subscription = 0, paused = false
+
+  function cancelFrames(group) {
+    const pending = group.pending
+    group.pending = null
+    group.frames.length = 0
+    if (pending) {
+      clearTimeout(pending.timer)
+      pending.controller.abort()
+    }
+  }
 
   function close() {
     const old = socket
@@ -171,6 +185,7 @@ export function createChatRealtime(getUser) {
     old?.close()
     for (const group of groups.values()) {
       clearTimeout(group.timer)
+      cancelFrames(group)
       group.subscription = 0
       group.ready = false
     }
@@ -178,6 +193,7 @@ export function createChatRealtime(getUser) {
 
   function remove(group, notify) {
     clearTimeout(group.timer)
+    cancelFrames(group)
     groups.delete(group.id)
     if (socket?.readyState === WebSocket.OPEN && group.subscription) {
       send({ type: 'unsubscribe', group: group.id, subscription: group.subscription })
@@ -189,7 +205,10 @@ export function createChatRealtime(getUser) {
       attempts = 0
     }
     if (notify) {
-      for (const { listener } of group.members) listener[notify]?.()
+      for (const { listener } of group.members) {
+        if (notify === 'fallback') listener.fallback?.(true)
+        else listener[notify]?.()
+      }
     }
     group.members.clear()
   }
@@ -220,44 +239,123 @@ export function createChatRealtime(getUser) {
   }
 
   function subscribe(group) {
+    cancelFrames(group)
     group.ready = false
+    group.readyCursor = null
+    group.receivedCursor = group.cursor
     group.subscription = ++subscription
     waitForProgress(group)
     send({ type: 'subscribe', group: group.id, cursor: group.cursor, subscription: group.subscription, mode: group.mode, generation: group.generation })
+  }
+
+  const currentFrame = (group, frame) => groups.get(group.id) === group && group.subscription === frame.subscription
+
+  function deliver(group, frame) {
+    if (frame.type === 'ready') {
+      clearTimeout(group.timer)
+      group.ready = true
+      group.now = frame.now
+      attempts = 0
+      for (const { listener } of group.members) {
+        if (!currentFrame(group, frame)) return
+        listener.ready(frame.now)
+      }
+      return
+    }
+    if (frame.type === 'notify') {
+      const { item_ids, changed_ids, ...batch } = frame
+      batch.type = 'batch'
+      const ids = [...item_ids, ...changed_ids]
+      if (ids.length) void hydrate(group, frame, batch, ids)
+      else deliver(group, { ...batch, items: [], changed: [] })
+      return
+    }
+    try {
+      for (const member of group.members) {
+        if (!currentFrame(group, frame)) return
+        if (member.cursor >= frame.cursor) continue
+        member.listener.batch(structuredClone(frame))
+        member.cursor = frame.cursor
+      }
+    } catch {
+      if (currentFrame(group, frame)) remove(group, 'reset')
+      return
+    }
+    if (!currentFrame(group, frame)) return
+    group.cursor = frame.cursor
+    if (!group.ready) waitForProgress(group)
+  }
+
+  async function hydrate(group, frame, batch, ids) {
+    // 每群同时只补取一批，断开或失效时取消请求并清空该订阅的待处理帧。
+    clearTimeout(group.timer)
+    const controller = new AbortController()
+    const pending = group.pending = { controller, timer: null }
+    const current = () => group.pending === pending && currentFrame(group, frame)
+    pending.timer = setTimeout(() => {
+      if (!current()) return
+      if (user !== getUser()) clear()
+      else remove(group, 'fallback')
+    }, 10000)
+    let data
+    try {
+      data = await loadMessages(group.id, ids, group.generation, controller.signal)
+    } catch (error) {
+      if (!current()) return
+      if (user !== getUser()) { clear(); return }
+      const status = error?.status
+      if (status === 401 || status === 403) remove(group, 'revoked')
+      else if (status === 400 || status === 409 || error?.code === 'chat_realtime_message_unavailable') remove(group, 'reset')
+      else remove(group, 'fallback')
+      return
+    }
+    if (!current()) return
+    if (user !== getUser()) { clear(); return }
+    const items = data?.items
+    const expected = new Set(ids)
+    if (!Array.isArray(items) || items.length !== expected.size ||
+      items.some(m => m?.group_id !== group.id || !expected.delete(m.id))) {
+      remove(group, 'reset')
+      return
+    }
+    const messages = new Map(items.map(m => [m.id, m]))
+    clearTimeout(pending.timer)
+    group.pending = null
+    deliver(group, { ...batch, items: frame.item_ids.map(id => messages.get(id)), changed: frame.changed_ids.map(id => messages.get(id)) })
+    while (currentFrame(group, frame) && !group.pending && group.frames.length) deliver(group, group.frames.shift())
+  }
+
+  function validNotify(frame, group) {
+    if (typeof loadMessages !== 'function' || typeof group.generation !== 'string' || !group.generation || !isChatCursor(frame.state_cursor) || frame.state_cursor < frame.cursor ||
+      !Array.isArray(frame.item_ids) || !Array.isArray(frame.changed_ids) || frame.item_ids.length + frame.changed_ids.length > MAX_NOTIFY_IDS) return false
+    const ids = [...frame.item_ids, ...frame.changed_ids]
+    return ids.every(id => isChatCursor(id) && id > 0) && new Set(ids).size === ids.length
   }
 
   function receive(event) {
     let frame
     try { frame = JSON.parse(event.data) } catch { return }
     const group = groups.get(frame?.group)
-    if (!group || group.subscription !== frame.subscription) return
+    if (!group || !currentFrame(group, frame)) return
     if (frame.type === 'reset' || frame.type === 'disabled' || frame.type === 'revoked') {
       remove(group, frame.type)
-    } else if (frame.type === 'batch') {
-      if (isChatCursor(frame.cursor) && frame.cursor <= group.cursor) return
-      if (frame.from !== group.cursor || !isChatCursor(frame.cursor) || !Array.isArray(frame.items) || !Array.isArray(frame.changed)) {
-        remove(group, 'reset')
-        return
-      }
-      try {
-        for (const member of group.members) {
-          if (member.cursor >= frame.cursor) continue
-          member.listener.batch(structuredClone(frame))
-          member.cursor = frame.cursor
-        }
-      } catch {
-        remove(group, 'reset')
-        return
-      }
-      group.cursor = frame.cursor
-      if (!group.ready) waitForProgress(group)
-    } else if (frame.type === 'ready') {
-      if (frame.cursor !== group.cursor) { remove(group, 'reset'); return }
-      clearTimeout(group.timer)
-      group.ready = true
-      group.now = frame.now
-      attempts = 0
-      for (const { listener } of group.members) listener.ready(frame.now)
+      return
+    }
+    if (frame.type === 'ready') {
+      if (isChatCursor(frame.cursor) && frame.cursor === group.readyCursor) return
+      if (frame.cursor !== group.receivedCursor) { remove(group, 'reset'); return }
+      group.readyCursor = frame.cursor
+    } else if (frame.type === 'batch' || frame.type === 'notify') {
+      if (isChatCursor(frame.cursor) && frame.cursor <= group.receivedCursor) return
+      const payload = frame.type === 'notify' ? validNotify(frame, group) : Array.isArray(frame.items) && Array.isArray(frame.changed)
+      if (frame.from !== group.receivedCursor || !isChatCursor(frame.cursor) || !payload) { remove(group, 'reset'); return }
+      group.receivedCursor = frame.cursor
+    } else return
+    if (group.pending) {
+      if (group.frames.length >= MAX_PENDING_FRAMES) remove(group, 'fallback')
+      else group.frames.push(frame)
+    } else {
+      deliver(group, frame)
     }
   }
 
@@ -303,7 +401,7 @@ export function createChatRealtime(getUser) {
       group = null
     }
     if (!group) {
-      group = { id, cursor, mode, generation, members: new Set(), subscription: 0, ready: false }
+      group = { id, cursor, mode, generation, members: new Set(), frames: [], subscription: 0, ready: false }
       groups.set(id, group)
     }
     const member = { cursor, listener }

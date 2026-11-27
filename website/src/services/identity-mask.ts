@@ -1,9 +1,10 @@
 // 身份遮罩（2026-11-23）
-// 1. 匿名群（默认群「迷友」chat/1）：除站长外，所有人看到的发言者都是固定化名，只能看最近 24 小时消息，5 天不活跃自动移出。
-// 2. 新用户（注册不满 30 天）：看到的其他用户一律是固定化名，只开放图廊、群聊、鱼鱼谷。
+// 1. 匿名群（默认群「迷友」chat/1）：除站长外，看到的发言者是每周一换的系列角色（services/anon-identity.ts，可自己关闭），只能看最近 24 小时消息，5 天不活跃自动移出。
+// 2. 新用户（注册不满 30 天）：图廊里看不到发帖人（显示化名），群聊里看到的和老用户一样；只开放图廊、群聊、鱼鱼谷。
 // 化名由用户 ID + 日期 + 服务端密钥派生：同一天内同一个人同一个化名，每天轮换，无法反推真实账号；一天以前的内容统一显示「鱼友」。头像、称号、徽章一并去掉。
 import { sha256 } from '../lib/crypto'
 import { now } from '../lib/time'
+import { anonSettings, isAnonGroup, maskAnonJson, messagePeople, redactSystemBody } from './anon-identity'
 
 export const ANON_GROUP_IDS = new Set([1])
 export const ANON_HISTORY_SECONDS = 86400
@@ -67,23 +68,6 @@ export async function maskPerson<T extends Record<string, unknown>>(env: Env, vi
   return out as T
 }
 
-// ---------- 聊天消息 ----------
-type Msg = Record<string, any>
-export async function maskChatMessages(env: Env, viewer: Viewer, msgs: Msg[]) {
-  return Promise.all(msgs.map(async (m) => {
-    if (!m || !ANON_GROUP_IDS.has(Number(m.group_id))) return m
-    const out: Msg = { ...m }
-    if (out.user) out.user = await maskPerson(env, viewer, out.user, 'id', Number(m.created_at) || null)
-    // 引用摘要里只有名字没有 id：统一显示「鱼友」
-    if (out.reply_to) out.reply_to = { ...out.reply_to, username: '鱼友', name: '鱼友', avatar: null, deco: null, fancy: false }
-    if (Array.isArray(out.reactions)) out.reactions = out.reactions.map((r: Msg) => ({ ...r, who: [] }))
-    // 一句回应：对象里没有用户 id，除自己和 AI 外统一显示「鱼友」
-    if (Array.isArray(out.boosts)) out.boosts = out.boosts.map((b: Msg) => b.mine || b.ai ? b : { ...b, username: '鱼友', name: '鱼友', avatar: null, deco: null })
-    out.at_read = null // 键是被 @ 的用户名，会泄露身份
-    return out
-  }))
-}
-
 // ---------- 通用 JSON 遮罩 ----------
 // 识别「人」：带 username / avatar / author_avatar 字段的对象。用户 id 依次取 user_id、author_id、uid、id。
 // 群、称号、梗图本身等对象没有这些字段，不会被改动。
@@ -103,6 +87,8 @@ export async function maskJsonPeople(env: Env, viewer: Viewer, data: unknown, de
     out[k] = await maskJsonPeople(env, viewer, v, depth + 1, ts, uniform, reference)
   }
   if (!isPerson(o)) return out
+  // 已经按 1 群匿名身份处理过的人（anon-identity.ts），不再套每日化名
+  if ('anon' in o) return out
   // `id` 只在真正的用户对象（带 username）上当作用户 id；梗图、评论等对象的 id 是它们自己的编号，不能动
   const idKey = PERSON_ID_KEYS.filter((k) => k !== 'id' || (!chatReference && 'username' in o))
     .find((k) => o[k] !== null && o[k] !== '' && Number.isSafeInteger(Number(o[k])) && Number(o[k]) !== 0)
@@ -126,7 +112,12 @@ export async function maskJsonPeople(env: Env, viewer: Viewer, data: unknown, de
 const NEWBIE_BLOCKED_API = ['/api/road', '/api/novels', '/api/xs', '/api/dm', '/api/users/', '/api/guess', '/api/resources', '/api/huancai', '/api/music', '/api/manor', '/api/arcade', '/api/hb', '/api/bottles', '/api/autumn']
 const NEWBIE_BLOCKED_PAGE = /^\/(road|autumn|novels|community-updates|music|huancai|manor|arcade|bottles|dm|xs|u\/)(\/|\.html|$)/
 
-type Ctx = { req: { path: string; method: string; url: string }; env: Env & Record<string, any>; get(k: 'user'): any; res: Response; json(o: unknown, s?: number): Response; redirect(u: string, s?: number): Response }
+type Ctx = { req: { path: string; method: string; url: string }; env: Env & Record<string, any>; get(k: 'user' | 'chatMessageViewFinalized'): any; res: Response; json(o: unknown, s?: number): Response; redirect(u: string, s?: number): Response }
+
+// 历史列表和实时投递在各自的读快照内完成同一层匿名群出口处理。
+export async function finalizeChatMessageView<T>(c: Pick<Ctx, 'env' | 'get'>, gid: number, data: T): Promise<T> {
+  return isAnonGroup(gid) ? await maskAnonJson(c, gid, data) as T : data
+}
 // 未登录访客的 GET 接口：所有「人」（上传者、评论者、头像、称号）一律换成「鱼友」
 async function maskGuestResponse(c: Ctx) {
   if (!(c.res.headers.get('content-type') || '').includes('application/json')) return
@@ -149,31 +140,70 @@ export async function identityMaskMiddleware(c: Ctx, next: () => Promise<void>) 
   await next()
   if (guestGet) return maskGuestResponse(c)
   if (!viewer || !path.startsWith('/api/')) return
+  if (c.get('chatMessageViewFinalized')) return
   const type = c.res.headers.get('content-type') || ''
   if (!type.includes('application/json')) return
-  let anon = false
+  let anon = 0, plainAlias = false
   if (!seesAnonGroup(c.env, viewer)) {
-    const g = path.match(/^\/api\/chat\/groups\/(\d+)(?:\/|$)/)
-    if (g && ANON_GROUP_IDS.has(Number(g[1]))) anon = true
+    const g = path.match(/^\/api\/chat\/(?:groups\/)?(\d+)(?:\/(.*))?$/)
+    if (g && isAnonGroup(g[1])) {
+      anon = Number(g[1])
+      if (/^bots(\/|$)/.test(g[2] || '')) anon = 0 // 机器人管理页只有机器人
+      if (/^(outside|join-req)(\/|$)/.test(g[2] || '')) plainAlias = true // 不在群里的人没有角色，用每日化名
+    }
     const m = path.match(/^\/api\/chat\/messages\/(\d+)\//)
     if (m) {
       const row = await c.env.DB.prepare('SELECT group_id FROM chat_messages WHERE id=?').bind(Number(m[1])).first() as { group_id: number } | null
-      if (row && ANON_GROUP_IDS.has(Number(row.group_id))) anon = true
+      if (row && isAnonGroup(row.group_id)) anon = Number(row.group_id)
     }
   }
   const isMe = path === '/api/me'
-  if (!anon && !newbie && !isMe && path !== '/api/notifs' && path !== '/api/chat/groups') return
+  // 新用户只遮图廊的人（2026-11-26 站长要求）：群聊相关接口不套化名
+  const chatPath = /^\/api\/(chat|ai\/chat|guess-sidebar)\//.test(path) || path === '/api/chat/groups' || path === '/api/notifs'
+  const galleryNewbie = newbie && !chatPath
+  if (!anon && !galleryNewbie && !isMe && path !== '/api/notifs' && path !== '/api/chat/groups') return
   let data: any
   try { data = await c.res.clone().json() } catch { return }
   if (isMe) { if (data && typeof data === 'object' && !Array.isArray(data)) data.newbie = newbie }
-  else if (anon || newbie) data = await maskJsonPeople(c.env, viewer, data)
-  else if (path === '/api/notifs' && Array.isArray(data?.items)) {
-    // 通知里来自匿名群的回复 / @：发起人换成化名
-    data.items = await Promise.all(data.items.map((n: any) => ANON_GROUP_IDS.has(Number(n?.gid)) ? maskJsonPeople(c.env, viewer, n) : n))
-  } else if (path === '/api/chat/groups' && Array.isArray(data?.groups)) {
-    data.groups = await Promise.all(data.groups.map((g: any) => ANON_GROUP_IDS.has(Number(g?.id)) && g.latest ? { ...g, latest: { ...g.latest, by: '鱼友' } } : g))
+  else if (anon && !plainAlias) {
+    const all = new URL(c.req.url).searchParams.get('period') === 'all' || /\/title-raffles(\/|$)/.test(path)
+    const stats = /\/(guess-stats|packet-luck-stats|sender-stats)$|\/title-raffles(\/|$)/.test(path) ? (all ? 'all' : 'today') : undefined
+    data = await maskAnonJson(c as any, anon, data, stats)
+  } else {
+    const owner = seesAnonGroup(c.env, viewer)
+    if (path === '/api/notifs' && Array.isArray(data?.items) && !owner) data.items = await maskNotifs(c, data.items)
+    // 新用户：通知里来自图廊的（gid ≤ 0）照旧化名
+    if (path === '/api/notifs' && newbie && Array.isArray(data?.items)) data.items = await Promise.all(data.items.map((n: any) => Number(n?.gid) > 0 ? n : maskJsonPeople(c.env, viewer, n)))
+    if (path === '/api/chat/groups' && Array.isArray(data?.groups)) data.groups = await maskGroupList(c, data.groups, owner)
+    if (galleryNewbie || anon) data = await maskJsonPeople(c.env, viewer, data)
   }
   const headers = new Headers(c.res.headers)
   headers.delete('content-length')
   c.res = new Response(JSON.stringify(data), { status: c.res.status, headers })
+}
+
+// 通知里来自匿名群的回复 / @：发起人换成对外身份；红包结果正文里有领取人的名字，换成通用说法
+async function maskNotifs(c: Ctx, items: any[]) {
+  const mine = items.filter((n) => isAnonGroup(n?.gid) && ['chat_at', 'chat_reply'].includes(n.kind))
+  const people = mine.length ? await messagePeople(c as any, mine.map((n) => ({ id: Number(n.meme_id), user_id: Number(n.user_id), created_at: Number(n.at), person: { id: n.user_id, username: n.username, name: n.name, avatar: n.avatar } }))) : null
+  return Promise.all(items.map(async (n) => {
+    if (!isAnonGroup(n?.gid)) return n
+    const p = mine.includes(n) ? people?.get(Number(n.meme_id)) : null
+    if (p) return { ...n, user_id: p.id, username: p.username, name: p.name, avatar: p.avatar, anon: p.anon ?? null }
+    if (n.kind === 'join_req') return maskJsonPeople(c.env, c.get('user'), n)
+    const out: any = await maskAnonJson(c as any, Number(n.gid), n)
+    return n.kind === 'packet' ? { ...out, val: redactSystemBody('redpack_result', String(n.val ?? '')) } : out
+  }))
+}
+// 群列表里最后一条消息的发言人和摘要；匿名群附上自己的匿名状态
+async function maskGroupList(c: Ctx, groups: any[], owner: boolean) {
+  return Promise.all(groups.map(async (g) => {
+    if (!isAnonGroup(g?.id)) return g
+    const { enabled, active, eligible_at, identity } = await anonSettings(c as any, Number(g.id)), anon = { enabled, active, eligible_at, identity }
+    if (!g.latest || owner) return { ...g, anon }
+    const row = await c.env.DB.prepare('SELECT x.id,x.user_id,x.created_at,x.system_kind,x.body,x.deleted,u.username,u.name FROM chat_messages x LEFT JOIN users u ON u.id=x.user_id WHERE x.id=?').bind(g.latest.id).first() as any
+    const p = row ? (await messagePeople(c as any, [{ ...row, person: { username: row.username, name: row.name } }], Number(g.id))).get(Number(row.id)) : null
+    const text = row?.system_kind && !row.deleted ? redactSystemBody(row.system_kind, String(row.body)).split('\n')[0].slice(0, 60) : g.latest.text
+    return { ...g, anon, latest: { ...g.latest, by: p?.name || p?.username || OLD_ALIAS.name, text } }
+  }))
 }

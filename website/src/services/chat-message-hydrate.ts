@@ -15,14 +15,14 @@ const CHAT_REPLIES_BY_PARENT_SQL = `FROM json_each(?1) ids
 
 export async function readChatReplyCounts(
   db: D1Database, uid: number, ids: number[],
-  shared?: { joinedAt: number; historyFloor?: number; decorations?: ChatDecorations },
+  shared?: { joinedAt: number; historyFloor: number; decorations?: ChatDecorations },
 ) {
   const counts: ReplyCount[] = []
   const summaries = shared?.decorations?.replies
-  const partial = summaries ? ids.filter(id => {
+  const partial = shared && summaries ? ids.filter(id => {
     const reply = summaries.get(id)
     if (!reply) return false
-    if (reply.first_at < shared!.joinedAt || reply.first_id < shared!.historyFloor!) return true
+    if (reply.first_at < shared.joinedAt || reply.first_id < shared.historyFloor) return true
     counts.push({ id, n: reply.n })
     return false
   }) : ids
@@ -31,8 +31,8 @@ export async function readChatReplyCounts(
     ${CHAT_REPLIES_BY_PARENT_SQL}
     CROSS JOIN chat_members cm ON cm.group_id=parent.group_id AND cm.user_id=?2
     WHERE x.deleted=0 AND x.created_at>=cm.joined_at AND x.id>=${CHAT_HISTORY_FLOOR}
-      ${shared ? 'AND x.created_at>=?3' : ''}
-    GROUP BY parent.id`).bind(JSON.stringify(partial), uid, ...shared ? [shared.joinedAt] : []).all<ReplyCount>()
+      ${shared ? 'AND x.created_at>=?3 AND x.id>=?4' : ''}
+    GROUP BY parent.id`).bind(JSON.stringify(partial), uid, ...shared ? [shared.joinedAt, shared.historyFloor] : []).all<ReplyCount>()
   return [...counts, ...results]
 }
 

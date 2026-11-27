@@ -18,6 +18,16 @@ const SWEEP_LANES = ['live', 'live', 'live', 'replay', 'audit']
 const isCursor = (n) => Number.isSafeInteger(n) && n >= 0
 const isId = (n) => isCursor(n) && n > 0
 
+function deliveryFrame(access, projection) {
+  if (projection.resync) return null
+  if (!access.notifyOnly) return { type: 'batch', items: projection.items, changed: projection.changed }
+  // 站长的匿名群通知只含消息编号，当前可见内容由同一会话通过 HTTP 读取。
+  const { itemIds, changedIds } = projection
+  if (!Array.isArray(itemIds) || !Array.isArray(changedIds) || itemIds.length + changedIds.length > PAGE_SIZE ||
+      !itemIds.every(isId) || !changedIds.every(isId)) return null
+  return { type: 'notify', item_ids: itemIds, changed_ids: changedIds }
+}
+
 export function createChatRealtime(groupsConfig, openReader) {
   const groups = new Set(String(groupsConfig ?? '').split(',').map((s) => s.trim())
     .filter((s) => /^\d+$/.test(s)).map(Number).filter(isId))
@@ -90,11 +100,18 @@ export function attachChatRealtime(server, env, api, context, makeRequest) {
   const pages = new Map()
   let closed = false
   let busy = false
+  let revisitStreams = false
   let mergeTimer
   let continuation
 
   function wake() {
-    if (closed || !streams.size || mergeTimer) return
+    if (closed || !streams.size) return
+    // 补发已在运行时，下个切片就检查其他群的新提交，避免等合并窗口才发现在线消息。
+    if (busy || continuation) {
+      revisitStreams = true
+      return
+    }
+    if (mergeTimer) return
     // 首次工作合并新提交，已经排队的工作独立续发，避免每片再等一次。
     mergeTimer = setTimeout(() => {
       mergeTimer = undefined
@@ -104,7 +121,7 @@ export function attachChatRealtime(server, env, api, context, makeRequest) {
   }
 
   function continueSweep() {
-    if (!closed && !busy && !continuation && queued.size) continuation = setTimeout(sweep, 0)
+    if (!closed && !busy && !continuation && (queued.size || revisitStreams)) continuation = setTimeout(sweep, 0)
   }
 
   function remove(client, group) {
@@ -313,14 +330,14 @@ export function attachChatRealtime(server, env, api, context, makeRequest) {
             if (sub.cursor < head) {
               page.rows ??= await api.hydrateChatRealtimeBatch(readEnv, group, [...new Set(page.events.map(event => event.message_id))])
               const events = sub.cursor === page.after ? page.events : page.events.filter(event => event.seq > sub.cursor)
-              const { items, changed, resync } = await api.projectChatRealtimeBatch(sub.client.auth, access, group, page.rows, events, readEnv, ctx)
+              const projection = await api.projectChatRealtimeBatch(sub.client.auth, access, group, page.rows, events, readEnv, ctx)
               // 投影中的并发提交使剩余帧重新取数，已经撤销的订阅不会继续发送。
               if (!current()) return true
               if (!subs.has(sub)) continue
-              if (resync) stop(sub, 'reset')
-              else if (send(sub, {
-                type: 'batch', from: sub.cursor, cursor: page.last, state_cursor: head,
-                now: page.last === head ? now : undefined, items, changed,
+              const frame = deliveryFrame(access, projection)
+              if (!frame) stop(sub, 'reset')
+              else if (send(sub, { ...frame, from: sub.cursor, cursor: page.last, state_cursor: head,
+                now: page.last === head ? now : undefined,
               })) sub.cursor = page.last
               else if (subs.has(sub)) remove(sub.client, group)
             }
@@ -342,6 +359,10 @@ export function attachChatRealtime(server, env, api, context, makeRequest) {
   async function sweep() {
     continuation = undefined
     busy = true
+    if (revisitStreams) {
+      for (const stream of streams.values()) queued.add(stream)
+      revisitStreams = false
+    }
     const deadline = performance.now() + TURN_BUDGET_MS
     const queuedAtStart = queued.size
     try {

@@ -70,3 +70,20 @@ export async function assertClean(db: D1Database, text: string, what = '内容')
   if (hit === 'politics') fail(400, `${what}可能涉及国家领导人或政治敏感话题，请修改后再发`, 'sensitive')
   if (hit === 'custom') fail(400, `${what}里有不能发布的词，请修改后再发`, 'sensitive')
 }
+
+// ---------- 自动改写（站长 2026-11-26 定）：轻生类说法换成「重生」，两个脏词换成 🍌 / 福 ----------
+// 「想死你了」「想死我了」是想念，不换；「逼」在逼迫、逼真这类正常词里不换
+const KEEP_BI = /逼(?=迫|真|近|问|供|债|宫|仄|视|退|格|人太甚|上梁山)|(?<=威|紧|倒|进|相|催|强|咄咄)逼|(?<=被)逼(?=着|得|无奈|上)/g
+export function soften(text: string) {
+  return text
+    .replace(/想死(?!你|我了|他|她|它|人|啦你)/g, '想获得重生系统')
+    .replace(/不想活了|想自杀|想轻生|活着没意思/g, '想获得重生系统')
+    .replace(/自杀|轻生/g, '重生')
+    .replace(/寻死/g, '寻找重生系统')
+    .replace(/去死/g, '去重生')
+    // 「几把伞」「好几把」这类量词不换
+    .replace(/鸡[巴吧]|几[吧巴]|(?<![好这那了买有])几把(?![伞椅刀钥剪锁扇梳琴枪斧锤铲尺勺壶钳斗凳])/g, '🍌')
+    .replace(KEEP_BI, '\u0000')
+    .replace(/[逼屄]/g, '福')
+    .replace(/\u0000/g, '逼')
+}

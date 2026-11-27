@@ -3,7 +3,7 @@ import type {Ctx,C} from '../types'
 import {needUser} from '../services/auth'
 import {CHAT_HISTORY_FLOOR} from '../services/chat-access'
 import {fail} from '../lib/http'
-import {socialLinks,socialCaption} from '../../public/social-links.js'
+import {bilibiliLinks,socialLinks,socialCaption} from '../../public/social-links.js'
 import {fetchPreview} from '../services/social-preview'
 import {fetchXMedia} from '../services/social-x'
 import {douyinMediaUrl} from '../services/social-douyin'
@@ -42,18 +42,22 @@ export async function socialMediaResponse(c:C,url:string,kind:'image'|'video',pr
 const limits=new Map<number,{at:number;n:number}>()
 const pending=new Map<string,Promise<Awaited<ReturnType<typeof fetchPreview>>>>()
 export const socialPreview=new Hono<Ctx>()
-async function source(c:C){
+async function sourceMessage(c:C){
  const u=needUser(c),id=Number(c.req.param('id')),index=Number(c.req.query('index')||0)
  if(!Number.isSafeInteger(id)||id<=0||!Number.isInteger(index)||index<0||index>1)fail(400,'预览来源无效')
  const row=await c.env.DB.prepare(`SELECT m.body FROM chat_messages m JOIN chat_members cm ON cm.group_id=m.group_id AND cm.user_id=?
   WHERE m.id=? AND m.deleted=0 AND (m.redpack_id IS NULL) AND m.created_at>=cm.joined_at AND m.id>=${CHAT_HISTORY_FLOOR}
   AND NOT EXISTS(SELECT 1 FROM chat_bans b WHERE b.group_id=m.group_id AND b.user_id=cm.user_id)`).bind(u.id,id).first<{body:string}>()
  if(!row)fail(404,'来源消息已不可查看')
- const link=socialLinks(row!.body)[index]
+ return {u,body:row!.body,index}
+}
+async function source(c:C){
+ const {u,body,index}=await sourceMessage(c)
+ const link=socialLinks(body)[index]
  if(!link||!['x','douyin','weibo','instagram'].includes(link.provider))fail(400,'该链接不使用分享页预览')
  return {u,link}
 }
-export async function cachedSocialPreview(c:C,u:{id:number},link:NonNullable<ReturnType<typeof socialLinks>[number]>){
+export async function cachedSocialPreview(c:C,u:{id:number},link:Parameters<typeof fetchPreview>[0]){
  c.header('Cache-Control','no-store')
  const key=new Request(new URL('/__social_preview_v6?url='+encodeURIComponent(link.url),c.req.url)),cache=caches.default
  const hit=await cache.match(key);if(hit)return await hit.json<Awaited<ReturnType<typeof fetchPreview>>>()
@@ -69,6 +73,12 @@ export async function cachedSocialPreview(c:C,u:{id:number},link:NonNullable<Ret
 }
 socialPreview.get('/api/chat/messages/:id/preview',async c=>{
  const {u,link}=await source(c);return c.json(await cachedSocialPreview(c,u,link))
+})
+socialPreview.get('/api/chat/messages/:id/preview/bilibili',async c=>{
+ const {u,body,index}=await sourceMessage(c)
+ const link=bilibiliLinks(body)[index]
+ if(!link?.short)fail(400,'该消息没有可解析的 B 站短链')
+ return c.json(await cachedSocialPreview(c,u,link))
 })
 socialPreview.get('/api/social/preview',async c=>{
  const u=needUser(c),link=postShareLink(c.req.query('share'))

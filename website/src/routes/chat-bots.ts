@@ -59,7 +59,7 @@ chatBots.post(managePath, async c => {
   if (!Array.isArray(rawCommands) || rawCommands.length > 12 ||
       rawCommands.some(command => typeof command !== 'string' || !BOT_COMMAND.test(command))) fail(400, '请填写最多 12 条小写字母开头的指令')
   const commands = [...new Set(rawCommands as string[])]
-  if (rawUrl && !callback) fail(400, '回调需使用站点允许的 HTTPS 地址')
+  if (rawUrl && !callback) fail(400, '请填写有效的 HTTPS 回调地址')
   if ((!!callback) !== (commands.length > 0)) fail(400, '启用回调时请同时填写地址和指令')
   if (callback && !c.env.CHAT_BOT_WEBHOOK_KEY) fail(503, '站点尚未配置机器人回调签名')
 

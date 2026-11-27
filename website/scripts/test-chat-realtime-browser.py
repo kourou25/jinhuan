@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""用两个独立的本地 Chromium 客户端验收群聊实时推送。"""
+"""用独立的本地 Chromium 客户端验收群聊实时推送。"""
 
 import argparse
 import json
@@ -30,13 +30,16 @@ def wait_for(page, predicate, description):
 
 
 class Client:
-    def __init__(self, browser, args, username, key):
+    def __init__(self, browser, args, username, key, *, group=None):
         self.origin = args.origin
-        self.group = args.group
+        self.group = args.group if group is None else group
         self.messages = f"/api/chat/groups/{self.group}/messages"
+        self.realtime_messages = f"/api/chat/groups/{self.group}/realtime-messages"
         self.read_path = f"/api/chat/groups/{self.group}/read"
         self.requests = []
         self.frames = []
+        self.subscriptions = []
+        self.readbacks = []
         self.read_posts = []
         self.read_updates = []
         self.held_batches = None
@@ -60,9 +63,8 @@ class Client:
         self.network.send("Network.enable")
         self.page.set_default_timeout(TIMEOUT)
         self.context.on("request", self.track_request)
-        self.context.on("response", self.track_read)
-        self.page.on("websocket", lambda socket: self.sockets.append(socket)
-                     if urlsplit(socket.url).path == "/api/chat/ws" else None)
+        self.context.on("response", self.track_response)
+        self.page.on("websocket", self.track_socket)
 
         dest = f"/chat/{self.group}"
         response = self.context.request.post(
@@ -74,6 +76,7 @@ class Client:
         me = self.context.request.get(f"{self.origin}/api/me").json()["user"]
         assert me and me["username"] == username, "测试账号与当前会话不匹配"
         self.user_id = me["id"]
+        self.is_owner = me.get("owner", False)
         self.input = self.page.get_by_role("textbox", name="消息", exact=True)
         self.page.goto(f"{self.origin}{dest}", wait_until="networkidle")
         expect(self.input).to_be_visible(timeout=TIMEOUT)
@@ -89,10 +92,25 @@ class Client:
         if request.method == "POST" and target.path == self.read_path:
             self.read_posts.append(request.post_data_json["id"])
 
-    def track_read(self, response):
+    def track_response(self, response):
+        target = urlsplit(response.url)
         if (response.ok and response.request.method == "POST"
-                and urlsplit(response.url).path == self.read_path):
+                and target.path == self.read_path):
             self.read_updates.append(response.request.post_data_json["id"])
+        elif response.request.method == "GET" and target.path == self.realtime_messages:
+            self.readbacks.append((parse_qs(target.query), response))
+
+    def track_socket(self, socket):
+        if urlsplit(socket.url).path != "/api/chat/ws":
+            return
+        self.sockets.append(socket)
+
+        def track_sent(raw):
+            frame = json.loads(raw)
+            if frame.get("type") == "subscribe" and frame.get("group") == self.group:
+                self.subscriptions.append(frame)
+
+        socket.on("framesent", track_sent)
 
     def route_socket(self, route):
         target = urlsplit(route.url)
@@ -127,12 +145,13 @@ class Client:
             };
         }""", allow)
 
-    def wait_frame(self, kind, *, after_connection=0, after_frame=0, mid=None):
+    def wait_frame(self, kind, *, after_connection=0, after_frame=0, mid=None, field="items"):
         def find():
             return next((frame for connection, frame in self.frames[after_frame:] if
                          connection > after_connection and frame.get("group") == self.group
                          and frame.get("type") == kind
-                         and (mid is None or any(m.get("id") == mid for m in frame.get("items", [])))), None)
+                         and (mid is None or any((m.get("id") if isinstance(m, dict) else m) == mid
+                                                 for m in frame.get(field, [])))), None)
 
         return wait_for(self.page, find, f"未观察到 WS {kind} 帧，消息编号 {mid}")
 
@@ -163,6 +182,18 @@ class Client:
         message = response.json()["message"]
         assert message["body"] == body, "POST 响应正文不匹配"
         return message["id"]
+
+    def edit(self, mid, body):
+        self.row(mid).locator(".cm-text").click(button="right")
+        self.page.get_by_role("button", name="编辑", exact=True).click()
+        with self.page.expect_response(
+            lambda r: urlsplit(r.url).path == f"/api/chat/messages/{mid}" and r.request.method == "PATCH"
+        ) as saved:
+            self.input.fill(body)
+            self.input.press("Enter")
+        response = saved.value
+        assert response.ok, f"消息 PATCH 失败，HTTP {response.status}"
+        assert response.json()["message"]["body"] == body, "PATCH 响应正文不匹配"
 
     def row(self, mid):
         return self.page.locator(f'.cm-list .cm-row[data-row="{mid}"]')
@@ -632,6 +663,106 @@ def check_popout(sender, receiver, tag):
     print(f"通过原生文档画中画验收，两窗共用一个实际 WS 连接，关闭浮窗后原连接继续推送，消息 {after}")
 
 
+def check_anon_delivery(owner, member, args, role_name, mid, body, readbacks_from, *, edited=False):
+    id_field = "changed_ids" if edited else "item_ids"
+    notice = owner.wait_frame("notify", mid=mid, field=id_field, after_frame=0)
+    numeric_fields = {"group", "subscription", "from", "cursor", "state_cursor"}
+    metadata = {name: value for name, value in notice.items()
+                if name not in {"type", "item_ids", "changed_ids"}}
+    assert numeric_fields <= metadata.keys() <= numeric_fields | {"now"}, "站长 WS 通知字段超出预期元数据"
+    assert all(type(value) is int for value in metadata.values()), "站长 WS 通知元数据应为整数"
+    assert notice["item_ids"] == ([] if edited else [mid]), "站长 WS 通知的新消息编号不匹配"
+    assert notice["changed_ids"] == ([mid] if edited else []), "站长 WS 通知的变更消息编号不匹配"
+
+    subscription = wait_for(owner.page, lambda: next(
+        (sub for sub in reversed(owner.subscriptions) if sub["subscription"] == notice["subscription"]), None
+    ), "未观察到站长页面发送的 WS 订阅")
+    ids = [",".join(str(message_id) for message_id in notice["item_ids"] + notice["changed_ids"])]
+    query, response = wait_for(owner.page, lambda: next(
+        ((query, response) for query, response in owner.readbacks[readbacks_from:] if query.get("ids") == ids), None
+    ), f"站长页面未回读 WS 通知中的消息 {mid}")
+    assert query == {"ids": ids, "generation": [subscription["generation"]]}, "回读应使用通知编号与同一订阅的代次"
+    assert response.ok, f"站长页面回读失败，HTTP {response.status}"
+    items = response.json()["items"]
+    assert [item["id"] for item in items] == [mid] and items[0]["body"] == body, "站长回读未取回对应消息版本"
+    real = items[0]["user"]
+    assert (real["id"], real["username"], real["name"], real["avatar"]) == (
+        args.anon_author_id, args.anon_author, args.anon_author_name, args.anon_author_avatar
+    ), "站长 HTTP 回读未提供发言者的实名资料"
+    assert real["anon"]["owner"] and real["anon"]["name"] == role_name, "站长回读缺少匿名角色标记"
+
+    field = "changed" if edited else "items"
+    batch = member.wait_frame("batch", mid=mid, field=field)
+    item = next(item for item in batch[field] if item["id"] == mid)
+    alias = item["user"]
+    assert item["body"] == body and alias["name"] == alias["username"] == role_name, "群友 WS 消息未使用匿名角色"
+    assert alias["anon"]["name"] == role_name and "owner" not in alias["anon"], "群友 WS 匿名角色标记不匹配"
+
+    owner_row, member_row = owner.row(mid), member.row(mid)
+    visible_body = body + ("（已编辑）" if edited else "")
+    owner.see(mid, visible_body)
+    member.see(mid, visible_body)
+    expect(owner_row.locator(".cm-name")).to_have_text(args.anon_author_name)
+    expect(owner_row.locator(".anon-tag")).to_have_text(role_name)
+    expect(member_row.locator(".cm-name")).to_have_text(role_name)
+    expect(member_row.locator(".anon-tag")).to_have_count(0)
+    masked = json.dumps(item, ensure_ascii=False) + member_row.inner_html()
+    protected = (str(args.anon_author_id), args.anon_author, args.anon_author_name, args.anon_author_avatar)
+    assert all(marker not in masked for marker in protected), "群友的 WS 消息或消息行暴露了发言者的实名资料"
+
+
+def check_anon_owner(sender_browser, receiver_browser, args, key, tag):
+    author = Client(sender_browser, args, args.anon_author, key, group=1)
+    settings = author.context.request.put(
+        f"{author.origin}/api/chat/groups/{author.group}/anon",
+        headers={"Origin": author.origin},
+        data={"enabled": True},
+    )
+    assert settings.ok, f"测试作者开启匿名失败，HTTP {settings.status}"
+    anon = settings.json()
+    assert anon["active"] and anon["identity"]["name"], "测试作者应持有已生效的匿名角色"
+    role_name = anon["identity"]["name"]
+    author.page.reload(wait_until="networkidle")
+    owner = Client(receiver_browser, args, args.anon_owner, key, group=1)
+    member = Client(receiver_browser, args, args.anon_member, key, group=1)
+    assert owner.is_owner and not member.is_owner and not author.is_owner, "测试账号的站长状态与夹具不匹配"
+    assert author.user_id == args.anon_author_id, "测试作者编号与夹具不匹配"
+
+    for client in (author, owner, member):
+        client.go_latest()
+        client.wait_socket_ready()
+
+    # 先由群友发一条消息，避免站长界面把同一发言者的相邻消息折叠为没有署名的续行。
+    separator_body = f"浏览器匿名群发言分隔 {tag}"
+    separator = member.send(separator_body)
+    for client in (author, owner, member):
+        client.see(separator, separator_body)
+
+    owner_frames = len(owner.frames)
+    member_readbacks = len(member.readbacks)
+    request_starts = [len(client.requests) for client in (owner, member)]
+    for client in (owner, member):
+        client.set_poll_blocked(True)
+    try:
+        before = len(owner.readbacks)
+        body = f"浏览器匿名群站长实时验收 {tag}"
+        mid = author.send(body)
+        check_anon_delivery(owner, member, args, role_name, mid, body, before)
+
+        before = len(owner.readbacks)
+        edited_body = f"浏览器匿名群站长编辑验收 {tag}"
+        author.edit(mid, edited_body)
+        check_anon_delivery(owner, member, args, role_name, mid, edited_body, before, edited=True)
+        assert all(frame.get("type") != "batch" for _, frame in owner.frames[owner_frames:]), "站长 WS 收到了完整消息批次"
+        assert len(member.readbacks) == member_readbacks, "群友页面意外使用站长回读接口"
+        for client, start in zip((owner, member), request_starts):
+            assert client.message_gets(start, incremental=True) == [], "验收过程中发生了增量消息轮询"
+    finally:
+        for client in (owner, member):
+            client.set_poll_blocked(False)
+    print(f"通过匿名群站长 Chromium 验收，实时与编辑通知只含元数据，页面回读消息 {mid} 并显示实名，群友只看到角色")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--origin", default="http://localhost:18794", help="本机验收服务地址")
@@ -641,6 +772,12 @@ def main():
     parser.add_argument("--key-file", type=Path, help="包含 DEV_LOGIN_KEY 的本机 .env 文件")
     parser.add_argument("--db", required=True, type=Path, help="一次性隔离 SQLite 数据库，会裁剪测试群事件并撤销测试成员资格")
     parser.add_argument("--chromium", default=shutil.which("chromium"), help="本机 Chromium 可执行文件路径")
+    parser.add_argument("--anon-owner", help="匿名群测试站长账号")
+    parser.add_argument("--anon-member", help="匿名群测试普通成员账号")
+    parser.add_argument("--anon-author", help="匿名群测试发言账号")
+    parser.add_argument("--anon-author-id", type=int, help="匿名群测试发言者的实名编号")
+    parser.add_argument("--anon-author-name", help="匿名群测试发言者的实名昵称")
+    parser.add_argument("--anon-author-avatar", help="匿名群测试发言者的实名头像地址")
     args = parser.parse_args()
     args.origin = args.origin.rstrip("/")
     origin = urlsplit(args.origin)
@@ -649,6 +786,12 @@ def main():
         parser.error("仅允许测试本机 HTTP 服务地址")
     if args.sender == args.receiver:
         parser.error("发件与收件账号必须不同")
+    anon_fixture = (args.anon_owner, args.anon_member, args.anon_author, args.anon_author_id,
+                    args.anon_author_name, args.anon_author_avatar)
+    if any(anon_fixture) and not all(anon_fixture):
+        parser.error("匿名群验收需要完整的站长、普通成员与发言者夹具参数")
+    if args.anon_owner and len({args.anon_owner, args.anon_member, args.anon_author}) != 3:
+        parser.error("匿名群验收的三个测试账号必须不同")
     key = os.environ.get("CHAT_TEST_KEY")
     if not key and args.key_file:
         for line in args.key_file.read_text().splitlines():
@@ -677,6 +820,8 @@ def main():
             check_popout(sender, receiver, tag)
             check_disabled(sender, receiver, args, tag)
             check_revoked_overlay(receiver, args)
+            if args.anon_owner:
+                check_anon_owner(sender_browser, receiver_browser, args, key, tag)
         finally:
             receiver_browser.close()
             sender_browser.close()

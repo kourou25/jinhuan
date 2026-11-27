@@ -10,7 +10,8 @@ import { randHex, sha256 } from '../lib/crypto'
 import { ensureCoinWallet } from '../farm/coin-packets'
 import { prepareMedia, mediaKeys, type Media } from '../services/content-media'
 import { commitUploadContent, storeUpload } from '../services/upload-operations'
-import { bjDay, ensureMemorial, memorialConfig, MEMORIAL_IDLE_DAYS, MEMORIAL_WHERE, sniffAutumnImage, stripMetadata } from '../services/autumn'
+import { scrubMedia } from '../services/media-meta'
+import { bjDay, ensureMemorial, memorialConfig, MEMORIAL_IDLE_DAYS, MEMORIAL_WHERE, sniffAutumnImage } from '../services/autumn'
 
 export const autumn = new Hono<Ctx>()
 autumn.use('/api/autumn/*', async (c, next) => {
@@ -264,7 +265,7 @@ for (const B of BOARDS) {
     const raw = new Uint8Array(await file.arrayBuffer()), kind = sniffAutumnImage(raw)
     if (!kind) return fail(415, '只支持 PNG / JPG / GIF / WebP 图片')
     let bytes: Uint8Array
-    try { bytes = stripMetadata(raw, kind[0]) } catch { return fail(415, '图片文件已损坏，请换一张') }
+    try { bytes = scrubMedia(raw, kind[0]) } catch { return fail(415, '图片文件已损坏，请换一张') }
     return c.json(await storeUpload(c.env.DB, c.env.BUCKET, { uid: u.id, nonce: form.get('nonce'), bytes, mime: kind[0], ext: kind[1], purpose: B.key, asFile: false, limited: u.is_admin !== 1, t: now() }))
   })
 

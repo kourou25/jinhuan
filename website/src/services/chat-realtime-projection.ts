@@ -4,7 +4,7 @@ import { atReads, CHAT_SELECT, decorateMsgs } from '../legacy/live-app.js'
 import { hydrateChatDecorations } from './chat-message-hydrate'
 import type { ChatRealtimeAccess, ChatRealtimeAuth } from './chat-realtime-access'
 import { chatCommandIds } from './chat-realtime-store'
-import { maskJsonPeople } from './identity-mask'
+import { finalizeChatMessageView } from './identity-mask'
 import { hydrateChatPackets } from './chat-packet-projection'
 
 export type ChatRealtimeRow = {
@@ -31,34 +31,39 @@ export async function projectChatRealtimeBatch(
   auth: ChatRealtimeAuth, access: ChatRealtimeAccess, groupId: number,
   batch: Awaited<ReturnType<typeof hydrateChatRealtimeBatch>>, events: ChatRealtimeEvent[], env: Env, _ctx?: ExecutionContext,
 ) {
-  if (access.user.id !== auth.userId) return { items: [], changed: [], resync: true }
+  const empty = access.notifyOnly ? { itemIds: [], changedIds: [] } : { items: [], changed: [] }
+  if (access.user.id !== auth.userId) return { ...empty, resync: true }
   const live = new Map<number, { row: ChatRealtimeRow; firstSeen: boolean }>()
   for (const event of events) {
     if (event.group_id !== groupId || (event.audience_user_id != null && event.audience_user_id !== auth.userId)) continue
     const row = batch.byId.get(event.message_id)
     // 硬删除行已经不可用于权限判断，用通用重载信号修复缓存。
-    if (!row) return { items: [], changed: [], resync: true }
+    if (!row || row.group_id !== groupId) return { ...empty, resync: true }
     if (row.created_at < access.joinedAt || row.id < access.historyFloor) continue
     const firstSeen = event.kind === 'create' || live.get(row.id)?.firstSeen === true
     live.set(row.id, { row, firstSeen })
   }
-  if (!live.size) return { items: [], changed: [] }
+  if (!live.size) return empty
+  if (access.notifyOnly) {
+    const itemIds: number[] = [], changedIds: number[] = []
+    for (const { row, firstSeen } of live.values()) (firstSeen ? itemIds : changedIds).push(row.id)
+    return { itemIds, changedIds }
+  }
   const rows = [...live.values()].map(item => item.row)
+  const viewer = { env, get: (key: string) => key === 'user' ? access.user : undefined }
   const [messages, commandIds] = await Promise.all([
-    decorateMsgs({ env, get: () => access.user }, rows, {
+    decorateMsgs(viewer, rows, {
       decorations: batch.decorations, reads: batch.reads, packets: batch.packets, joinedAt: access.joinedAt, historyFloor: access.historyFloor,
     }),
     chatCommandIds(env.DB, auth.userId, rows.filter(row => row.user_id === auth.userId).map(row => row.id)),
   ])
-  // 与 HTTP 的身份遮罩相同，匿名群和受限新账号投影按订阅者生成。
-  const masked = access.masked ? await maskJsonPeople(env, access.user, messages) as typeof messages : messages
   const items: typeof messages = [], changed: typeof messages = []
-  for (const message of masked) {
+  for (const message of messages) {
     const entry = live.get(message.id)!
     const commandId = commandIds.get(message.id)
     const projected = { ...message, floor: entry.row.seq, ...(commandId ? { command_id: commandId } : {}) }
     const destination = entry.firstSeen ? items : changed
     destination.push(projected)
   }
-  return { items, changed }
+  return finalizeChatMessageView(viewer, groupId, { items, changed })
 }

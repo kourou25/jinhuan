@@ -9,7 +9,7 @@ export function guessSubmissionSignals(c: any): Promise<unknown>
 export const CHAT_SELECT: string
 export function atReads(c: { env: import('../env').Env }, rows: import('../services/chat-realtime-projection').ChatRealtimeRow[]): Promise<Map<number, Record<string, boolean>>>
 export function decorateMsgs(
-  c: { env: import('../env').Env; get(key: 'user'): Pick<import('../types').User, 'id' | 'is_admin' | 'role'> },
+  c: { env: import('../env').Env; get(key: string): unknown },
   rows: import('../services/chat-realtime-projection').ChatRealtimeRow[],
   shared: {
     decorations: import('../services/chat-message-hydrate').ChatDecorations; reads: Map<number, Record<string, boolean>>

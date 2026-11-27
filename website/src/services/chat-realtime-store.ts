@@ -4,7 +4,7 @@ import { hex, sha256 } from '../lib/crypto'
 import { fail, jsonBody } from '../lib/http'
 import { ACTIVE_SESSION_USER_SQL } from './auth'
 import { needMember, CHAT_HISTORY_FLOOR, type ChatGroup } from './chat-access'
-import { chatActivationRequired, getChatRealtimeAccess } from './chat-realtime-access'
+import { chatActivationRequired, getChatRealtimeAccess, type ChatRealtimeAccess } from './chat-realtime-access'
 import type { ExternalPacket } from '../redpacket'
 
 export const CHAT_REALTIME_HEAD_SQL = `MAX(
@@ -51,6 +51,32 @@ export async function readChatHistory<T>(
     })
   } catch (error) {
     if (realtimeSchemaMissing(error)) return read(c)
+    throw error
+  }
+}
+
+export async function readChatRealtimeMessages<T>(
+  c: C, groupId: number, generation: string, read: (c: C, access: ChatRealtimeAccess) => Promise<T>,
+) {
+  const capability = c.env.CHAT_REALTIME
+  if (!capability?.groups.has(groupId)) return fail(404, '此群未启用实时消息回读', 'chat_realtime_unavailable')
+  const user = c.get('user'), sessionId = c.get('sessionId')
+  if (!user || !sessionId) return fail(403, '群聊访问权限已变化，请刷新后重试', 'chat_realtime_forbidden')
+  const auth = { userId: user.id, sessionId, host: new URL(c.req.url).hostname }
+  try {
+    return await capability.withSnapshot(async db => {
+      const scoped = chatContextWithDb(c, db)
+      const access = await getChatRealtimeAccess(auth, groupId, scoped.env)
+      if (!access?.notifyOnly) return fail(403, '群聊访问权限已变化，请刷新后重试', 'chat_realtime_forbidden')
+      if (access.generation !== generation) return fail(409, '群聊订阅已变化，请刷新后重试', 'chat_realtime_generation')
+      const disabled = await db.prepare('SELECT disabled FROM chat_realtime_controls WHERE group_id=?')
+        .bind(groupId).first<number>('disabled')
+      if (disabled) return fail(404, '此群未启用实时消息回读', 'chat_realtime_unavailable')
+      scoped.set('user', { ...user, ...access.user })
+      return read(scoped, access)
+    })
+  } catch (error) {
+    if (realtimeSchemaMissing(error)) return fail(404, '此群未启用实时消息回读', 'chat_realtime_unavailable')
     throw error
   }
 }

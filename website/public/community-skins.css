@@ -19,3 +19,6 @@
 .cs-singles>summary{cursor:pointer;font-weight:600;padding:6px 0}
 .cs-singles .community-picker{margin-top:8px}
 @media (max-width:560px){.cs-suites{grid-template-columns:1fr}.cs-suite>.btn{justify-self:stretch}}
+
+/* 社区装扮的 ::before / ::after 只是装饰：不接收点击，否则会盖住气泡里的链接（例如「古神银趴」单行消息里的链接点不了）。社区 CSS 校验禁止作者自己写 pointer-events，所以由站点统一兜底 */
+.cskin-bubble::before,.cskin-bubble::after,.cskin-reply::before,.cskin-reply::after,.cskin-title::before,.cskin-title::after,.cskin-badge::before,.cskin-badge::after,.cskin-frame::before,.cskin-frame::after{pointer-events:none!important}
