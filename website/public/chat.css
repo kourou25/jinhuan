@@ -2431,6 +2431,7 @@ html:is([data-bubble-motion=pause],[data-page-hidden=true]) :is(.cskin-title-aur
 
 /* 群机器人（社区 PR #9） */
 .cm-bot-text { white-space: pre-wrap; overflow-wrap: anywhere; }
+.cm-bot-personas { display:flex; flex-wrap:wrap; gap:6px; margin-top:6px; }
 .gp-bot-form, .gp-bot-field { display: grid; gap: 8px; }
 .gp-bot-field { min-width: 0; }
 .gp-bot-field .input { width: 100%; min-width: 0; }

@@ -81,7 +81,7 @@ if (!args.has('--skip-build')) {
 step('打包 ' + id)
 const stage = path.join(WORK, 'stage-' + id); fs.rmSync(stage, { recursive: true, force: true }); fs.mkdirSync(stage, { recursive: true })
 fs.mkdirSync(path.join(stage, 'server', 'dist'), { recursive: true })
-for (const f of ['main.mjs', 'd1.mjs', 'r2.mjs', 'runtime.mjs', 'vars.json']) fs.copyFileSync(path.join('server', f), path.join(stage, 'server', f))
+for (const f of ['main.mjs', 'd1.mjs', 'r2.mjs', 'runtime.mjs', 'public-http.mjs', 'vars.json']) fs.copyFileSync(path.join('server', f), path.join(stage, 'server', f))
 fs.copyFileSync('server/dist/app.mjs', path.join(stage, 'server', 'dist', 'app.mjs'))
 fs.cpSync('web/dist/client', path.join(stage, 'client'), { recursive: true, filter: (src) => !STATIC_DIRS.some((d) => path.resolve(src) === path.resolve('web/dist/client', d)) })
 fs.cpSync('migrations', path.join(stage, 'migrations'), { recursive: true })

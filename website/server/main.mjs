@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { D1Database, dumpSlowQueries } from './d1.mjs'
 import { R2Bucket } from './r2.mjs'
 import { Assets, DiskCache, RateLimiter, HTMLRewriter } from './runtime.mjs'
+import { fetchPublicHttp } from './public-http.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = process.env.MEME_ROOT || '/meme'
@@ -39,6 +40,7 @@ const sandboxFile = path.join(ROOT, 'data', 'db', 'miniapp-sandbox.sqlite')
 const env = {
   ...vars, ...secrets,
   COMMUNITY_GITHUB_TOKEN: process.env.COMMUNITY_GITHUB_TOKEN ?? secrets.COMMUNITY_GITHUB_TOKEN,
+  PUBLIC_BOT_CALLBACK: fetchPublicHttp,
   DB: db, MINIAPP_DB: db,
   MINIAPP_SANDBOX_DB: fs.existsSync(sandboxFile) ? new D1Database(sandboxFile) : undefined,
   BUCKET: new R2Bucket(path.join(ROOT, 'data', 'storage')),

@@ -2119,7 +2119,33 @@ CREATE TABLE chat_bot_installations (
  callback_url TEXT,
  commands TEXT NOT NULL DEFAULT '[]' CHECK(json_valid(commands) AND json_type(commands)='array'),
  enabled INTEGER NOT NULL DEFAULT 1 CHECK(enabled IN(0,1)),
- created_at INTEGER NOT NULL
+ created_at INTEGER NOT NULL,
+ gallery_access INTEGER NOT NULL DEFAULT 0 CHECK(gallery_access IN(0,1)),
+ command_descriptions TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(command_descriptions) AND json_type(command_descriptions)='object'),
+ chat_name TEXT COLLATE NOCASE
+) WITHOUT ROWID;
+CREATE UNIQUE INDEX idx_chat_bot_group_persona ON chat_bot_installations(group_id,chat_name) WHERE chat_name IS NOT NULL;
+
+CREATE TABLE chat_group_bot_identity (
+ group_id INTEGER PRIMARY KEY REFERENCES chat_groups(id) ON DELETE CASCADE,
+ bot_id INTEGER NOT NULL UNIQUE REFERENCES users(id),
+ doc_post_id INTEGER REFERENCES memes(id) ON DELETE SET NULL,
+ chat_round_limit INTEGER NOT NULL DEFAULT 0 CHECK(chat_round_limit>=0),
+ chat_end_marker TEXT NOT NULL DEFAULT '结束会话',
+ chat_end_mode TEXT NOT NULL DEFAULT 'system' CHECK(chat_end_mode IN('system','callback')),
+ chat_end_text TEXT NOT NULL DEFAULT '本次会话已结束。再次艾特机器人可以重新选择身份。'
+);
+
+CREATE TABLE chat_bot_persona_choices (
+ group_id INTEGER NOT NULL REFERENCES chat_groups(id) ON DELETE CASCADE,
+ user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+ installation_id TEXT REFERENCES chat_bot_installations(id) ON DELETE SET NULL,
+ pending_message_id INTEGER REFERENCES chat_messages(id) ON DELETE SET NULL,
+ pending_text TEXT,
+ session_id TEXT,
+ completed_rounds INTEGER NOT NULL DEFAULT 0 CHECK(completed_rounds>=0),
+ needs_selection INTEGER NOT NULL DEFAULT 0 CHECK(needs_selection IN(0,1)),
+ PRIMARY KEY(group_id,user_id)
 ) WITHOUT ROWID;
 
 CREATE TABLE chat_bot_events (
@@ -2134,8 +2160,13 @@ CREATE TABLE chat_bot_events (
  next_at INTEGER NOT NULL,
  lease TEXT,
  error TEXT,
- created_at INTEGER NOT NULL
+ created_at INTEGER NOT NULL,
+ chat_session_id TEXT,
+ chat_end_requested INTEGER NOT NULL DEFAULT 0 CHECK(chat_end_requested IN(0,1)),
+ chat_replied_at INTEGER
 ) WITHOUT ROWID;
+CREATE INDEX idx_chat_bot_session_pending ON chat_bot_events(chat_session_id,created_at)
+ WHERE chat_session_id IS NOT NULL AND chat_replied_at IS NULL;
 
 CREATE TABLE isle_season_config (
  id INTEGER PRIMARY KEY CHECK(id=1),
