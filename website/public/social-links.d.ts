@@ -8,3 +8,6 @@ export function isOfficialEmbed(provider:string):boolean
 export type BilibiliLink={provider:'bilibili';short:boolean;url:string;playerUrl:string|null}
 export function bilibiliLink(input:string):BilibiliLink|null
 export function bilibiliLinks(text:string):BilibiliLink[]
+export type WebPreviewLink={provider:'web';url:string;host:string}
+export function webPreviewLink(input:string):WebPreviewLink|null
+export function webPreviewLinks(text:string):WebPreviewLink[]

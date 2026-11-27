@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { D1Database, dumpSlowQueries } from './d1.mjs'
 import { R2Bucket } from './r2.mjs'
 import { Assets, DiskCache, RateLimiter, HTMLRewriter } from './runtime.mjs'
+import { fetchPublicHttp } from './public-http.mjs'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const ROOT = process.env.MEME_ROOT || '/meme'
@@ -43,6 +44,9 @@ const env = {
   MINIAPP_SANDBOX_DB: fs.existsSync(sandboxFile) ? new D1Database(sandboxFile) : undefined,
   BUCKET: new R2Bucket(path.join(ROOT, 'data', 'storage')),
   ASSETS: new Assets(CLIENT),
+  PUBLIC_LINK_FETCH: (href, signal) => fetchPublicHttp(href, {
+    signal, headers: { Accept:'text/html,application/xhtml+xml','Accept-Encoding':'identity','User-Agent':'JinhuanLinkPreview/1.0' },
+  }),
   AUTH_RL: new RateLimiter({ limit: 10, period: 60 }),
   // GAME_HUB（猜词服务 cc.52dmeme.com）已下线；JEV_RELAY 是 AI 网关的可选中转，不配置时直连
 }

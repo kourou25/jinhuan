@@ -59,6 +59,26 @@ export function bilibiliLinks(text) {
   return [...links.values()]
 }
 
+export function webPreviewLink(input) {
+  let url
+  try { url = new URL(input) } catch { return null }
+  if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password || url.port || input.length > 2048 ||
+      !url.hostname.includes('.') || !/[a-z]/i.test(url.hostname) || !/^[a-z0-9.-]+$/i.test(url.hostname)) return null
+  url.hash = ''
+  return { provider: 'web', url: url.href, host: url.hostname }
+}
+
+export function webPreviewLinks(text) {
+  const links = new Map()
+  for (const [address] of text.matchAll(/https?:\/\/[^\s<>"'`）)\]】、，。；！？]+/g)) {
+    if (socialLink(address) || bilibiliLink(address)) continue
+    const link = webPreviewLink(address)
+    if (link) links.set(link.url, link)
+    if (links.size === 2) break
+  }
+  return [...links.values()]
+}
+
 // 仅用于外站抓取的配文：保留正文，去掉话题标记和平台分享尾文。
 export function socialCaption(text=''){
  return String(text).replace(/(?:复制此链接|复制链接，?打开抖音|打开抖音搜索)[\s\S]*$/,'')

@@ -9061,6 +9061,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     const kids = renderRowContent(view, m, prev)
     const el = h('div', { class: 'cm-row', 'data-row': m.id }, kids)
     el._mediaKey = JSON.stringify([m.body,m.deleted,m.media,m.image,m.redpack])
+    el._linkPreviews = chatLinkPreviews()
     view.rows.set(m.id, el)
     if (m.at_read) queueMicrotask(() => paintReads(view, m))
     return windowContent(el, () => {
@@ -9076,6 +9077,11 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (old) replaceChatMediaRow(old,renderRow(view, m, view.items[i - 1]))
   }
   const redraw = (i) => redrawIn(mainView, i)
+  function redrawLinkPreviews() {
+    for (const view of [mainView,histView]) {
+      if (view) view.items.forEach((m,i)=>{if (m.body && /https?:\/\/|\/img\//i.test(m.body)) redrawIn(view,i)})
+    }
+  }
   let refreshTitleRaffles = () => {}
   const drawLifetime=new AbortController()
   let drawQueue=Promise.resolve()
@@ -10063,7 +10069,7 @@ function chatPane(g, { onHead, targetDocument = document } = {}) {
     if (before.endsWith('@' + username + ' ')) return ta.focus()
     insertAtCursor(ta, (/\S$/.test(before) ? ' ' : '') + '@' + username + ' ')
   }
-  const api_ = { el, poll, destroy, update, setReply, setEdit, recalled, quoteMsg, jumpTo, gallery, search, atUser, openGuess, send: (t) => send(t), focus: () => ta.focus(), group: g, st }
+  const api_ = { el, poll, destroy, update, setReply, setEdit, recalled, quoteMsg, jumpTo, gallery, search, atUser, openGuess, redrawLinkPreviews, send: (t) => send(t), focus: () => ta.focus(), group: g, st }
   mainView.pane = api_
   // 消息上的右键 / 左滑：委托在整个 pane 上（跟着 pane 进小窗 document），按消息所在列表找视图和消息。
   // 发送中的占位不在任何列表里，自然不管
@@ -10283,8 +10289,9 @@ function drainRedpackAuto() {
 // 回应、回复数和装饰更新不重建未变化的播放器，避免轮询时中断视频。
 function replaceChatMediaRow(old,fresh){
   if (old._mediaKey!==fresh._mediaKey) { old.replaceWith(fresh);return }
-  const previous=[...old.querySelectorAll('.cm-social,.cm-media,.cm-car')]
-  const next=[...fresh.querySelectorAll('.cm-social,.cm-media,.cm-car')]
+  const selector=old._linkPreviews===fresh._linkPreviews?'.cm-social,.cm-media,.cm-car':'.cm-media,.cm-car'
+  const previous=[...old.querySelectorAll(selector)]
+  const next=[...fresh.querySelectorAll(selector)]
   old.before(fresh)
   previous.forEach((region,index)=>{
     const target=next[index];if(!target)return
@@ -10353,7 +10360,8 @@ function chatMsg(m, { cont, pane, pending } = {}) {
     if (m.reply_to) ref = chatReference(m.reply_to, pane)
     // 正文里贴了图片直链：显示成图；整条只有这个链接时就不再画文字气泡
     const excerpt=!botMessage && !m.redpack && parseNovelExcerpt(m.body||'')
-    const lnk = !botMessage && !excerpt && m.body ? bodyImgUrl(m.body) : null
+    const previews = chatLinkPreviews()
+    const lnk = previews && !botMessage && !excerpt && m.body ? bodyImgUrl(m.body) : null
     const edited = m.edited_at && h('span', { class: 'cm-edited', title: '编辑于 ' + new Date(m.edited_at * 1000).toLocaleString('zh-CN', { hour12: false }) }, '（已编辑）')
     if (m.road_id) body.push(h('a', { class: 'cm-road', href: `/road?item=${m.road_id}`, 'data-link': '' }, `已转到鞭打 #${m.road_id}`))
     if (m.redpack) body.push(h('button', { type: 'button', class: 'cm-redpack' + (m.redpack.solved ? ' is-open' : ''), 'aria-label': '打开红包',
@@ -10363,14 +10371,14 @@ function chatMsg(m, { cont, pane, pending } = {}) {
       h('span', { class: 'cm-redpack-copy' }, h('strong', null, m.redpack.prompt || (m.redpack.game==='free_guess'?'一起猜词吧':'给你一个红包')),
         h('span', null, m.redpack.provider==='coin52'?'红包 · 站内积分':m.redpack.game==='free_guess'?'欢欢猜词 · 无 LDC 奖励':m.redpack.game==='ldc'?`${m.redpack.draw?.kind==='lottery'?'限时抽奖':({fixed:'普通红包',random:'拼手气',guess:'欢欢猜词',clues:'逐步线索'})[m.redpack.ldc_mode]||'本站红包'} · ${(m.redpack.ldc_total/100).toFixed(m.redpack.payment_provider==='coin52'?0:2)} ${m.redpack.payment_provider==='coin52'?'D币':'LDC'}`:m.redpack.provider && m.redpack.provider!=='native' ? `${({hb:'HB',credit:'Credit',fish:'Fish'})[m.redpack.provider]} 红包` : `${({ open: '直接开', phrase: '复读红包', cipher: '解个谜', image: '猜张图' })[m.redpack.mode]}${m.redpack.ldc_total!=null?` · ${(m.redpack.ldc_total/100).toFixed(m.redpack.payment_provider==='coin52'?0:2)} ${m.redpack.payment_provider==='coin52'?'D币':'LDC'}`:''}${m.redpack.solved ? ' · 已拆封' : ''}`),['guess','clues'].includes(m.redpack.ldc_mode)&&h('span',null,m.redpack.ldc_response_mode==='similarity'?`答案 ${m.redpack.ldc_answer_length} 字 · 相关度模式`:'是非问答'),['guess','clues'].includes(m.redpack.ldc_mode)&&h('span',null,'打开分屏参与猜词')),
       h('span', { class: 'cm-redpack-foot' }, m.redpack.game==='free_guess'?'进入猜词专区':m.redpack.snapshot?.claimed ? '已领取' : ({exhausted:'被抢光啦',expired:'已过期',cancelled:'已取消',registered:'等待开奖',drawing:'正在开奖',not_won:'未中奖',payment_pending:'等待发放',simulation:'模拟奖励',draft:'尚未开放',unconfirmed:'结果待核对'})[m.redpack.snapshot?.state] || (m.redpack.draw?.kind==='lottery'?'参与 / 查看抽奖':m.redpack.provider && m.redpack.provider!=='native' || m.redpack.solved ? '查看红包' : '戳我拆开'), h('span', null, (m.redpack.provider==='coin52'||m.redpack.payment_provider==='coin52')?dcoinIcon(h):m.redpack.game==='free_guess'?'猜词游戏':m.redpack.game==='ldc'||m.redpack.provider && m.redpack.provider!=='native'?'LDC 红包':m.redpack.ldc_count!=null?`${m.redpack.ldc_count} 份奖励 · ${m.redpack.opened} 人拆封`:`${m.redpack.opened} 人拆过`))))
-    const displayBody=excerpt?m.body:m.redpack?m.body:socialMessageText(m.body||'')
+    const displayBody=excerpt||m.redpack||!previews ? m.body : socialMessageText(m.body||'')
     if(excerpt)body.push(h('div',{class:'cm-text cm-novel-outer'},novelExcerptCard(excerpt,h),edited))
     if (botMessage) body.push(h('div', { class: 'cm-text cm-bot-text' }, m.body))
     else if (!excerpt && (!m.redpack || m.redpack.shared) && displayBody && !lnk?.only) body.push(h('div', stkOnly(displayBody) ? { class:'cm-text stk-only' } : bubbleView(m.user, 'cm-text','chat',false,m.id),
       (raffleOf(m.user)||personalOf(m.user,'chat')) ? h('span', { class:'ds-copy rt-copy' }, richBody(displayBody, { md:'lite' }), edited) : [richBody(displayBody, { md: 'lite' }), edited]))
     if (lnk) body.push(linkImg(lnk.url, lnk.only && edited))
     if (m.media_expired) body.push(h('div', { class:'cm-gone', role:'note' }, '附件已超过七天，无法查看'))
-    if (!botMessage && !pending && !excerpt) body.push(...socialCards(m,{h,api,onRemoval,onOpenMedia:openSocialMedia,renderVideo:im=>mediaVideo(im),onPost:(anchor,index)=>m.meme_id?navigate('/m/'+m.meme_id):chatToPost(m,pane,anchor,'social-post-'+m.id,index)}))
+    if (previews && !pending && !excerpt) body.push(...socialCards(m,{h,api,onRemoval,onOpenMedia:openSocialMedia,renderVideo:im=>mediaVideo(im),imageLink:lnk?.url,onPost:(anchor,index)=>m.meme_id?navigate('/m/'+m.meme_id):chatToPost(m,pane,anchor,'social-post-'+m.id,index)}))
     const all = m.redpack && !m.redpack.shared ? [] : m.media?.length ? m.media : m.image ? [{ u: m.image, w: m.width, h: m.height }] : []
     const files = all.filter((x) => x.k === 'f')
     const media = all.filter((x) => x.k !== 'f')
@@ -11937,7 +11945,7 @@ async function groupPanel(g, { outside, section, memberSort = 'online' } = {}) {
         h('p',{class:'muted sm'},'每个账号可置顶一个群，跨设备同步。置顶群排在最前，打开群聊时默认进入。'),
         h('label',{class:'deco-pref-toggle'},mutedInput,h('span',null,'消息免打扰'),mutedState),
         h('p',{class:'muted sm'},'只影响当前账号在本群的提醒，跨设备同步；开启后只有 @ 我的消息计数和提醒。'),packetBagReminderSettings(g.id),
-        h('h4',null,'本浏览器的阅读与装扮显示'),h('p',{class:'muted sm'},'下列设置立即生效，仅保存在本浏览器。阅读设置用于全部群聊，装扮屏蔽也用于帖子。'),awaySettings(),chatAutoSettings(),chatMediaScaleSettings({uid:S.me?.id,h,onRemoval}),decoHideSettings()]},
+        h('h4',null,'本浏览器的阅读与装扮显示'),h('p',{class:'muted sm'},'下列设置立即生效，仅保存在本浏览器。阅读设置用于全部群聊，装扮屏蔽也用于帖子。'),awaySettings(),chatAutoSettings(),chatLinkPreviewSettings(),chatMediaScaleSettings({uid:S.me?.id,h,onRemoval}),decoHideSettings()]},
       {id:'manage',label:'退出与管理',keywords:'退出 退群 解散 删除',nodes:[danger]},
     ]})
     if(section)categories.select(section)
@@ -13932,7 +13940,7 @@ function meSettings(section, initialTrial=null, initialDecoCategory) {
     ['blur', '模糊 / 群聊', 'image', () => h('section', { class: 'set-sec' }, h('h3', null, '模糊 / 打码的图'),
       field('点一下的时候', mask, '帖子和打码图片按此设置；群聊模糊媒体始终在原处揭开或恢复，右键可选择放大查看。'),
       awaySettings(),
-      chatAutoSettings())],
+      chatAutoSettings(), chatLinkPreviewSettings())],
     ['other', '其他', 'more', () => h('section', { class: 'set-sec' }, h('h3', null, '其他'),
       h('label', { class: 'set-check' }, dock, '右下角显示悬浮群聊'),
       h('button', { class: 'btn btn-ghost sm', type: 'button', onclick: () => { close(); startGuide(true) } }, '重新看一遍新手引导'))],
@@ -13960,6 +13968,14 @@ function meSettings(section, initialTrial=null, initialDecoCategory) {
 
 // 来新消息时要不要自动滚到最新
 const chatAuto = () => localStorage.getItem('chatAuto') || 'near'
+const chatLinkPreviews = () => localStorage.getItem('chatLinkPreviews') !== 'off'
+function chatLinkPreviewSettings() {
+  const input=h('input',{type:'checkbox',checked:chatLinkPreviews(),onchange:()=>{
+    localStorage.setItem('chatLinkPreviews',input.checked?'on':'off')
+    for (const pane of CHAT.panes) pane.redrawLinkPreviews()
+  }})
+  return h('label',{class:'set-check'},input,'显示群聊链接预览（含 B 站播放器）')
+}
 function chatAutoSettings() {
   const box = h('div', { class: 'segs small', role: 'radiogroup', 'aria-label': '来新消息时自动滚动' })
   const opts = [['near', '在底部时跟着滚'], ['always', '总是滚到最新'], ['off', '不自动滚']]

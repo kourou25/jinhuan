@@ -1,4 +1,4 @@
-import {bilibiliLink,bilibiliLinks,socialLinks,canSocialPost,socialCaption} from './social-links.js?v=472f7fbf'
+import {bilibiliLink,bilibiliLinks,socialLinks,canSocialPost,socialCaption,webPreviewLinks} from './social-links.js?v=472f7fbf'
 
 function bilibiliChatCards(message, { h, api, onRemoval }, available) {
   return bilibiliLinks(message.body || '').slice(0, available).map((link, index) => {
@@ -40,6 +40,35 @@ function bilibiliChatCards(message, { h, api, onRemoval }, available) {
   })
 }
 
+function webLinkCards(message, { h, api, onRemoval, imageLink }, available) {
+  const directImage = imageLink ? new URL(imageLink, location.origin) : null
+  if (directImage) directImage.hash = ''
+  return webPreviewLinks(message.body || '').map((link,index)=>({link,index}))
+    .filter(({link})=>link.url!==directImage?.href).slice(0,available).map(({link,index})=>{
+    const title=h('strong',{class:'cm-link-summary-title'},link.host)
+    const description=h('span',{class:'cm-link-summary-description',hidden:true})
+    const card=h('a',{class:'cm-social cm-link-summary',href:link.url,target:'_blank',rel:'noopener noreferrer'},
+      h('span',{class:'cm-link-summary-source'},link.host),title,description)
+    const abort=new AbortController()
+    const IO=card.ownerDocument.defaultView.IntersectionObserver || IntersectionObserver
+    const observer=new IO(async entries=>{
+      if(!entries.some(entry=>entry.isIntersecting))return
+      observer.disconnect()
+      try{
+        const data=await api(`/chat/messages/${message.id}/preview/link?index=${index}`,{signal:abort.signal})
+        if(!abort.signal.aborted && card.isConnected){
+          title.textContent=data.title||link.host
+          description.textContent=data.description||''
+          description.hidden=!data.description
+        }
+      }catch{/* 原链接始终可用。 */}
+    },{rootMargin:'100px'})
+    observer.observe(card)
+    onRemoval(card,()=>{observer.disconnect();abort.abort()})
+    return card
+  })
+}
+
 const scripts=new WeakMap()
 function loadScript(doc,provider){
  let cache=scripts.get(doc);if(!cache){cache=new Map();scripts.set(doc,cache)}
@@ -53,7 +82,7 @@ function loadScript(doc,provider){
  }).catch(error=>{cache.delete(provider);throw error})
  cache.set(provider,work);return work
 }
-export function socialCards(message,{h,api,onRemoval,onPost,onOpenMedia,renderVideo,post=false}){
+export function socialCards(message,{h,api,onRemoval,onPost,onOpenMedia,renderVideo,post=false,imageLink}){
  if(message.redpack||!message.id||message.deleted)return []
  const cards=socialLinks(message.body||'').map((link,index)=>{
   const shell=h('section',{class:'cm-social'+(post?' social-post':''),'aria-label':'分享内容预览'})
@@ -133,6 +162,9 @@ export function socialCards(message,{h,api,onRemoval,onPost,onOpenMedia,renderVi
   }
   onRemoval(shell,()=>{state='disposed';visibleObserver?.disconnect();clear()});return shell
  })
- if(!post)cards.push(...bilibiliChatCards(message, { h, api, onRemoval }, 2-cards.length))
+ if(!post){
+  cards.push(...bilibiliChatCards(message, { h, api, onRemoval }, 2-cards.length))
+  cards.push(...webLinkCards(message, { h, api, onRemoval, imageLink }, 2-cards.length))
+ }
  return cards
 }

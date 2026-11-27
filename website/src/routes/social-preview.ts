@@ -3,7 +3,7 @@ import type {Ctx,C} from '../types'
 import {needUser} from '../services/auth'
 import {CHAT_HISTORY_FLOOR} from '../services/chat-access'
 import {fail} from '../lib/http'
-import {bilibiliLinks,socialLinks,socialCaption} from '../../public/social-links.js'
+import {bilibiliLinks,socialLinks,socialCaption,webPreviewLinks,type WebPreviewLink} from '../../public/social-links.js'
 import {fetchPreview} from '../services/social-preview'
 import {fetchXMedia} from '../services/social-x'
 import {douyinMediaUrl} from '../services/social-douyin'
@@ -11,6 +11,7 @@ import {weiboMediaUrl} from '../services/social-weibo'
 import {instagramMediaUrl} from '../services/social-instagram'
 import {fetchSocialVideo,SocialVideoError} from '../services/social-video'
 import {postShareLink} from '../services/social-post'
+import {emptyLinkPreview,fetchWebLinkPreview,previewText} from '../services/web-link-preview'
 const failedMedia=new Map<string,number>()
 export async function socialMediaResponse(c:C,url:string,kind:'image'|'video',provider='x',alternates:string[]=[]){
  const allowed=provider==='douyin'?douyinMediaUrl:provider==='weibo'?weiboMediaUrl:provider==='instagram'?instagramMediaUrl:undefined
@@ -57,7 +58,7 @@ async function source(c:C){
  if(!link||!['x','douyin','weibo','instagram'].includes(link.provider))fail(400,'该链接不使用分享页预览')
  return {u,link}
 }
-export async function cachedSocialPreview(c:C,u:{id:number},link:Parameters<typeof fetchPreview>[0]){
+export async function cachedSocialPreview(c:C,u:{id:number},link:Parameters<typeof fetchPreview>[0]|WebPreviewLink){
  c.header('Cache-Control','no-store')
  const key=new Request(new URL('/__social_preview_v6?url='+encodeURIComponent(link.url),c.req.url)),cache=caches.default
  const hit=await cache.match(key);if(hit)return await hit.json<Awaited<ReturnType<typeof fetchPreview>>>()
@@ -66,7 +67,9 @@ export async function cachedSocialPreview(c:C,u:{id:number},link:Parameters<type
  if(limits.size>=2000&&!limits.has(u.id))limits.delete(limits.keys().next().value!)
  limit.n++;limits.set(u.id,limit)
  let work=pending.get(link.url)
- if(!work){if(pending.size>=60)fail(429,'预览忙碌，请稍后再试');work=fetchPreview(link);pending.set(link.url,work);work.finally(()=>pending.delete(link.url))}
+ if(!work){if(pending.size>=60)fail(429,'预览忙碌，请稍后再试');work=link.provider==='web'
+   ? fetchWebLinkPreview(link,c.env.PUBLIC_LINK_FETCH,new URL(c.req.url).hostname) : fetchPreview(link)
+  pending.set(link.url,work);work.finally(()=>pending.delete(link.url))}
  const data=await work
  c.executionCtx.waitUntil(cache.put(key,Response.json(data,{headers:{'Cache-Control':'public, max-age='+(data.available?(['douyin','instagram'].includes(link.provider)?300:1800):(data as {reason?:string}).reason==='login'?1800:30)}})))
  return data
@@ -79,6 +82,21 @@ socialPreview.get('/api/chat/messages/:id/preview/bilibili',async c=>{
  const link=bilibiliLinks(body)[index]
  if(!link?.short)fail(400,'该消息没有可解析的 B 站短链')
  return c.json(await cachedSocialPreview(c,u,link))
+})
+socialPreview.get('/api/chat/messages/:id/preview/link',async c=>{
+ const {u,body,index}=await sourceMessage(c)
+ const link=webPreviewLinks(body)[index]
+ if(!link)fail(400,'该消息没有可预览的网页链接')
+ const url=new URL(link.url)
+ if(url.hostname===new URL(c.req.url).hostname){
+  c.header('Cache-Control','no-store')
+  const post=/^\/m\/([1-9]\d*)\/?$/.exec(url.pathname)
+  const row=post ? await c.env.DB.prepare('SELECT title,content FROM memes WHERE id=? AND hidden=0')
+    .bind(post[1]).first<{title:string;content:string}>() : null
+  return c.json(row?{title:previewText(row.title,96)||'尽欢帖子',description:previewText(row.content,144),available:true}:emptyLinkPreview(link))
+ }
+ const {title,description,available}=await cachedSocialPreview(c,u,link)
+ return c.json({title,description,available})
 })
 socialPreview.get('/api/social/preview',async c=>{
  const u=needUser(c),link=postShareLink(c.req.query('share'))

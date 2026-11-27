@@ -9,6 +9,7 @@ export interface Env {
   PUSH_VAPID_PRIVATE_KEY?: string
   BUCKET: R2Bucket
   ASSETS: Fetcher
+  PUBLIC_LINK_FETCH?: (href:string,signal:AbortSignal)=>Promise<Response>
   LINUXDO_CLIENT_ID: string
   LINUXDO_CLIENT_SECRET: string
   ADMIN_USERNAMES?: string
